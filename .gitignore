@@ -9,6 +9,7 @@
 .vscode/.vscode/
 !.vscode/*.json
 bin/
+build/
 *.rs
 test_output/
 *.tmp

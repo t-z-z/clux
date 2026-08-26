@@ -89,7 +89,7 @@ CompUnit* Parser::parse() {
                 cu_.top_decls.push_back(d);
                 if (d->kind == DeclKind::Class) {
                     if (cu_.is_type_name(d->name)) {
-                        add_error("mutiple definition of class "+ d->name);
+                        add_error("mutiple definition of class "+ std::string(d->name));
                     } else if (!d->name.empty()) {
                         cu_.register_type(d->name, d);
                     }
@@ -112,7 +112,7 @@ bool Parser::parse_using_namespace() {
     if (peek(2).kind == TokenKind::BraceL) return false;
     advance();
     Location loc = get_loc();
-    std::vector<std::string> path;
+    std::vector<std::string_view> path;
     while(curr().is_ident()) {
         path.push_back(curr().get_val());
         advance();
@@ -197,7 +197,7 @@ Modification* Parser::parse_modification() {
         add_error("expected identifier after '#'");
         return nullptr;
     }
-    std::string name = curr().get_val();
+    std::string_view name = curr().get_val();
     walk();
     std::vector<ASTNode*> args = parse_template_args();
 
@@ -211,7 +211,7 @@ Func* Parser::parse_func_decl(ModfList &ml, Location &loc) {
         && peek().kind != TokenKind::ParenL
         && peek().kind != TokenKind::BraceL) return nullptr;
     Location loc = get_loc();
-    std::string name = curr().get_val();
+    std::string_view name = curr().get_val();
     walk();
     std::vector<TemplateParam> tpls = parse_template_params();
     if (curr().kind != TokenKind::ParenL) return nullptr;
@@ -256,7 +256,7 @@ VarList* Parser::parse_var_decl(ModfList &ml, Location &loc) {
     std::vector<VarItem> vars;
     for (;;) {
         if (curr().is_ident()) {
-            std::string name = curr().get_val();
+            std::string_view name = curr().get_val();
             Expr* init = nullptr;
             walk();
             if (curr().kind == TokenKind::Assign) {
@@ -269,7 +269,7 @@ VarList* Parser::parse_var_decl(ModfList &ml, Location &loc) {
             }else if(type->is_inferred()) {
                 add_error("can not infer type");
             }
-            vars.push_back(VarItem(std::move(name), init));
+            vars.push_back(VarItem(name, init));
         } else if (vars.empty()) {
             return nullptr;
         } else {
@@ -286,7 +286,7 @@ VarList* Parser::parse_var_decl(ModfList &ml, Location &loc) {
 Class* Parser::parse_class_decl(ModfList &ml, Location &loc) {
     if (curr().kind != TokenKind::At) return nullptr;
     advance();
-    std::string name;
+    std::string_view name;
     if (!curr().is_ident()) {
         add_error("expected class name after @");
         // 语义上不允许，语法上仍需要解析匿名类
@@ -311,7 +311,7 @@ Namespace* Parser::parse_namespace_decl(ModfList &ml, Location &loc) {
         add_error("expected namespace name after 'namespace'");
         return cu_.add_node<Namespace>();
     }
-    std::string name = curr().val;
+    std::string_view name = curr().val;
     advance();
     std::vector<Decl*> members = parse_members();
     return cu_.add_node<Namespace>(
@@ -492,7 +492,7 @@ Extern* Parser::parse_extern_decl(ModfList &ml, Location &loc) {
         add_error("expected library name string after 'extern'");
         return cu_.add_node<Extern>();
     }
-    std::string lib_name = curr().get_val();
+    std::string_view lib_name = curr().get_val();
     advance();
     
     if (curr().kind != TokenKind::BraceL) {
@@ -503,7 +503,7 @@ Extern* Parser::parse_extern_decl(ModfList &ml, Location &loc) {
     std::vector<Decl*> members = parse_members();
     return cu_.add_node<Extern>(
         loc,
-        std::string(lib_name),
+        lib_name,
         std::move(ml),
         std::move(members)
     );
@@ -536,8 +536,8 @@ Keep* Parser::parse_keep_decl(ModfList& ml, Location& loc) {
     if (curr().kind != TokenKind::Keep) return nullptr;
     Location loc = get_loc();
     advance();
-    std::string code = parse_code();
-    return cu_.add_node<Keep>(loc, std::move(code), std::move(ml));
+    std::string_view code = parse_code();
+    return cu_.add_node<Keep>(loc, code, std::move(ml));
 }
 
 // 语句解析部分
@@ -869,7 +869,7 @@ Stmt* Parser::parse_flag_stmt() {
         add_error("expected label name after 'flag'");
         return nullptr;
     }
-    std::string label = curr().get_val();
+    std::string_view label = curr().get_val();
     advance();
     return cu_.add_node<Stmt>(
         loc,
@@ -886,7 +886,7 @@ Stmt* Parser::parse_goto_stmt() {
         add_error("expected label name after 'toflag'");
         return nullptr;
     }
-    std::string label = curr().get_val();
+    std::string_view label = curr().get_val();
     advance();
 
     return cu_.add_node<Stmt>(
@@ -899,7 +899,7 @@ Stmt* Parser::parse_asm_stmt() {
     if (curr().kind != TokenKind::Asm) return nullptr;
     Location loc = get_loc();
     advance();
-    std::string code = parse_code();
+    std::string_view code = parse_code();
     return cu_.add_node<Stmt>(
         loc,
         Stmt::Asm{code}
@@ -910,10 +910,10 @@ Stmt* Parser::parse_keep_stmt() {
     if (curr().kind != TokenKind::Keep) return nullptr;
     Location loc = get_loc();
     advance();
-    std::string code = parse_code();
+    std::string_view code = parse_code();
     return cu_.add_node<Stmt>(
         loc,
-        Stmt::Keep{std::move(code)}
+        Stmt::Keep{code}
     );
 }
 
@@ -1180,11 +1180,11 @@ Expr* Parser::parse_prefix() {
     
     // 标识符
     if (curr().is_ident()) {
-        std::string name = curr().get_val();
+        std::string_view name = curr().get_val();
         advance();
         return cu_.add_node<Expr>(
             loc,
-            Expr::Identifier{std::move(name)}
+            Expr::Identifier{name}
         );
     }
     
@@ -1319,11 +1319,11 @@ Expr* Parser::parse_postfix(Expr* left) {
                 add_error("expected member name after '.'");
                 return left;
             }
-            std::string member = curr().get_val();
+            std::string_view member = curr().get_val();
             advance();
             return cu_.add_node<Expr>(
                 loc,
-                Expr::Member{left, std::move(member)}
+                Expr::Member{left, member}
             );
         }
         // 作用域: ::
@@ -1333,11 +1333,11 @@ Expr* Parser::parse_postfix(Expr* left) {
                 add_error("expected name after '::'");
                 return left;
             }
-            std::string member = curr().get_val();
+            std::string_view member = curr().get_val();
             advance();
             return cu_.add_node<Expr>(
                 loc,
-                Expr::Scope{left, std::move(member)}
+                Expr::Scope{left, member}
             );
         }
         // -&取地址/-*解引用
@@ -1420,7 +1420,7 @@ Expr* Parser::parse_func_literal() {
 Expr* Parser::parse_literal() {
     Location loc = get_loc();
     LiteralKind kind;
-    std::string value = curr().get_val();
+    std::string_view value = curr().get_val();
     
     switch (curr().kind) {
         #define X(L,K) case TokenKind::L: kind = LiteralKind::K; break;
@@ -1512,13 +1512,13 @@ Expr* Parser::parse_array_length() {
             case TokenKind::UIntLiteral: kind = LiteralKind::UInt; break;
             default: kind = LiteralKind::Int; break;
         }
-        std::string value = curr().get_val();
+        std::string_view value = curr().get_val();
         walk();
         return cu_.add_node<Expr>(loc, Expr::Literal{kind, value});
     }
     if (curr().is_ident()) {
         Location loc = get_loc();
-        std::string name = curr().get_val();
+        std::string_view name = curr().get_val();
         walk();
         return cu_.add_node<Expr>(loc, Expr::Identifier{name});
     }
@@ -1628,7 +1628,7 @@ Type* Parser::parse_func_type() {
 Type* Parser::parse_generic_type() {
     if (!curr().is_ident()) return nullptr;
     Location loc = get_loc();
-    std::string name = curr().get_val();
+    std::string_view name = curr().get_val();
     walk();
 
     if (curr().kind == TokenKind::GenericStart) {
@@ -1687,7 +1687,7 @@ std::optional<std::vector<T>> Parser::parse_list(
     return elements;
 }
 
-std::string Parser::parse_code() {
+std::string_view Parser::parse_code() {
     use_alias_ = false;
     if (curr().kind != TokenKind::BackQuote) {
         add_error("expected '`'");
@@ -1709,7 +1709,7 @@ std::string Parser::parse_code() {
     }
     size_t end = lexer_.get_pos();
     advance();
-    std::string code = lexer_.get_source_range(start,end);
+    std::string_view code = lexer_.get_source_range(start,end);
     use_alias_ = true;
     return code;
 }
@@ -1726,7 +1726,7 @@ std::vector<TemplateParam> Parser::parse_template_params() {
     }
     for (;;) {
         if (curr().is_ident()) {
-            std::string name = curr().get_val();
+            std::string_view name = curr().get_val();
             ASTNode* dft = nullptr;
             if (curr().kind == TokenKind::Assign) {
                 dft = parse_expr();

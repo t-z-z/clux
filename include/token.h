@@ -180,7 +180,7 @@ struct Location {
     int col;
     std::string_view filename;
     Location():lin(0),col(0),filename(""){};
-    Location(const int &line,const int &colomn,const std::string &file):
+    Location(const int &line,const int &colomn,std::string_view file):
     lin(line),col(colomn),filename(file){}
 };
 
@@ -201,18 +201,18 @@ inline std::string token_kind_to_string(TokenKind kind) {
 
 struct Token {
     TokenKind kind;
-    std::string val;
+    std::string_view val;
     Location loc;
     Token():kind(TokenKind::Unknown),val(""),loc() {}
-    Token(TokenKind token_kind, const std::string &value, const Location &location):
+    Token(TokenKind token_kind, std::string_view value, const Location &location):
         kind(token_kind),val(value),loc(location) {}
-    Token(TokenKind token_kind, const std::string &value, int line, int column, const std::string &filename="<input>"):
+    Token(TokenKind token_kind, std::string_view value, int line, int column, std::string_view filename="<input>"):
         kind(token_kind),val(value),loc(line,column,filename) {}
-    inline const std::string& get_val() const {
+    inline std::string_view get_val() const {
         return val;
     }
     inline std::string quote() const {
-        return "\"" + val + "\"";
+        return "\"" + std::string(val) + "\"";
     }
     inline std::string to_string()const {
         std::string name=token_kind_to_string(kind);

@@ -73,11 +73,11 @@ Token Lexer::read_char() {
         ++len;
     }
     std::string_view sub=view.substr(s_pos,len);
-    std::string val=translate_escape_sequences(sub);
-    if(val.size()>1) add_waring("multi-character char content");
+    std::string_view sv=translate_escape_sequences(sub);
+    if(sv.size()>1) add_waring("multi-character char content");
     advance();
     //跳过末尾的单引号
-    return Token(TokenKind::CharLiteral,val,s_loc);
+    return Token(TokenKind::CharLiteral,sv,s_loc);
 }
 
 // 返回的token的val中不包含两个双引号
@@ -98,14 +98,14 @@ Token Lexer::read_string(){
         ++len;
     }
     std::string_view sub=view.substr(s_pos,len);
-    std::string val=translate_escape_sequences(sub);
+    std::string_view sv=translate_escape_sequences(sub);
     advance();
-    return Token(TokenKind::StringLiteral,val,s_loc);
+    return Token(TokenKind::StringLiteral,sv,s_loc);
 }
 
 Token Lexer::read_number() {
     Location start_loc = get_location();
-    std::string value;
+    size_t s_pos = pos_;
     bool is_float = false;
     int base = 10;
 
@@ -114,56 +114,53 @@ Token Lexer::read_number() {
         char next = peek_char();
         if (next == 'x' || next == 'X') {
             base = 16;
-            value += curr_char(); advance();
-            value += curr_char(); advance();
+            advance(2);
             
             if (!isxdigit(curr_char())) {
                 add_error("Expected hexadecimal digit after '0x'");
-                return Token(TokenKind::Unknown, value, start_loc);
+                return Token(TokenKind::Unknown, std::string_view(), start_loc);
             }
             while (isxdigit(curr_char())) {
-                value += curr_char(); advance();
+                advance();
             }
         } else if (next == 'b' || next == 'B') {
             base = 2;
-            value += curr_char(); advance();
-            value += curr_char(); advance();
+            advance(2);
             
             if (curr_char() != '0' && curr_char() != '1') {
                 add_error("Expected binary digit after '0b'");
-                return Token(TokenKind::Unknown, value, start_loc);
+                return Token(TokenKind::Unknown, std::string_view(), start_loc);
             }
             while (curr_char() == '0' || curr_char() == '1') {
-                value += curr_char(); advance();
+                advance();
             }
         } else if (next == 'o' || next == 'O') {
             base = 8;
-            value += curr_char(); advance();
-            value += curr_char(); advance();
+            advance(2);
             
             if (curr_char() < '0' || curr_char() > '7') {
                 add_error("Expected octal digit after '0o'");
-                return Token(TokenKind::Unknown, value, start_loc);
+                return Token(TokenKind::Unknown, std::string_view(), start_loc);
             }
             while (curr_char() >= '0' && curr_char() <= '7') {
-                value += curr_char(); advance();
+                advance();
             }
         }
     }
     
     // 读取数字部分
-    if (base == 10 && (value.empty() || value[0] != '0')) {
+    if (base == 10) {
         while (isdigit(curr_char())) {
-            value += curr_char(); advance();
+            advance();
         }
     }
     
     // 检查是否有小数点
     if (curr_char() == '.' && peek_char(1) != '.') {
         is_float = true;
-        value += curr_char(); advance();
+        advance();
         while (isdigit(curr_char())) {
-            value += curr_char(); advance();
+            advance();
         }
     }
     
@@ -171,16 +168,16 @@ Token Lexer::read_number() {
     if ((curr_char() == 'e' || curr_char() == 'E') && 
         (isdigit(peek_char()) || peek_char() == '+' || peek_char() == '-')) {
         is_float = true;
-        value += curr_char(); advance();
+        advance();
         if (curr_char() == '+' || curr_char() == '-') {
-            value += curr_char(); advance();
+            advance();
         }
         if (!isdigit(curr_char())) {
             add_error("Expected exponent digit after 'e'/'E'");
-            return Token(TokenKind::Unknown, value, start_loc);
+            return Token(TokenKind::Unknown, std::string_view(), start_loc);
         }
         while (isdigit(curr_char())) {
-            value += curr_char(); advance();
+            advance();
         }
     }
     
@@ -188,16 +185,16 @@ Token Lexer::read_number() {
     if (base == 16 && (curr_char() == 'p' || curr_char() == 'P') &&
         (isdigit(peek_char()) || peek_char() == '+' || peek_char() == '-')) {
         is_float = true;
-        value += curr_char(); advance();
+        advance();
         if (curr_char() == '+' || curr_char() == '-') {
-            value += curr_char(); advance();
+            advance();
         }
         if (!isdigit(curr_char())) {
             add_error("Expected exponent digit after 'p'/'P'");
-            return Token(TokenKind::Unknown, value, start_loc);
+            return Token(TokenKind::Unknown, std::string_view(), start_loc);
         }
         while (isdigit(curr_char())) {
-            value += curr_char(); advance();
+            advance();
         }
     }
     
@@ -207,15 +204,15 @@ Token Lexer::read_number() {
     // 浮点后缀
     if (curr_char() == 'f' || curr_char() == 'F') {
         kind = TokenKind::FloatLiteral;
-        value += curr_char(); advance();
+        advance();
         is_float = true;
     } else if (curr_char() == 'd' || curr_char() == 'D') {
         kind = TokenKind::DoubleLiteral;
-        value += curr_char(); advance();
+        advance();
         is_float = true;
     } else if (curr_char() == 'h' || curr_char() == 'H') {
         kind = TokenKind::Float16Literal;
-        value += curr_char(); advance();
+        advance();
         is_float = true;
     } else if (is_float) {
         kind = TokenKind::DoubleLiteral;
@@ -224,16 +221,13 @@ Token Lexer::read_number() {
         int bit_width = 0;
         bool is_unsigned = false;
         bool is_signed = false;
-        std::string suffix_text;
         
         // 第一步：检测符号修饰符
         if (curr_char() == 'u' || curr_char() == 'U') {
             is_unsigned = true;
-            suffix_text += curr_char();
             advance();
         } else if (curr_char() == 'i' || curr_char() == 'I') {
             is_signed = true;
-            suffix_text += curr_char();
             advance();
         }
         
@@ -245,19 +239,15 @@ Token Lexer::read_number() {
                 advance();
             }
             bit_width = std::stoi(bits);
-            suffix_text += bits;
         } else {
             // 第三步：检测传统后缀（s, l, ll）
             if (curr_char() == 's' || curr_char() == 'S') {
-                suffix_text += curr_char();
                 advance();
                 bit_width = 16;  // short
             } else if (curr_char() == 'l' || curr_char() == 'L') {
-                suffix_text += curr_char();
                 advance();
                 // 检查 LL
                 if (curr_char() == 'l' || curr_char() == 'L') {
-                    suffix_text += curr_char();
                     advance();
                 }
                 bit_width = 64;  // long / long long
@@ -283,7 +273,7 @@ Token Lexer::read_number() {
                     case 128: kind = TokenKind::UInt128Literal; break;
                     default: 
                         add_error("Unsupported bit width: " + std::to_string(bit_width));
-                        return Token(TokenKind::Unknown, value, start_loc);
+                        return Token(TokenKind::Unknown, std::string_view(), start_loc);
                 }
             } else {
                 switch (bit_width) {
@@ -294,7 +284,7 @@ Token Lexer::read_number() {
                     case 128: kind = TokenKind::Int128Literal; break;
                     default:
                         add_error("Unsupported bit width: " + std::to_string(bit_width));
-                        return Token(TokenKind::Unknown, value, start_loc);
+                        return Token(TokenKind::Unknown, std::string_view(), start_loc);
                 }
             }
         }
@@ -309,73 +299,75 @@ Token Lexer::read_number() {
         }
     }
     
-    return Token(kind, value, start_loc);
+    std::string_view val = std::string_view(source_).substr(s_pos, pos_ - s_pos);
+    return Token(kind, val, start_loc);
 }
 
 Token Lexer::read_operator() {
     Location start_loc = get_location();
-    std::string op;
+    size_t s_pos = pos_;
     #define X(val,key) {key,TokenKind::val},
-    static const std::unordered_map<std::string, TokenKind>
+    static const std::unordered_map<std::string_view, TokenKind>
         map_3 = { OPERATOR3C };
-    static const std::unordered_map<std::string, TokenKind>
+    static const std::unordered_map<std::string_view, TokenKind>
         map_2 = { OPERATOR2C };
-    static const std::unordered_map<std::string, TokenKind>
+    static const std::unordered_map<std::string_view, TokenKind>
         map_1 = { OPERATOR1C };
     #undef X
 
-    op.push_back(curr_char());
+    char ch = curr_char();
     if(peek_char()!='\0'){
-        op.push_back(peek_char());
+        char ch2 = peek_char();
+        std::string_view op2(source_.data() + s_pos, 2);
         if(peek_char(2)!='\0'){
             // 三字操作符
-            op.push_back(peek_char(2));
-            std::unordered_map<std::string,TokenKind>::const_iterator it = map_3.find(op); 
+            std::string_view op3(source_.data() + s_pos, 3);
+            std::unordered_map<std::string_view,TokenKind>::const_iterator it = map_3.find(op3); 
             if(it != map_3.end()){
                 advance(3);
-                return Token(it->second,op,start_loc);
+                return Token(it->second,op3,start_loc);
             }
-            op.pop_back();
         }
         // 二字操作符
-        std::unordered_map<std::string,TokenKind>::const_iterator it = map_2.find(op); 
+        std::unordered_map<std::string_view,TokenKind>::const_iterator it = map_2.find(op2); 
         if(it != map_2.end()){
             advance(2);
-            return Token(it->second,op,start_loc);
+            return Token(it->second,op2,start_loc);
         }
-        op.pop_back();
     }
     // 一字操作符
-    std::unordered_map<std::string,TokenKind>::const_iterator it = map_1.find(op); 
+    std::string_view op1(source_.data() + s_pos, 1);
+    std::unordered_map<std::string_view,TokenKind>::const_iterator it = map_1.find(op1); 
     if(it != map_1.end()){
         advance(1);
-        return Token(it->second,op,start_loc);
+        return Token(it->second,op1,start_loc);
     }
 
     // 如果没有匹配到任何操作符，返回错误
-    std::string msg = "Unknown operator: '" + op + "'";
+    std::string msg = std::string("Unknown operator: '") + ch + "'";
     add_error(msg);
     advance();
-    return Token(TokenKind::Unknown, op, start_loc);
+    return Token(TokenKind::Unknown, op1, start_loc);
 }
 
 Token Lexer::read_identifier() {
     Location start_loc = get_location();
-    std::string value;
+    size_t s_pos = pos_;
     
     // 标识符可以以字母或下划线开头
     if (!isalpha(curr_char()) && curr_char() != '_') {
-        add_error("Expected identifier, found '" + std::string(1, curr_char()) + "'");
-        value = curr_char();
+        add_error(std::string("Expected identifier, found '") + curr_char() + "'");
+        std::string_view val(source_.data() + s_pos, 1);
         advance();
-        return Token(TokenKind::Unknown, value, start_loc);
+        return Token(TokenKind::Unknown, val, start_loc);
     }
     
     // 读取标识符：字母、数字、下划线
     while (isalnum(curr_char()) || curr_char() == '_') {
-        value += curr_char();
         advance();
     }
+    
+    std::string_view value = std::string_view(source_).substr(s_pos, pos_ - s_pos);
     
     // 使用 KEYWORD 宏检查关键字
     #define X(kind, str) if (value == str) return Token(TokenKind::kind, value, start_loc);
@@ -415,7 +407,7 @@ Token Lexer::next_token() {
 }
 
 //翻译支持：\n \r \t \\ \' \" \a \b \f \v \0 \ooo \xhh \uXXXX \UXXXXXXXX
-std::string Lexer::translate_escape_sequences(const std::string_view& input) {
+std::string_view Lexer::translate_escape_sequences(const std::string_view& input) {
     std::string result;
     result.reserve(input.size());
     // 基本转义字符映射表
@@ -442,7 +434,7 @@ std::string Lexer::translate_escape_sequences(const std::string_view& input) {
                 size_t j = i + 1;
                 int count = 0;
                 while (j < input.length() && count < 3 && 
-                       input[j] >= '0' && input[j] <= '7') {
+                        input[j] >= '0' && input[j] <= '7') {
                     octalValue = octalValue * 8 + (input[j] - '0');
                     j++;
                     count++;
@@ -600,7 +592,8 @@ std::string Lexer::translate_escape_sequences(const std::string_view& input) {
         }
     }
     
-    return result;
+    translated_strings_.push_back(std::move(result));
+    return std::string_view(translated_strings_.back());
 }
 
 }//namespace vo

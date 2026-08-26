@@ -124,23 +124,23 @@ struct CompUnit {
     T* add_node(Args&&... args) {
         auto node = std::make_unique<T>(std::forward<Args>(args)...);
         T* raw = node.get();
-        ast_nodes.push_back(std::move(node));
+        nodes.push_back(std::move(node));
         return raw;
     }
     std::unordered_map<std::string, Decl*> type_registry;  // 类型名 -> 类/结构体声明
-    void register_type(const std::string& name, Decl* decl) {
-        type_registry[name] = decl;
+    void register_type(const std::string_view& name, Decl* decl) {
+        type_registry[std::string(name)] = decl;
     }
-    bool is_type_name(const std::string& name) const {
-        return type_registry.find(name) != type_registry.end();
+    bool is_type_name(const std::string_view& name) const {
+        return type_registry.find(std::string(name)) != type_registry.end();
     }
     // namespace <name>: 文件顶层 using 指令（把命名空间成员引入当前作用域，hoisted）
     struct UsingNamespace {
-        std::vector<std::string> path;
+        std::vector<std::string_view> path;
         Location loc;
     };
     std::vector<UsingNamespace> using_namespaces;
-    void add_using_namespace(std::vector<std::string> path, const Location& loc) {
+    void add_using_namespace(std::vector<std::string_view> path, const Location& loc) {
         using_namespaces.push_back({path, loc});
     }
 };
@@ -158,11 +158,11 @@ inline ModfKind token_to_modf(TokenKind tk) {
 
 // 修饰符应用
 struct Modification : ASTNode{
-    std::string name;
+    std::string_view name;
     Decl* decl = nullptr;
     std::vector<ASTNode*> args;
-    Modification(const Location&l, std::string n, std::vector<ASTNode*> a)
-        :ASTNode(l), name(std::move(n)), args(std::move(a)) {}
+    Modification(const Location&l, std::string_view n, std::vector<ASTNode*> a)
+        :ASTNode(l), name(n), args(std::move(a)) {}
 };
 
 struct ModfList {
@@ -186,7 +186,7 @@ struct ModfList {
             }
         }
     }
-    bool has_custom(const std::string &name) const {
+    bool has_custom(const std::string_view &name) const {
         for (const Modification* mod : customs) {
             if (mod->name == name) return true;
         }
@@ -194,14 +194,14 @@ struct ModfList {
     }
     void add_custom(Modification* mod) {
         if (!has_custom(mod->name))
-            customs.push_back(std::move(mod));
+            customs.push_back(mod);
     }
 };
 
 struct Import : ASTNode {
     bool no = false;
-    std::string path;
-    Import(const Location &loc, const std::string &p, bool n): path(p), no(n), ASTNode(loc) {}
+    std::string_view path;
+    Import(const Location &loc, std::string_view p, bool n): path(p), no(n), ASTNode(loc) {}
     Import() = default;
 };
 
@@ -234,10 +234,10 @@ struct Type : ASTNode {
         Type *return_type;
     };
     struct TypeParam {
-        std::string name;
+        std::string_view name;
     };
     struct Custom {
-        std::string name;
+        std::string_view name;
         std::vector<ASTNode*> args;        // 语义分析后填充
         Decl* resolved_decl = nullptr;  // 实际申明的位置
     };
@@ -308,16 +308,16 @@ inline bool is_assign(OpKind op) {
 }
 
 struct Expr : ASTNode {
-    struct Literal      { LiteralKind kind; std::string value; };
-    struct Identifier   { std::string name; };
+    struct Literal      { LiteralKind kind; std::string_view value; };
+    struct Identifier   { std::string_view name; };
     struct Binary       { Expr* left; OpKind op; Expr* right; };
     struct Unary        { OpKind op; Expr* operand; bool is_postfix = false; };
     struct Assign       { Expr* target; OpKind op; Expr* value; };
     struct Call         { Expr* callee; std::vector<ASTNode*> templates; std::vector<Expr*> args; };
     struct Ternary      { Expr* cond; Expr* then_expr; Expr* else_expr; };
     struct Index        { Expr* target; Expr* index; };
-    struct Member       { Expr* target; std::string member; };
-    struct Scope        { Expr* target; std::string member; };
+    struct Member       { Expr* target; std::string_view member; };
+    struct Scope        { Expr* target; std::string_view member; };
     struct Cast         { Type* target_type; Expr* operand; };
     struct Array        { std::vector<Expr*> members; Expr* fill_value = nullptr; };
     struct Closure      { std::vector<VarList*> params; std::vector<VarList*> returns;
@@ -376,10 +376,10 @@ struct Stmt : ASTNode {
     struct Return   { };
     struct Break    { };
     struct Continue { };
-    struct Flag     { std::string label; };
-    struct Goto     { std::string label; };
-    struct Asm      { std::string code; };
-    struct Keep     { std::string tokens; };
+    struct Flag     { std::string_view label; };
+    struct Goto     { std::string_view label; };
+    struct Asm      { std::string_view code; };
+    struct Keep     { std::string_view tokens; };
     struct VarDecl  { VarList* vars; };
     struct Spawn    { Stmt* body; };
     struct Wait     { Expr* condition; };
@@ -415,20 +415,20 @@ enum class DeclKind {
 };
 
 struct Decl : ASTNode {
-    std::string name;
+    std::string_view name;
     ModfList modfs;
     DeclKind kind;
-    explicit Decl( const Location &loc, std::string n,
+    explicit Decl( const Location &loc, std::string_view n,
         const DeclKind &k, ModfList ml=ModfList()) :
-        ASTNode(loc), kind(k), name(std::move(n)), modfs(std::move(ml)) {}
+        ASTNode(loc), kind(k), name(n), modfs(std::move(ml)) {}
     Decl() = default;virtual ~Decl() = default;
 };
 
 struct Cont : Decl { // container 容器，用于包含申明
     std::vector<Decl*> members;
-    explicit Cont(const Location &loc, std::string n, const DeclKind &k,
+    explicit Cont(const Location &loc, std::string_view n, const DeclKind &k,
         ModfList ml=ModfList(), std::vector<Decl*> m = {}) :
-        Decl(loc, std::move(n), k, std::move(ml)), members(std::move(m)) {}
+        Decl(loc, n, k, std::move(ml)), members(std::move(m)) {}
     Cont() = default;virtual ~Cont() = default;
     bool can_contain(const Decl *d) const {
         return d->kind <= kind;
@@ -443,18 +443,18 @@ struct Cont : Decl { // container 容器，用于包含申明
         members.push_back(member);
         return true;
     }
-    Decl* find_member(const std::string &name) const {
+    Decl* find_member(const std::string_view &name) const {
         for (Decl* m : members) if (m->name == name) return m;
         return nullptr;
     }
 };
 // VarItem 是类型无关的单个变量申明
 struct VarItem{
-    std::string name;
+    std::string_view name;
     Expr *init;
     VarItem() = default;
-    VarItem(std::string n, Expr* i):
-        name(std::move(n)), init(i) {}
+    VarItem(std::string_view n, Expr* i):
+        name(n), init(i) {}
 };
 // VarList 是同一种类型的多个变量申明
 struct VarList : Decl {
@@ -468,10 +468,10 @@ struct VarList : Decl {
 };
 
 struct TemplateParam {
-    std::string name;
+    std::string_view name;
     ASTNode* dft = nullptr;
     TemplateParam() = default;
-    TemplateParam(std::string n, ASTNode* a) : name(std::move(n)),dft(a) {}
+    TemplateParam(std::string_view n, ASTNode* a) : name(n),dft(a) {}
 };
 
 struct Func : Decl {
@@ -481,14 +481,14 @@ struct Func : Decl {
     Stmt* body = nullptr;           // 函数体
     Func() = default;
     Func(const Location& loc,
-        std::string name,
+        std::string_view name,
         ModfList ml,
         std::vector<TemplateParam> t,
         std::vector<VarList*> p,
         std::vector<VarList*> r,
         Stmt* b
         )
-        : Decl(loc, std::move(name), DeclKind::Func, std::move(ml)),
+        : Decl(loc, name, DeclKind::Func, std::move(ml)),
         templates(std::move(t)),
         params(std::move(p)),
         returns(std::move(r)),
@@ -523,16 +523,16 @@ struct Operator : Func {
 struct Namespace : Cont {
     Namespace() = default;
     Namespace(
-        const Location &loc, std::string name,
+        const Location &loc, std::string_view name,
         ModfList ml, std::vector<Decl*> members
     ):
-        Cont(loc, std::move(name), DeclKind::Namespace, std::move(ml), std::move(members)) {}
+        Cont(loc, name, DeclKind::Namespace, std::move(ml), std::move(members)) {}
 };
 
 struct Extern : Cont {
     Extern() = default;
     Extern(const Location& loc,
-           std::string name,
+           std::string_view name,
            ModfList ml,
            std::vector<Decl*> m)
         : Cont(loc, name, DeclKind::Extern, std::move(ml), std::move(m)) {}
@@ -541,12 +541,12 @@ struct Extern : Cont {
 struct Class : Cont {
     std::vector<TemplateParam> templates;
     Class(const Location &loc,
-        std::string name,
+        std::string_view name,
         ModfList ml,
         std::vector<Decl*> m,
         std::vector<TemplateParam> tpls = {}
     ):
-        Cont(loc, std::move(name), DeclKind::Class, std::move(ml), std::move(m)),
+        Cont(loc, name, DeclKind::Class, std::move(ml), std::move(m)),
         templates(std::move(tpls)) {}
     virtual ~Class() = default;
 };
@@ -575,9 +575,9 @@ struct SpecialMethod : Decl {
 };
 
 struct Keep : Decl {
-    std::string code;
-    Keep(const Location &loc, std::string c, ModfList ml)
-        : Decl(loc, "", DeclKind::Keep, std::move(ml)), code(std::move(c)) {}
+    std::string_view code;
+    Keep(const Location &loc, std::string_view c, ModfList ml)
+        : Decl(loc, "", DeclKind::Keep, std::move(ml)), code(c) {}
 };
 
 struct Enum : Decl {

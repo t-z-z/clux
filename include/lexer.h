@@ -3,6 +3,7 @@
 #include "diagnostic.h"
 #include <vector>
 #include <string>
+#include <string_view>
 
 namespace vo {
 
@@ -12,8 +13,8 @@ class Lexer {
         source_(source),filename_(filename){};
 
     Token next_token();
-    std::string get_source_range(const size_t& start, const size_t& end) {
-        return source_.substr(start, end - start);
+    std::string_view get_source_range(const size_t& start, const size_t& end) {
+        return std::string_view(source_).substr(start, end - start);
     }
 
     inline bool has_error() const {return !errors_.empty();}
@@ -25,13 +26,14 @@ class Lexer {
     inline size_t get_pos() const {return pos_;}
     inline Location get_location() const {return Location(lin_,col_,filename_);}
     
-    std::string translate_escape_sequences(const std::string_view &input);
+    std::string_view translate_escape_sequences(const std::string_view& input);
     inline bool is_eof(){
         return pos_>=source_.size();
     }
     private:
     std::string source_;
     std::string filename_;
+    std::vector<std::string> translated_strings_;
 
     int lin_=1;
     int col_=1;
@@ -63,7 +65,6 @@ class Lexer {
     }
     void skip_space();
     void skip_comment();
-    Token read_char();
     Token read_char();
     Token read_string();
     Token read_number();

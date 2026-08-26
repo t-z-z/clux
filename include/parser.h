@@ -35,7 +35,7 @@ private:
     int generic_nest_depth = 0;
     Location pending_angle_r_loc;
     struct AliasDecl{
-        std::string name;
+        std::string_view name;
         std::vector<Token> alias;
         // 覆盖者的位置
         size_t cvr_lv = ~size_t(0);
@@ -249,7 +249,7 @@ private:
     // 其他辅助函数
     std::vector<Type*> parse_type_list_in_paren();
     std::vector<ASTNode*> parse_template_args();
-    std::string parse_code();
+    std::string_view parse_code();
     // 以下均可逆
     ModfList parse_modfs();
     OpKind parse_operator();

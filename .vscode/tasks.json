@@ -8,15 +8,9 @@
                 "-fdiagnostics-color=always",
                 "-g",
                 "-O0",
-                "${workspaceFolder}\\src\\diagnostic.cpp",
-                "${workspaceFolder}\\src\\lexer.cpp",
-                "${workspaceFolder}\\src\\parser.cpp",
-                "${workspaceFolder}\\src\\semantic.cpp",
-                "${workspaceFolder}\\src\\translator.cpp",
-                "${workspaceFolder}\\src\\main.cpp",
+                "${workspaceFolder}\\src\\*.cpp",
                 "-o",
-                //"${fileDirname}\\${fileBasenameNoExtension}.exe"
-                "${workspaceFolder}\\bin\\voic.exe"
+                "${workspaceFolder}\\bin\\volc.exe"
             ],
             "options": {
                 "cwd": "${fileDirname}"

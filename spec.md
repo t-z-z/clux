@@ -777,10 +777,10 @@ Volang 源代码 (.vo) -> LLVM IR(.ll) -> 可执行文件
 volang到ll的翻译器使用c++编写
 
 工具链命令：
-`voic -t main.vo` 翻译
-`voic -b main.vo` 构建
-`voic -r main.vo` 运行
-`voic -c main.vo` 检查
+`volc -t main.vo` 翻译
+`volc -b main.vo` 构建
+`volc -r main.vo` 运行
+`volc -c main.vo` 检查
 加`-o file` 控制输出文件位置
 
 ## 十四、语法糖
