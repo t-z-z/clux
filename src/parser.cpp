@@ -4,8 +4,6 @@
 #include <string>
 #include <string_view>
 
-#define ADD_TYPE(ARGS) cu_.add_node(std::make_unique<Type>(ARGS));
-
 namespace vo {
     // 从外向内查找别名解开链式别名
 std::optional<std::vector<Token>> Parser::lookup_alias_expended(const Token& name) const {

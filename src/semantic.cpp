@@ -46,9 +46,9 @@ void SemanticAnalyzer::check_type(Type& t) {
         if (Symbol* s = symbols_.lookup(c->name)) {
            c->resolved_decl =  s->decl;
         } else if (cu_.is_type_name(c->name)) {
-            c->resolved_decl = cu_.type_registry[c->name];
+            c->resolved_decl = cu_.type_registry[std::string(c->name)];
         } else if (!symbols_.lookup_generic(c->name)){
-            error(t.loc, "unknown type '" + c->name + "'");
+            error(t.loc, "unknown type '" + std::string(c->name) + "'");
         }
     } else if (auto* p = t.get_pointer()) {
         if (p->pointee) check_type(*p->pointee);
@@ -304,7 +304,7 @@ void SemanticAnalyzer::visit_class(Class& c) {
     }
     for (Decl* m : c.members) {
         if (!c.can_contain(m)) {
-            error(m->loc, "invalid member " + m->name + " in class");
+            error(m->loc, "invalid member " + std::string(m->name) + " in class");
             continue;
         }
         Symbol sym;

@@ -2,6 +2,7 @@
 
 #include <memory>
 #include <string>
+#include <string_view>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
@@ -20,13 +21,13 @@ enum class SymbolKind {
 // 符号
 struct Symbol {
     SymbolKind kind = SymbolKind::Variable;
-    std::string name;
+    std::string_view name;       // 视图，指向 AST 中的名字（源字符串/转义缓冲）
     Type* type = nullptr;
     Decl* decl = nullptr;
     std::string ir_type;        // LLVM IR 类型（可用于代码生成）
     Symbol() = default;
-    Symbol(SymbolKind k, std::string n, Type* t = nullptr, Decl* d = nullptr, std::string ir = "")
-        : kind(k), name(std::move(n)), type(t), decl(d), ir_type(std::move(ir)) {}
+    Symbol(SymbolKind k, std::string_view n, Type* t = nullptr, Decl* d = nullptr, std::string ir = "")
+        : kind(k), name(n), type(t), decl(d), ir_type(std::move(ir)) {}
     explicit Symbol(Decl* d) 
         : decl(d)
         , name(d->name) {
@@ -64,14 +65,16 @@ public:
 
     bool insert(Symbol sym) {
         // variable 可以直接覆盖，语言特性
-        if (symbols_[sym.name].kind != SymbolKind::Variable) {
-            if (symbols_.count(sym.name)) return false;
+        auto it = symbols_.find(std::string(sym.name));
+        if (it !=symbols_.end() && 
+         !(it->second.kind == SymbolKind::Variable && sym.kind == SymbolKind::Variable)) {
+            if (symbols_.count(std::string(sym.name))) return false;
         }
-        symbols_[sym.name] = std::move(sym);
+        symbols_[std::string(sym.name)] = std::move(sym);
         return true;
     }
-    Symbol* lookup(const std::string& name) {
-        auto it = symbols_.find(name);
+    Symbol* lookup(const std::string_view& name) {
+        auto it = symbols_.find(std::string(name));
         return it == symbols_.end() ? nullptr : &it->second;
     }
     Scope* parent() const { return parent_; }
@@ -88,7 +91,7 @@ public:
     void set_current_scope(Scope* s) { current_ = s; }
     Scope* current_scope() const { return current_; }
     // Scope 通过构造函数自动注册，不需要手动 push/pop
-    Symbol* lookup(const std::string& name) {
+    Symbol* lookup(const std::string_view& name) {
         for (Scope* s = current_; s; s = s->parent()) {
             if (Symbol* sym = s->lookup(name)) return sym;
         }
@@ -97,12 +100,12 @@ public:
     bool insert(Symbol sym) {
         return current_ ? current_->insert(std::move(sym)) : false;
     }
-    void add_generic(const std::string& name, ASTNode* decl) {
-        current_->generics_[name] = decl;
+    void add_generic(const std::string_view& name, ASTNode* decl) {
+        current_->generics_[std::string(name)] = decl;
     }
-    ASTNode* lookup_generic(const std::string& name) {
+    ASTNode* lookup_generic(const std::string_view& name) {
         for (Scope* s = current_; s; s = s->parent()) {
-            auto it = s->generics_.find(name);
+            auto it = s->generics_.find(std::string(name));
             if (it != s->generics_.end()) return it->second;
         }
         return nullptr;

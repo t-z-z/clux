@@ -20,6 +20,6 @@ endif()
 
 file(GLOB SOURCES CONFIGURE_DEPENDS src/*.cpp)
 
-add_executable(voic ${SOURCES})
+add_executable(volc ${SOURCES})
 
-target_include_directories(voic PRIVATE include)
+target_include_directories(volc PRIVATE include)
