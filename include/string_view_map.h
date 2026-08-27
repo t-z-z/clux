@@ -30,10 +30,9 @@ using svmap = std::unordered_map<
     StringViewEqual
 >;
 
-template<typename Value>
+// 字符串视图集合（元素即键，固定为 std::string_view，无需额外模板参数）
 using svset = std::unordered_set<
     std::string_view,
-    Value,
     StringViewHash,
     StringViewEqual
 >;

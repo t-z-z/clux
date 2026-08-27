@@ -208,7 +208,6 @@ Func* Parser::parse_func_decl(ModfList &ml, Location &loc) {
     if (peek().kind != TokenKind::GenericStart
         && peek().kind != TokenKind::ParenL
         && peek().kind != TokenKind::BraceL) return nullptr;
-    Location loc = get_loc();
     std::string_view name = curr().get_val();
     walk();
     std::vector<TemplateParam> tpls = parse_template_params();
@@ -243,7 +242,6 @@ Func* Parser::parse_func_decl(ModfList &ml, Location &loc) {
 // 变量的识别：类型或推导符加标识符
 VarList* Parser::parse_var_decl(ModfList &ml, Location &loc) {
     Type* type;
-    Location loc = get_loc();
     if (curr().kind == TokenKind::Let) {
         type = cu_.add_node<Type>(get_loc(), Type::Inferred{});
         advance();
@@ -532,7 +530,6 @@ Enum* Parser::parse_enum_decl(ModfList& ml, Location& loc) {
 
 Keep* Parser::parse_keep_decl(ModfList& ml, Location& loc) {
     if (curr().kind != TokenKind::Keep) return nullptr;
-    Location loc = get_loc();
     advance();
     std::string_view code = parse_code();
     return cu_.add_node<Keep>(loc, code, std::move(ml));
@@ -1189,7 +1186,6 @@ Expr* Parser::parse_prefix() {
     // 括号表达式
     if (curr().kind == TokenKind::ParenL) {
         advance();
-        Location inner_loc = get_loc();
         Expr* inner = parse_expr();
         if (!inner) {
             add_error("expected expression after '('");
@@ -1410,7 +1406,7 @@ Expr* Parser::parse_func_literal() {
     }
     return cu_.add_node<Expr>(
         loc,
-        Expr::Closure{std::move(params), returns, body}
+        Expr::Closure{std::move(params), returns, body, capture}
     );
 }
 
@@ -1676,7 +1672,7 @@ std::optional<std::vector<T>> Parser::parse_list(
             add_error("unterminated '" +
                 token_kind_to_string(start) +
                 token_kind_to_string(end) +
-                "'")
+                "'");
             break;
         } else if (!elmt) {
             walk();

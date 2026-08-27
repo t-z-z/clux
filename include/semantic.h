@@ -3,12 +3,11 @@
 #include <memory>
 #include <string>
 #include <string_view>
-#include <unordered_map>
-#include <unordered_set>
 #include <vector>
 
 #include "ast.h"
 #include "diagnostic.h"
+#include "string_view_map.h"
 
 namespace vo {
 
@@ -29,8 +28,7 @@ struct Symbol {
     Symbol(SymbolKind k, std::string_view n, Type* t = nullptr, Decl* d = nullptr, std::string ir = "")
         : kind(k), name(n), type(t), decl(d), ir_type(std::move(ir)) {}
     explicit Symbol(Decl* d) 
-        : decl(d)
-        , name(d->name) {
+        : name(d->name), decl(d) {
         switch (d->kind) {
             case DeclKind::VarList: kind = SymbolKind::Variable; break;
             case DeclKind::Func:    kind = SymbolKind::Function; break;
@@ -45,38 +43,24 @@ struct Symbol {
 };
 
 // 作用域
+class SymbolTable;   // Scope 与 SymbolTable 互相引用，先前置声明
+
 class Scope {
     SymbolTable& st_;           // 所属符号表
     Scope* parent_ = nullptr;
 public:
-    std::unordered_map<std::string, Symbol> symbols_;
-    std::unordered_map<std::string, ASTNode*> generics_;
-    // 构造：自动推入
-    Scope(SymbolTable& st) : st_(st), parent_(st.current_scope()) {
-        st_.set_current_scope(this);
-    }
-    // 析构：自动弹出
-    ~Scope() {
-        st_.set_current_scope(parent_);
-    }
+    // 键为 string_view：符号名来自词法阶段统一池，生命周期覆盖整个分析
+    svmap<Symbol> symbols_;
+    svmap<ASTNode*> generics_;
     // 禁止拷贝/移动
     Scope(const Scope&) = delete;
     Scope& operator=(const Scope&) = delete;
 
-    bool insert(Symbol sym) {
-        // variable 可以直接覆盖，语言特性
-        auto it = symbols_.find(std::string(sym.name));
-        if (it !=symbols_.end() && 
-         !(it->second.kind == SymbolKind::Variable && sym.kind == SymbolKind::Variable)) {
-            if (symbols_.count(std::string(sym.name))) return false;
-        }
-        symbols_[std::string(sym.name)] = std::move(sym);
-        return true;
-    }
-    Symbol* lookup(const std::string_view& name) {
-        auto it = symbols_.find(std::string(name));
-        return it == symbols_.end() ? nullptr : &it->second;
-    }
+    // 构造/析构、insert/lookup 在函数末尾统一定义（需要完整的 SymbolTable）
+    Scope(SymbolTable& st);
+    ~Scope();
+    bool insert(Symbol sym);
+    Symbol* lookup(const std::string_view& name);
     Scope* parent() const { return parent_; }
 };
 
@@ -84,10 +68,7 @@ class SymbolTable {
     std::unique_ptr<Scope> root_;
     Scope* current_ = nullptr;
 public:
-    SymbolTable() {
-        root_ = std::make_unique<Scope>(*this);
-        current_ = root_.get();
-    }
+    SymbolTable();
     void set_current_scope(Scope* s) { current_ = s; }
     Scope* current_scope() const { return current_; }
     // Scope 通过构造函数自动注册，不需要手动 push/pop
@@ -101,16 +82,42 @@ public:
         return current_ ? current_->insert(std::move(sym)) : false;
     }
     void add_generic(const std::string_view& name, ASTNode* decl) {
-        current_->generics_[std::string(name)] = decl;
+        current_->generics_[name] = decl;
     }
     ASTNode* lookup_generic(const std::string_view& name) {
         for (Scope* s = current_; s; s = s->parent()) {
-            auto it = s->generics_.find(std::string(name));
+            auto it = s->generics_.find(name);
             if (it != s->generics_.end()) return it->second;
         }
         return nullptr;
     }
 };
+
+// 两个类型均已完整，定义互相依赖的成员函数
+inline Scope::Scope(SymbolTable& st) : st_(st), parent_(st.current_scope()) {
+    st_.set_current_scope(this);
+}
+inline Scope::~Scope() {
+    st_.set_current_scope(parent_);
+}
+inline bool Scope::insert(Symbol sym) {
+    // variable 可以直接覆盖，语言特性
+    auto it = symbols_.find(sym.name);
+    if (it !=symbols_.end() &&
+     !(it->second.kind == SymbolKind::Variable && sym.kind == SymbolKind::Variable)) {
+        if (symbols_.count(sym.name)) return false;
+    }
+    symbols_[sym.name] = std::move(sym);
+    return true;
+}
+inline Symbol* Scope::lookup(const std::string_view& name) {
+    auto it = symbols_.find(name);
+    return it == symbols_.end() ? nullptr : &it->second;
+}
+inline SymbolTable::SymbolTable() {
+    root_ = std::make_unique<Scope>(*this);
+    current_ = root_.get();
+}
 
 // 重载
 struct OverloadCandidate {
@@ -154,9 +161,7 @@ public:
 
     using ASTVisitor::visit;
 
-    void visit(CompUnit& cu) override {
-        walk(cu);
-    }
+    void visit(CompUnit& cu) override;
     // 声明
     void visit(Decl& decl) override;
     void visit(Modification& mod) override;
@@ -167,8 +172,8 @@ public:
     void visit_extern(Extern& e) override;
     void visit_operator(Operator& op) override;
     void visit_special_method(SpecialMethod& sm) override;
-    void visit_enum(Enum& e);
-    void visit_keep(Keep& k);
+    void visit_enum(Enum& e) override;
+    void visit_keep(Keep& k) override;
 
     // 语句
     void visit_stmt_block(Stmt::Block& s) override;
@@ -194,17 +199,17 @@ private:
     std::vector<Diagnostic> diagnostics_;
     bool has_error_ = false;
 
-    // 重载表
-    std::unordered_map<std::string, std::vector<OverloadCandidate>> overload_map_;
-    std::unordered_map<std::string, std::unordered_map<std::string, std::vector<OverloadCandidate>>> class_overload_maps_;
-    std::unordered_map<std::string, std::unordered_map<std::string, std::vector<OverloadCandidate>>> namespace_overload_maps_;
+    // 重载表（键为 string_view，来自统一字符串池，透明查找无需拷贝）
+    svmap<std::vector<OverloadCandidate>> overload_map_;
+    svmap<svmap<std::vector<OverloadCandidate>>> class_overload_maps_;
+    svmap<svmap<std::vector<OverloadCandidate>>> namespace_overload_maps_;
     std::vector<CallResolution> call_resolutions_;
 
     // 当前类上下文
     Class* current_class_ = nullptr;
-    std::unordered_set<std::string> current_class_fields_;
-    std::unordered_set<std::string> current_class_readonly_fields_;
-    std::unordered_map<std::string, std::vector<OverloadCandidate>>* current_class_overloads_ = nullptr;
+    svset current_class_fields_;
+    svset current_class_readonly_fields_;
+    svmap<std::vector<OverloadCandidate>>* current_class_overloads_ = nullptr;
     
     bool has_imports_or_keep_ = false;
     int suppress_undefined_ = 0;

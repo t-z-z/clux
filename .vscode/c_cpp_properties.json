@@ -10,10 +10,10 @@
                 "UNICODE",
                 "_UNICODE"
             ],
-            "compilerPath": "C:/mingw64/bin/g++.exe",
+            "compilerPath": "C:/Program Files/LLVM/bin/clang++.exe",
             "cStandard": "c17",
             "cppStandard": "c++17",
-            "intelliSenseMode": "${default}"
+            "intelliSenseMode": "windows-clang-x64"
         }
     ],
     "version": 4

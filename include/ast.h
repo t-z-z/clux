@@ -3,6 +3,7 @@
 #include <vector>
 #include <string>
 #include <variant>
+#include <optional>
 #include <cstdint>
 #include <memory>
 #include <unordered_map>
@@ -37,7 +38,7 @@ struct TemplateParam;
 struct ASTVisitor;
 
 #define B_IS(a,b) inline bool is_##a() const { return std::holds_alternative<b>(data); }
-#define B_B(p,k) p(const Location& l, k v) : data(std::move(v)), ASTNode(l) {}
+#define B_B(p,k) p(const Location& l, k v) : ASTNode(l), data(std::move(v)) {}
 #define B_GET(t,n) inline t* get_##n() { return std::get_if<t>(&data); }
 //t* get_##n() { return std::get_if<t>(&data); }
 #define BBB(n,t,p) B_IS(n,t) B_B(p,t) B_GET(t,n)
@@ -117,8 +118,9 @@ struct CompUnit {
     std::vector<Import*> imports;
     std::vector<std::unique_ptr<ASTNode>> nodes;
     ASTNode* add_node(std::unique_ptr<ASTNode> ptr) {
-        nodes.push_back(ptr);
-        return ptr.get();
+        ASTNode* raw = ptr.get();
+        nodes.push_back(std::move(ptr));
+        return raw;
     }
     template<typename T, typename... Args>
     T* add_node(Args&&... args) {
@@ -201,7 +203,7 @@ struct ModfList {
 struct Import : ASTNode {
     bool no = false;
     std::string_view path;
-    Import(const Location &loc, std::string_view p, bool n): path(p), no(n), ASTNode(loc) {}
+    Import(const Location &loc, std::string_view p, bool n): ASTNode(loc), no(n), path(p)  {}
     Import() = default;
 };
 
@@ -255,11 +257,11 @@ struct Type : ASTNode {
         Custom,
         Reference,
         Inferred,
-        Void,
+        Void
     >;
     Variant data;
     Type() = default;
-    explicit Type(const Location &loc, const Variant &d) : data(d), ASTNode(loc) {}
+    explicit Type(const Location &loc, Variant d) : ASTNode(loc), data(std::move(d)) {}
     BBB(primitive, Primitive, Type)
     BBB(pointer, Pointer, Type)
     BBB(array, Array, Type)
@@ -335,7 +337,7 @@ struct Expr : ASTNode {
     bool is_lvalue = false; // 是否可取地址
     
     Expr() = default;
-    Expr(const Location& l, const Variant& v) : data(v), ASTNode(l) {}
+    Expr(const Location& l, Variant v) : ASTNode(l), data(std::move(v))  {}
     BBB(literal, Literal, Expr)
     BBB(identifier, Identifier, Expr)
     BBB(binary, Binary, Expr)
@@ -390,7 +392,7 @@ struct Stmt : ASTNode {
     >;
     Variant data;
     Stmt() = default;
-    Stmt(const Location& l, Variant v): data(std::move(v)), ASTNode(l) {}
+    Stmt(const Location& l, Variant v): ASTNode(l), data(std::move(v)) {}
     BBB(block, Block, Stmt)
     BBB(expr, ExprStmt, Stmt)
     BBB(if, If, Stmt)
@@ -420,7 +422,7 @@ struct Decl : ASTNode {
     DeclKind kind;
     explicit Decl( const Location &loc, std::string_view n,
         const DeclKind &k, ModfList ml=ModfList()) :
-        ASTNode(loc), kind(k), name(n), modfs(std::move(ml)) {}
+        ASTNode(loc), name(n), modfs(std::move(ml)), kind(k) {}
     Decl() = default;virtual ~Decl() = default;
 };
 

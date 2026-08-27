@@ -42,7 +42,6 @@ void SemanticAnalyzer::visit(CompUnit& cu) {
 
 void SemanticAnalyzer::check_type(Type& t) {
     if (auto* c = t.get_custom()) {
-        Decl* d = nullptr;
         if (Symbol* s = symbols_.lookup(c->name)) {
            c->resolved_decl =  s->decl;
         } else if (cu_.is_type_name(c->name)) {
@@ -321,6 +320,38 @@ void SemanticAnalyzer::visit_class(Class& c) {
         }
         sym.decl = m; sym.name = m->name;
     }
+}
+
+// 以下 visit_* 在语义分析骨架阶段尚未实现，提供空实现以保证可链接。
+// 后续实现具体语义检查时再填充函数体。
+void SemanticAnalyzer::visit(Expr& expr) { (void)expr; }
+void SemanticAnalyzer::visit(Modification& mod) { (void)mod; }
+void SemanticAnalyzer::visit_modification(Modification& mod) { (void)mod; }
+void SemanticAnalyzer::visit_namespace(Namespace& ns) { (void)ns; }
+void SemanticAnalyzer::visit_extern(Extern& e) { (void)e; }
+void SemanticAnalyzer::visit_enum(Enum& e) { (void)e; }
+void SemanticAnalyzer::visit_keep(Keep& k) { (void)k; }
+void SemanticAnalyzer::visit_stmt_block(Stmt::Block& s) { (void)s; }
+void SemanticAnalyzer::visit_stmt_expr(Stmt::ExprStmt& s) { (void)s; }
+void SemanticAnalyzer::visit_stmt_if(Stmt::If& s) { (void)s; }
+void SemanticAnalyzer::visit_stmt_while(Stmt::While& s) { (void)s; }
+void SemanticAnalyzer::visit_stmt_for(Stmt::For& s) { (void)s; }
+void SemanticAnalyzer::visit_stmt_for_in(Stmt::ForIn& s) { (void)s; }
+void SemanticAnalyzer::visit_stmt_return(Stmt::Return& s) { (void)s; }
+void SemanticAnalyzer::visit_stmt_var_decl(Stmt::VarDecl& s) { (void)s; }
+void SemanticAnalyzer::visit_stmt_spawn(Stmt::Spawn& s) { (void)s; }
+void SemanticAnalyzer::visit_stmt_wait(Stmt::Wait& s) { (void)s; }
+void SemanticAnalyzer::visit_stmt_asm(Stmt::Asm& s) { (void)s; }
+void SemanticAnalyzer::visit_stmt_keep(Stmt::Keep& s) { (void)s; }
+
+std::string SemanticAnalyzer::type_to_ir(Type* t) const {
+    if (!t) return "";
+    return type_to_ir(*t);
+}
+std::string SemanticAnalyzer::type_to_ir(Type& t) const {
+    // 骨架阶段：返回占位 IR 类型，待代码生成阶段完善
+    (void)t;
+    return "";
 }
 
 } // namespace vo

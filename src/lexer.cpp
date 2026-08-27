@@ -1,5 +1,6 @@
 #include "../include/lexer.h"
 #include "../include/token.h"
+#include "../include/string_view_map.h"
 #include <cctype>
 #include <string>
 #include <string_view>
@@ -300,54 +301,50 @@ Token Lexer::read_number() {
     }
     
     std::string_view val = std::string_view(source_).substr(s_pos, pos_ - s_pos);
-    return Token(kind, val, start_loc);
+    return intern_token(kind, val, start_loc);
 }
 
 Token Lexer::read_operator() {
     Location start_loc = get_location();
     size_t s_pos = pos_;
+    // 使用基于 string_view 的透明查找表（无需拷贝键）
     #define X(val,key) {key,TokenKind::val},
-    static const std::unordered_map<std::string_view, TokenKind>
-        map_3 = { OPERATOR3C };
-    static const std::unordered_map<std::string_view, TokenKind>
-        map_2 = { OPERATOR2C };
-    static const std::unordered_map<std::string_view, TokenKind>
-        map_1 = { OPERATOR1C };
+    static const svmap<TokenKind> map_3 = { OPERATOR3C };
+    static const svmap<TokenKind> map_2 = { OPERATOR2C };
+    static const svmap<TokenKind> map_1 = { OPERATOR1C };
     #undef X
 
-    char ch = curr_char();
     if(peek_char()!='\0'){
-        char ch2 = peek_char();
         std::string_view op2(source_.data() + s_pos, 2);
         if(peek_char(2)!='\0'){
             // 三字操作符
             std::string_view op3(source_.data() + s_pos, 3);
-            std::unordered_map<std::string_view,TokenKind>::const_iterator it = map_3.find(op3); 
+            svmap<TokenKind>::const_iterator it = map_3.find(op3); 
             if(it != map_3.end()){
                 advance(3);
-                return Token(it->second,op3,start_loc);
+                return intern_token(it->second, op3, start_loc);
             }
         }
         // 二字操作符
-        std::unordered_map<std::string_view,TokenKind>::const_iterator it = map_2.find(op2); 
+        svmap<TokenKind>::const_iterator it = map_2.find(op2); 
         if(it != map_2.end()){
             advance(2);
-            return Token(it->second,op2,start_loc);
+            return intern_token(it->second, op2, start_loc);
         }
     }
     // 一字操作符
     std::string_view op1(source_.data() + s_pos, 1);
-    std::unordered_map<std::string_view,TokenKind>::const_iterator it = map_1.find(op1); 
+    svmap<TokenKind>::const_iterator it = map_1.find(op1); 
     if(it != map_1.end()){
         advance(1);
-        return Token(it->second,op1,start_loc);
+        return intern_token(it->second, op1, start_loc);
     }
 
     // 如果没有匹配到任何操作符，返回错误
-    std::string msg = std::string("Unknown operator: '") + ch + "'";
+    std::string msg = std::string("Unknown operator: '") + curr_char() + "'";
     add_error(msg);
     advance();
-    return Token(TokenKind::Unknown, op1, start_loc);
+    return intern_token(TokenKind::Unknown, op1, start_loc);
 }
 
 Token Lexer::read_identifier() {
@@ -359,7 +356,7 @@ Token Lexer::read_identifier() {
         add_error(std::string("Expected identifier, found '") + curr_char() + "'");
         std::string_view val(source_.data() + s_pos, 1);
         advance();
-        return Token(TokenKind::Unknown, val, start_loc);
+        return intern_token(TokenKind::Unknown, val, start_loc);
     }
     
     // 读取标识符：字母、数字、下划线
@@ -369,18 +366,22 @@ Token Lexer::read_identifier() {
     
     std::string_view value = std::string_view(source_).substr(s_pos, pos_ - s_pos);
     
-    // 使用 KEYWORD 宏检查关键字
-    #define X(kind, str) if (value == str) return Token(TokenKind::kind, value, start_loc);
-    KEYWORD
+    // 使用 KEYWORD 宏构建透明查找表，统一检查关键字
+    #define X(kind, str) {str, TokenKind::kind},
+    static const svmap<TokenKind> keyword_map = { KEYWORD };
     #undef X
+    auto kit = keyword_map.find(value);
+    if (kit != keyword_map.end()) {
+        return intern_token(kit->second, value, start_loc);
+    }
     
     // 检查内置字面量
     if (value == "true" || value == "false") {
-        return Token(TokenKind::BoolLiteral, value, start_loc);
+        return intern_token(TokenKind::BoolLiteral, value, start_loc);
     }
     
     // 如果不是关键字，就是普通标识符
-    return Token(TokenKind::Identifier, value, start_loc);
+    return intern_token(TokenKind::Identifier, value, start_loc);
 }
 
 Token Lexer::next_token() {
@@ -592,8 +593,9 @@ std::string_view Lexer::translate_escape_sequences(const std::string_view& input
         }
     }
     
-    translated_strings_.push_back(std::move(result));
-    return std::string_view(translated_strings_.back());
+    // 写入统一字符串池（替代原先 lexer 私有的 translated_strings_ 向量），
+    // 返回的视图在整个编译期都有效
+    return pool_.insert(result);
 }
 
 }//namespace vo

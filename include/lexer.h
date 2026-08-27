@@ -1,6 +1,7 @@
 #pragma once
 #include "token.h"
 #include "diagnostic.h"
+#include "string_pool.h"
 #include <vector>
 #include <string>
 #include <string_view>
@@ -9,8 +10,10 @@ namespace vo {
 
 class Lexer {
     public:
-    Lexer(const std::string &source,const std::string &filename="<input>"):
-        source_(source),filename_(filename){};
+    // 统一字符串池由外部（编译驱动）持有，lexer 只引用它，
+    // 这样转义后的字符串字面量与其他阶段共享同一份存储
+    Lexer(const std::string &source, StringPool &pool, const std::string &filename="<input>"):
+        source_(source), pool_(pool), filename_(filename){};
 
     Token next_token();
     std::string_view get_source_range(const size_t& start, const size_t& end) {
@@ -30,10 +33,14 @@ class Lexer {
     inline bool is_eof(){
         return pos_>=source_.size();
     }
+    // 将 token 值写入统一字符串池并返回稳定视图
+    Token intern_token(TokenKind kind, std::string_view val, const Location &loc) {
+        return Token(kind, pool_.insert(val), loc);
+    }
     private:
     std::string source_;
+    StringPool &pool_;
     std::string filename_;
-    std::vector<std::string> translated_strings_;
 
     int lin_=1;
     int col_=1;
