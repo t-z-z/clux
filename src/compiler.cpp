@@ -12,7 +12,7 @@ bool compile(const std::string& source, const std::string& filename) {
     StringPool pool;
     Lexer lexer(source, pool, filename);
     CompUnit cu;
-    Parser parser(lexer, cu);
+    Parser parser(lexer, cu, pool);
     CompUnit* pcu = parser.parse();
     if (!pcu) return false;
     if (parser.has_error()) {

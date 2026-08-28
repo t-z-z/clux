@@ -408,7 +408,7 @@ Token Lexer::next_token() {
 }
 
 //翻译支持：\n \r \t \\ \' \" \a \b \f \v \0 \ooo \xhh \uXXXX \UXXXXXXXX
-std::string_view Lexer::translate_escape_sequences(const std::string_view& input) {
+std::string_view Lexer::translate_escape_sequences(std::string_view input) {
     std::string result;
     result.reserve(input.size());
     // 基本转义字符映射表
@@ -421,7 +421,7 @@ std::string_view Lexer::translate_escape_sequences(const std::string_view& input
         char ch = input[i];
         if (ch=='\\' && i + 1 < input.length()) {
             char next = input[i + 1];
-            // ===== 1. 处理基本转义字符 =====
+            // 处理基本转义字符
             std::unordered_map<char, char>::const_iterator
                 it = basicEscapeMap.find(next);
             if (it != basicEscapeMap.end()) {
@@ -429,7 +429,7 @@ std::string_view Lexer::translate_escape_sequences(const std::string_view& input
                 i++;
                 continue;
             }
-            // ===== 2. 处理八进制转义 \ooo =====
+            // 处理八进制转义 \ooo
             if (next >= '0' && next <= '7') {
                 int octalValue = 0;
                 size_t j = i + 1;
@@ -448,7 +448,7 @@ std::string_view Lexer::translate_escape_sequences(const std::string_view& input
                     add_error("invalid octal escape sequence");
                 }
             }
-            // ===== 3. 处理十六进制转义 \xhh =====
+            // 处理十六进制转义 \xhh 
             if (next=='x' && i + 2 < input.length()) {
                 int hexValue = 0;
                 size_t j = i + 2;
@@ -475,7 +475,7 @@ std::string_view Lexer::translate_escape_sequences(const std::string_view& input
                     add_error("invalid hexadecimal escape sequence");
                 }
             }
-            // ===== 4. 处理 Unicode 转义 \uXXXX =====
+            // 处理 Unicode 转义 \uXXXX
             if (next=='u' && i + 5 < input.length()) {
                 uint32_t unicodeValue = 0;
                 bool valid = true;
@@ -515,7 +515,7 @@ std::string_view Lexer::translate_escape_sequences(const std::string_view& input
                     add_error("invalid Unicode escape sequence");
                 }
             }
-            // ===== 5. 处理扩展 Unicode 转义 \UXXXXXXXX =====
+            // 处理扩展 Unicode 转义 \UXXXXXXXX
             if (next=='U' && i + 9 < input.length()) {
                 uint32_t unicodeValue = 0;
                 bool valid = true;
@@ -555,7 +555,7 @@ std::string_view Lexer::translate_escape_sequences(const std::string_view& input
                     add_error("invalid extended Unicode escape sequence");
                 }
             }
-            // ===== 6. 处理控制字符 \cX =====
+            // 处理控制字符 \cX
             if (next=='c' && i + 2 < input.length()) {
                 char control = input[i + 2];
                 if (control >= 'A' && control <= 'Z') {
@@ -570,19 +570,19 @@ std::string_view Lexer::translate_escape_sequences(const std::string_view& input
                     add_error("invalid control character");
                 }
             }
-            // ===== 7. 处理八进制转义（带反斜杠和问号） =====
+            // 处理八进制转义（带反斜杠和问号）
             if (next=='?') {
                 result.push_back('?');
                 i++;
                 continue;
             }
-            // ===== 8. 处理行继续符（反斜杠后跟换行） =====
+            // 处理行继续符（反斜杠后跟换行）
             if (next=='\n') {
                 // 忽略反斜杠和换行符（行继续）
                 i++;
                 continue;
             }
-            // ===== 9. 未知转义序列 =====
+            // 未知转义序列
             // 保留反斜杠和下一个字符
             result.push_back('\\');
             result.push_back(next);
@@ -593,7 +593,7 @@ std::string_view Lexer::translate_escape_sequences(const std::string_view& input
         }
     }
     
-    // 写入统一字符串池（替代原先 lexer 私有的 translated_strings_ 向量），
+    // 写入统一字符串池
     // 返回的视图在整个编译期都有效
     return pool_.insert(result);
 }

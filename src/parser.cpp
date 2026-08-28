@@ -387,16 +387,19 @@ bool Parser::parse_modifier_directive(ModfList& defaults) {
 Operator* Parser::parse_operator_overload(ModfList &ml, Location &loc) {
     if (curr().kind != TokenKind::Operator) return nullptr;
     advance();
+    std::string_view name = curr().get_val();
     OpKind kind = parse_operator();
     if (kind == OpKind::Unknown) {
         if (curr().kind == TokenKind::ParenL
                 && peek().kind == TokenKind::ParenR) {
             kind = OpKind::Paren;
             advance(2);
+            name = "()";
         }else if (curr().kind == TokenKind::BracketL
                 && peek().kind == TokenKind::BracketR) {
             kind = OpKind::Index;
             advance(2);
+            name = "[]";
         }else {
             add_error("expected operator after \"operator\"");
         }
@@ -422,6 +425,7 @@ Operator* Parser::parse_operator_overload(ModfList &ml, Location &loc) {
     }
     return cu_.add_node<Operator>(
             loc, kind,
+            name,
             std::move(ml),
             std::move(tpls),
             std::move(params),
@@ -448,9 +452,7 @@ OpKind Parser::parse_operator() {
 SpecialMethod* Parser::parse_special_method_decl(ModfList &ml, Location &loc) {
     TokenKind tok_kind = curr().kind;
     SpecialMethod::Kind kind = SpecialMethod::Kind::Conversion;
-    if (tok_kind == TokenKind::Init){
-        kind = SpecialMethod::Kind::Init;
-    } else if (tok_kind == TokenKind::Drop){
+    if (tok_kind == TokenKind::Drop){
         kind = SpecialMethod::Kind::Drop;
     } else if (tok_kind == TokenKind::Ref){
         kind = SpecialMethod::Kind::Ref;
@@ -769,14 +771,14 @@ Stmt* Parser::parse_for_stmt() {
         if (!collection) {
             add_error("expected collection expression after 'in'");
             collection = cu_.add_node<Expr>(
-                loc, Expr::Identifier{""}
+                loc, Expr::Identifier{}
             );
         }
         Stmt* body = parse_stmt();
         if (!body) {
             add_error("expected body statement for for-in loop");
             body = cu_.add_node<Stmt>(
-                loc, Stmt::Block{{}}
+                loc, Stmt::Block{}
             );
         }
         return cu_.add_node<Stmt>(

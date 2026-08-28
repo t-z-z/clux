@@ -22,15 +22,14 @@ inputwp-<T>(const string-& prompt, T-& data) bool r
 ```vo
 main(){
     int a = 0
-    type T = type(a)
-    T b = 0
-    let p
-    p = T
-    p = type(b)
+    type t = type(a)
+    mt::type T = t
+    mt::var b = mt::build(t 0)
+    mt::var c = mt::build(T 0)
 }
 ```
 
-动态组合的继承规则与类是一样的
+允许组合，迭代
 
 ```vo
 import voinput
@@ -41,48 +40,17 @@ import voinput
     string s
 }
 main(){
-    type a=@foo #bar {
-        bool baz
-    }
+    mt::type a = mt::struct(foo,bar)
 
-    // 允许进行迭代
-    type x = int
+    mt::type x = type._int
     int cnt = 1
-    input(\&a)
+    input(cnt-&)
     for int i=0; i<cnt; i+=1{
-        x = @{x p int n}
+        x = mt::struct(x type._int)
     }
-    return
-}
-```
-
-使用len和size来获取元类型的字段数量和占用内存大小
-
-```vo
-@foo{int x int y}
-@bar{}
-
-main() {
-    type T = @{int a bool b}
-    
-    let count = T.len   // 2
-    let size = T.size   // 8（假设对齐=4）
-    
-    // 字段访问
-    type U = T[0]       // int
-    type V = T[1]       // bool
-    type W = T[2]       // panic!
-    
-    // 安全使用
-    if T.len > 0 {
-        type First = T[0]
-        First x = 10
+    for int i=0; i<cnt; i+=1{
+        x = x[0]
     }
-
-    // 修饰符获取使用 T.modifier[]
-    type K = @foo#bar{int baz = 42}
-    K c
-    type x = T.modifier[0][1]   // int
 }
 ```
 
@@ -90,9 +58,9 @@ main() {
 
 ```vo
 main() {
-    type a = type-*
-    type b = a-*    // type-**
-    b x = b
+    mt::type a = mt::ptr(type._int)
+    mt::type b = mt::arr(type._int)
+    mt::type c = mt::func(mt::params(type._int)mt::returns(type._int))
 }
 ```
 

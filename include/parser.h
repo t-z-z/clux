@@ -15,7 +15,7 @@ namespace vo {
 
 class Parser {
 public:
-    Parser(Lexer &lexer, CompUnit &cu): lexer_(lexer), cu_(cu) {
+    Parser(Lexer &lexer, CompUnit &cu, StringPool &pool): lexer_(lexer), cu_(cu), pool_(pool) {
         dq_.push_back(get_token());
     } 
     CompUnit* parse();
@@ -31,6 +31,7 @@ private:
     std::vector<Diagnostic> warnings_;
     std::deque<Token> dq_;
     size_t walk_pos_ = 0;
+    StringPool& pool_;
 
     int generic_nest_depth = 0;
     Location pending_angle_r_loc;

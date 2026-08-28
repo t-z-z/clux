@@ -66,7 +66,6 @@ namespace vo{
     X(ToFlag, "toflag") \
     X(Modf, "modf") \
     X(Operator, "operator") \
-    X(Init, "INIT") \
     X(Drop, "DROP") \
     X(Ref, "REF") \
     X(Deref, "DEREF") \

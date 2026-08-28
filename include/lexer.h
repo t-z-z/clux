@@ -29,7 +29,7 @@ class Lexer {
     inline size_t get_pos() const {return pos_;}
     inline Location get_location() const {return Location(lin_,col_,filename_);}
     
-    std::string_view translate_escape_sequences(const std::string_view& input);
+    std::string_view translate_escape_sequences(std::string_view input);
     inline bool is_eof(){
         return pos_>=source_.size();
     }

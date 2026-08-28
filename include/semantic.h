@@ -17,13 +17,13 @@ enum class SymbolKind {
     Class,
     Namespace,
 };
-// 符号
+
 struct Symbol {
     SymbolKind kind = SymbolKind::Variable;
-    std::string_view name;       // 视图，指向 AST 中的名字（源字符串/转义缓冲）
+    std::string_view name;  // 视图，指向 AST 中的名字（源字符串/转义缓冲）
     Type* type = nullptr;
     Decl* decl = nullptr;
-    std::string ir_type;        // LLVM IR 类型（可用于代码生成）
+    std::string ir_type;    // LLVM IR 类型（可用于代码生成）
     Symbol() = default;
     Symbol(SymbolKind k, std::string_view n, Type* t = nullptr, Decl* d = nullptr, std::string ir = "")
         : kind(k), name(n), type(t), decl(d), ir_type(std::move(ir)) {}
@@ -42,83 +42,78 @@ struct Symbol {
     }
 };
 
-// 作用域
+
 class SymbolTable;   // Scope 与 SymbolTable 互相引用，先前置声明
 
-class Scope {
-    SymbolTable& st_;           // 所属符号表
-    Scope* parent_ = nullptr;
-public:
-    // 键为 string_view：符号名来自词法阶段统一池，生命周期覆盖整个分析
-    svmap<Symbol> symbols_;
-    svmap<ASTNode*> generics_;
-    // 禁止拷贝/移动
-    Scope(const Scope&) = delete;
-    Scope& operator=(const Scope&) = delete;
-
-    // 构造/析构、insert/lookup 在函数末尾统一定义（需要完整的 SymbolTable）
-    Scope(SymbolTable& st);
-    ~Scope();
-    bool insert(Symbol sym);
-    Symbol* lookup(const std::string_view& name);
-    Scope* parent() const { return parent_; }
+struct Scope {
+    Scope* parent = nullptr;
+    svmap<Symbol> symbols;
+    svmap<ASTNode*> generics;
+    Scope() = default;
+    explicit Scope(Scope* p) : parent(p) {}
+    bool insert(Symbol sym) {
+        auto it = symbols.find(sym.name);
+        if (it != symbols.end()) {
+            // 变量允许覆盖
+            if (it->second.kind == SymbolKind::Variable && sym.kind == SymbolKind::Variable) {
+                it->second = std::move(sym);
+                return true;
+            }
+            return false;  // 非变量重复定义
+        }
+        symbols[sym.name] = std::move(sym);
+        return true;
+    }
+    Symbol* lookup(std::string_view name) {
+        auto it = symbols.find(name);
+        return it == symbols.end() ? nullptr : &it->second;
+    }
+    ASTNode* lookup_generic(std::string_view name) {
+        auto it = generics.find(name);
+        return it == generics.end() ? nullptr : it->second;
+    }
 };
 
 class SymbolTable {
     std::unique_ptr<Scope> root_;
     Scope* current_ = nullptr;
 public:
-    SymbolTable();
-    void set_current_scope(Scope* s) { current_ = s; }
+    SymbolTable() {
+        root_ = std::make_unique<Scope>();
+        current_ = root_.get();
+    }
+    Scope* push_scope() {
+        Scope* s = new Scope(current_);
+        current_ = s;
+        return s;
+    }
+    void pop_scope() {
+        if (current_ && current_ != root_.get()) {
+            Scope* dead = current_;
+            current_ = dead->parent;
+            delete dead;
+        }
+    }
     Scope* current_scope() const { return current_; }
-    // Scope 通过构造函数自动注册，不需要手动 push/pop
-    Symbol* lookup(const std::string_view& name) {
-        for (Scope* s = current_; s; s = s->parent()) {
+    bool insert(Symbol sym) {
+        return current_ ? current_->insert(std::move(sym)) : false;
+    }
+    Symbol* lookup(std::string_view name) {
+        for (Scope* s = current_; s; s = s->parent) {
             if (Symbol* sym = s->lookup(name)) return sym;
         }
         return nullptr;
     }
-    bool insert(Symbol sym) {
-        return current_ ? current_->insert(std::move(sym)) : false;
+    void add_generic(std::string_view name, ASTNode* node) {
+        if (current_) current_->generics[name] = node;
     }
-    void add_generic(const std::string_view& name, ASTNode* decl) {
-        current_->generics_[name] = decl;
-    }
-    ASTNode* lookup_generic(const std::string_view& name) {
-        for (Scope* s = current_; s; s = s->parent()) {
-            auto it = s->generics_.find(name);
-            if (it != s->generics_.end()) return it->second;
+    ASTNode* lookup_generic(std::string_view name) {
+        for (Scope* s = current_; s; s = s->parent) {
+            if (ASTNode* node = s->lookup_generic(name)) return node;
         }
         return nullptr;
     }
 };
-
-// 两个类型均已完整，定义互相依赖的成员函数
-inline Scope::Scope(SymbolTable& st) : st_(st), parent_(st.current_scope()) {
-    st_.set_current_scope(this);
-}
-inline Scope::~Scope() {
-    st_.set_current_scope(parent_);
-}
-inline bool Scope::insert(Symbol sym) {
-    // variable 可以直接覆盖，语言特性
-    auto it = symbols_.find(sym.name);
-    if (it !=symbols_.end() &&
-     !(it->second.kind == SymbolKind::Variable && sym.kind == SymbolKind::Variable)) {
-        if (symbols_.count(sym.name)) return false;
-    }
-    symbols_[sym.name] = std::move(sym);
-    return true;
-}
-inline Symbol* Scope::lookup(const std::string_view& name) {
-    auto it = symbols_.find(name);
-    return it == symbols_.end() ? nullptr : &it->second;
-}
-inline SymbolTable::SymbolTable() {
-    root_ = std::make_unique<Scope>(*this);
-    current_ = root_.get();
-}
-
 // 重载
 struct OverloadCandidate {
     std::string name;
@@ -128,6 +123,9 @@ struct OverloadCandidate {
     Decl* decl = nullptr;
     Type* return_type = nullptr;
     bool has_body = false;
+    bool has_template_params = false;
+    size_t template_count = 0;
+    // 模板参数名列表其实并不需要
 };
 
 struct CallResolution {
@@ -142,7 +140,6 @@ struct CallResolution {
     std::string message;
 };
 
-// 语义分析器
 class SemanticAnalyzer : public ASTVisitor {
 public:
     explicit SemanticAnalyzer(CompUnit& cu) : cu_(cu) {}
@@ -151,7 +148,6 @@ public:
     bool has_error() const { return has_error_; }
     const std::vector<Diagnostic>& diagnostics() const { return diagnostics_; }
 
-    // 查询接口（供代码生成使用）
     const SymbolTable& symbol_table() const { return symbols_; }
     const auto& overload_map() const { return overload_map_; }
     const auto& class_overload_maps() const { return class_overload_maps_; }
@@ -161,6 +157,8 @@ public:
 
     using ASTVisitor::visit;
 
+    void scope_in() override;
+    void scope_in() override;
     void visit(CompUnit& cu) override;
     // 声明
     void visit(Decl& decl) override;
@@ -220,22 +218,43 @@ private:
 
     Type* make_type(const Location& loc, Type::Variant v);
     std::string type_to_ir(Type& t) const;
-    std::string build_decl_key(const std::vector<Decl*>& params);
+    std::string build_decl_key(const std::vector<VarList*>& params);
     std::string build_call_key(const std::vector<Expr*>& args);
 
-    void collect_top_level();
+    void collect();
+    void collect_decl(Decl*);
     void register_func(Func* f, const std::string& ns_name = "");
     void register_special(SpecialMethod* sm, const std::string& ns_name = "");
-    void add_candidate(...);
+    void register_method(Func* f, Class* cls);
     void resolve_call(Expr* call, Expr::Call& c);
-    const OverloadCandidate* match_candidates(...) const;
+    const OverloadCandidate* match_candidates(
+        const std::string& name,
+        const std::string& key,
+        const std::vector<Expr*>& args,
+        const std::vector<OverloadCandidate>& candidates);
     void set_expr_type(Expr* e, Type* t);
     Type* element_type(Type* t);
-    std::string special_name(SpecialMethod& sm);
     void check_type(Type& t);
-    bool is_known_type(const std::string& name);
-    Type* find_field_type(const std::string& cls, const std::string& field);
-    bool is_field_readonly(const std::string& cls, const std::string& field);
+    struct FieldInfo {Type* type; bool is_readonly;
+    } get_field_info(const std::string& cls, const std::string& field);
+    struct TemplateDeduction {
+        std::string param_name;
+        // 二选一
+        Type* type = nullptr;
+        Expr* expr = nullptr;
+        
+        // 推导来源（用于诊断）
+        std::string deduced_from; // 从哪个参数推导的
+        Location deduced_loc;
+        
+        bool is_deduced() const { return type != nullptr || expr != nullptr; }
+    };
+    bool can_instantiate(const OverloadCandidate& cand, 
+        const std::vector<Expr*>& args, std::vector<TemplateDeduction>& deductions);
+    bool deduce_template_params(const Func* f,
+        const std::vector<Expr*>& args, std::vector<TemplateDeduction>& deductions);
+Type* substitute_type(Type* t, const std::vector<TemplateDeduction>& deductions);
+
 };
 
 } // namespace vo

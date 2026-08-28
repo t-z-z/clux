@@ -61,218 +61,16 @@ void SemanticAnalyzer::check_type(Type& t) {
         if (f->return_type) check_type(*f->return_type);
     }
 }
-/*
-// 第一遍：收集顶层符号（支持前向引用）
 
-void SemanticAnalyzer::collect_top_level() {
-    has_imports_or_keep_ = false;
-    imports_metatype_ = false;
-    for (auto& imp : cu_.imports) {
-        if (imp->no) continue;
-        has_imports_or_keep_ = true;
-        if (imp->path == "metatype") imports_metatype_ = true;
-    }
-    
-    for (auto& d : cu_.decls) {
-        if (d->is_nested) continue;
-        switch (d->kind) {
-            case DeclKind::Func: {
-                register_func(static_cast<Func*>(d.get()));
-                break;
-            }
-            case DeclKind::Extern: {
-                Extern* ex = static_cast<Extern*>(d.get());
-                for (auto* m : ex->members)
-                    if (m->kind == DeclKind::Func)
-                        register_func(static_cast<Func*>(m));
-                break;
-            }
-            case DeclKind::Class: {
-                Class* c = static_cast<Class*>(d.get());
-                Symbol s;
-                s.kind = SymbolKind::Class;
-                s.name = c->name;
-                s.decl = c;
-                symbols_.insert(std::move(s));
-                break;
-            }
-            case DeclKind::Namespace: {
-                Namespace* ns = static_cast<Namespace*>(d.get());
-                Symbol s;
-                s.kind = SymbolKind::Namespace;
-                s.name = ns->name;
-                s.decl = ns;
-                symbols_.insert(std::move(s));
-                // 预注册命名空间内函数，保证 ns::fn 可在任意位置解析
-                for (auto* m : ns->members) {
-                    if (m->kind == DeclKind::Func)
-                        register_func(static_cast<Func*>(m), ns->name);
-                    else if (m->kind == DeclKind::SpecialMethod)
-                        register_special(static_cast<SpecialMethod*>(m), ns->name);
-                }
-                // namespace <name>: 把命名空间顶层变量注册进 root 作用域（hoisted）
-                if (std::find_if(cu_.using_namespaces.begin(), cu_.using_namespaces.end(),
-                                 [&](const CompUnit::UsingNamespace& u) {
-                                     return u.name == ns->name;
-                                 }) != cu_.using_namespaces.end()) {
-                    for (auto* m : ns->members) {
-                        if (m->kind != DeclKind::VarList) continue;
-                        VarList* vl = static_cast<VarList*>(m);
-                        if (vl->type) check_type(*vl->type);
-                        std::string rt = vl->type ? type_string(*vl->type) : "";
-                        for (auto& v : vl->vars) {
-                            Symbol vs;
-                            vs.kind = SymbolKind::Variable;
-                            vs.name = v.name;
-                            vs.type = vl->type;
-                            vs.rust_type = rt;
-                            symbols_.insert(std::move(vs)); // 冲突时跳过（顶层同名优先）
-                        }
-                    }
-                }
-                break;
-            }
-            case DeclKind::Ref: {
-                Ref* r = static_cast<Ref*>(d.get());
-                Symbol s;
-                s.kind = SymbolKind::TypeAlias;
-                s.name = r->name;
-                s.decl = r;
-                symbols_.insert(std::move(s));
-                break;
-            }
-            case DeclKind::Keep:
-                has_imports_or_keep_ = true;
-                break;
-            default:
-                break;
-        }
-    }
-    // 校验 using 指令引用的命名空间确实存在
-    for (const auto& u : cu_.using_namespaces) {
-        Symbol* s = symbols_.lookup(u.name);
-        if (!s || s->kind != SymbolKind::Namespace)
-            error(u.loc, "using namespace '" + u.name + "' is not defined in this file");
-    }
-    
-}
-
-void SemanticAnalyzer::add_candidate(std::vector<OverloadCandidate>& vec, const std::string& name,
-                                     const std::string& key, Decl* decl, Type* return_type, bool has_body) {
-    for (auto& c : vec) {
-        if (c.key == key) {
-            // 前向声明 + 定义：保留带函数体的那个
-            if (c.has_body && has_body) {
-                error(decl->loc, "duplicate definition of '" + name + "' with the same parameter types");
-            } else if (has_body) {
-                c.decl = decl;
-                c.has_body = true;
-                c.return_type = return_type;
-            }
-            return;
-        }
-    }
-    OverloadCandidate cand;
-    cand.name = name;
-    cand.mangled = name + "__" + sanitize_ident(key);
-    cand.key = key;
-    
-    cand.param_count = (decl->kind == DeclKind::Func)
-        ? count_param_vars(static_cast<Func*>(decl)->params)
-        : count_param_vars(static_cast<SpecialMethod*>(decl)->params);
-    
-        cand.decl = decl;
-    cand.return_type = return_type;
-    cand.has_body = has_body;
-    vec.push_back(std::move(cand));
-}
-
-void SemanticAnalyzer::register_func(Func* f, const std::string& ns_name) {
-    std::string key = build_decl_key(f->params);
-    std::vector<OverloadCandidate>* vec;
-    if (ns_name.empty())
-        vec = &overload_map_[f->name];
-    else
-        vec = &namespace_overload_maps_[ns_name][f->name];
-    //add_candidate(*vec, f->name, key, f, f->return_type, f->body != nullptr);
-
-    if (!ns_name.empty()) return;
-    // 顶层函数符号（供调用侧区分函数/变量）
-    Scope* sc = symbols_.current_scope();
-    Symbol* s = sc->lookup(f->name);
-    if (!s) {
-        Symbol sym;
-        sym.kind = SymbolKind::Function;
-        sym.name = f->name;
-        sym.first_func = f;
-        sym.func_count = 1;
-        sc->insert(std::move(sym));
-    } else if (s->kind == SymbolKind::Function) {
-        s->first_func = f;
-        s->func_count++;
-    }
-}
-
-void SemanticAnalyzer::register_special(SpecialMethod* sm, const std::string& ns_name) {
-    std::string mname = special_name(*sm);
-    std::string key = build_decl_key(sm->params);
-    std::vector<OverloadCandidate>* vec;
-    if (ns_name.empty())
-        vec = &overload_map_[mname];
-    else
-        vec = &namespace_overload_maps_[ns_name][mname];
-    add_candidate(*vec, mname, key, sm, sm->type, sm->body != nullptr);
-}
-
-// 声明分析
-*/
-void SemanticAnalyzer::visit(Decl& decl) {
-
-}
+void SemanticAnalyzer::visit(Decl&) {}
 
 void SemanticAnalyzer::visit_func(Func& f) {
-    Scope scope(symbols_);
-    symbols_.set_current_scope(&scope);
-    for (auto& tp : f.templates) {
-        symbols_.add_generic(tp.name, tp.dft);
-    }
-    for (auto* vl : f.params) {
-        if (vl && vl->type) check_type(*vl->type);
-    }
-    for (auto* rt : f.returns) {
-        if (rt && rt->type) check_type(*rt->type);
-    }
-    for (auto* vl : f.params) {
-        if (!vl) continue;
-        if (vl->type) {
-            std::string ir_type = type_to_ir(*vl->type);
-            for (auto& v : vl->vars) {
-                Symbol sym = Symbol(SymbolKind::Variable, v.name, vl->type, vl, ir_type);
-            }
-        }
-    }
-    for (auto* vl : f.returns) {
-        if (!vl) continue;
-        if (vl->type) {
-            std::string ir_type = type_to_ir(*vl->type);
-            for (auto& v : vl->vars) {
-                Symbol sym = Symbol(SymbolKind::Variable, v.name, vl->type, vl, ir_type);
-            }
-        }
-    }
-    // scope 折构 自动弹出
 }
 
 void SemanticAnalyzer::visit_operator(Operator& op) {
-    visit_func(op);
 }
 
 void SemanticAnalyzer::visit_special_method(SpecialMethod& f){
-    Scope scope(symbols_);
-    symbols_.set_current_scope(&scope);
-    if (f.conv && f.conv->type) {
-        if (f.conv->type) check_type(*f.conv->type);
-    }
 }
 
 void SemanticAnalyzer::visit_var_list(VarList& vl) {
@@ -296,30 +94,6 @@ void SemanticAnalyzer::visit_var_list(VarList& vl) {
 }
 
 void SemanticAnalyzer::visit_class(Class& c) {
-    Scope scope(symbols_);
-    symbols_.set_current_scope(&scope);
-    for (auto& tp : c.templates) {
-        symbols_.add_generic(tp.name, tp.dft);
-    }
-    for (Decl* m : c.members) {
-        if (!c.can_contain(m)) {
-            error(m->loc, "invalid member " + std::string(m->name) + " in class");
-            continue;
-        }
-        Symbol sym;
-        if (m->kind == DeclKind::Class) {
-            sym.kind = SymbolKind::Class;
-        } else if (m->kind == DeclKind::VarList) {
-            sym.kind = SymbolKind::Variable;
-        } else if (m->kind == DeclKind::Func) {
-            sym.kind = SymbolKind::Function;
-        } else if (m->kind == DeclKind::SpecialMethod) {
-            continue;
-        } else if (m->kind == DeclKind::Enum) {
-
-        }
-        sym.decl = m; sym.name = m->name;
-    }
 }
 
 // 以下 visit_* 在语义分析骨架阶段尚未实现，提供空实现以保证可链接。
@@ -354,4 +128,464 @@ std::string SemanticAnalyzer::type_to_ir(Type& t) const {
     return "";
 }
 
+std::string SemanticAnalyzer::type_to_ir(Type& t) const {
+    if (auto* p = t.get_primitive()) {
+        switch (p->kind) {
+            case PrimitiveTypeKind::Int8: return "i8";
+            case PrimitiveTypeKind::Short: return "i16";
+            case PrimitiveTypeKind::Int: return "i32";
+            case PrimitiveTypeKind::Long: return "i64";
+            case PrimitiveTypeKind::Int128: return "i128";
+            case PrimitiveTypeKind::UInt8: return "i8";
+            case PrimitiveTypeKind::UShort: return "i16";
+            case PrimitiveTypeKind::UInt: return "i32";
+            case PrimitiveTypeKind::ULong: return "i64";
+            case PrimitiveTypeKind::UInt128: return "i128";
+            case PrimitiveTypeKind::Float16: return "half";
+            case PrimitiveTypeKind::Float: return "float";
+            case PrimitiveTypeKind::Double: return "double";
+            case PrimitiveTypeKind::Char: return "i8";
+            case PrimitiveTypeKind::UChar: return "i8";
+            case PrimitiveTypeKind::Bool: return "i1";
+            case PrimitiveTypeKind::Type: return "i64";
+            case PrimitiveTypeKind::Void: return "void";
+            case PrimitiveTypeKind::Enum: return "i32";
+        }
+        return "";
+    }
+    
+    if (auto* ptr = t.get_pointer()) {
+        return type_to_ir(*ptr->pointee) + "*";
+    }
+    
+    if (auto* ref = t.get_reference()) {
+        return type_to_ir(*ref->target) + "*";
+    }
+    
+    if (auto* arr = t.get_array()) {
+        std::string elem = type_to_ir(*arr->element);
+        if (arr->length) {
+            return "[" + std::to_string(0) + " x " + elem + "]";
+        }
+        return elem + "*";
+    }
+    
+    if (auto* func = t.get_func()) {
+        std::string result;
+        if (func->return_type) {
+            result = type_to_ir(*func->return_type);
+        } else {
+            result = "void";
+        }
+        result += " (";
+        for (size_t i = 0; i < func->params.size(); ++i) {
+            if (i > 0) result += ", ";
+            result += type_to_ir(*func->params[i]);
+        }
+        result += ")*";
+        return result;
+    }
+    
+    if (auto* custom = t.get_custom()) {
+        return std::string(custom->name);
+    }
+    
+    if (t.is_void()) {
+        return "void";
+    }
+    
+    return "";
+}
+
+std::string SemanticAnalyzer::build_decl_key(const std::vector<VarList*>& params) {
+    std::string key;
+    for (const auto* param : params) {
+        if (!param || !param->type) {
+            key += "_";
+        } else if (param->type->is_inferred()) {
+            key += "_";
+        } else {
+            key += type_to_ir(*param->type);
+        }
+    }
+    return key;
+}
+
+std::string SemanticAnalyzer::build_call_key(const std::vector<Expr*>& args) {
+    std::string key;
+    for (const auto* arg : args) {
+        if (!arg || !arg->type) {
+            key += "_";
+        } else if (arg->type->is_inferred()) {
+            key += "_";
+        } else {
+            key += type_to_ir(*arg->type);
+        }
+    }
+    return key;
+}
+
+void SemanticAnalyzer::collect() {
+    for (Decl* decl : cu_.top_decls) {
+        collect_decl(decl);
+    }
+}
+
+void SemanticAnalyzer::collect_decl(Decl* decl) {
+    if (!decl) return;
+    
+    switch (decl->kind) {
+        case DeclKind::VarList: {
+            auto* vl = static_cast<VarList*>(decl);
+            if (vl->type) {
+                check_type(*vl->type);
+            }
+            for (auto& v : vl->vars) {
+                Symbol sym(SymbolKind::Variable, std::string(v.name), vl->type, vl);
+                if (symbols_.lookup(std::string(v.name))) {
+                    if (symbols_.lookup(std::string(v.name))->kind != SymbolKind::Variable) {
+                        error(vl->loc, "name '" + std::string(v.name) + "' already declared");
+                    }
+                } else {
+                    symbols_.insert(std::move(sym));
+                }
+            }
+            break;
+        }
+        
+        case DeclKind::Func: {
+            auto* f = static_cast<Func*>(decl);
+            if (current_class_) {
+                register_method(f, current_class_);
+            } else {
+                register_func(f);
+            }
+            break;
+        }
+        
+        case DeclKind::Class: {
+            auto* c = static_cast<Class*>(decl);
+            Class* saved = current_class_;
+            svmap<std::vector<OverloadCandidate>>* saved_overloads = current_class_overloads_;
+            
+            current_class_ = c;
+            current_class_overloads_ = &class_overload_maps_[std::string(c->name)];
+            
+            if (symbols_.lookup(std::string(c->name))) {
+                error(c->loc, "class name already declared: " + std::string(c->name));
+            } else {
+                Symbol sym(SymbolKind::Class, std::string(c->name), nullptr, c);
+                symbols_.insert(std::move(sym));
+                cu_.register_type(c->name, c);
+            }
+            
+            for (Decl* member : c->members) {
+                if (member->kind == DeclKind::VarList) {
+                    auto* vl = static_cast<VarList*>(member);
+                    for (auto& v : vl->vars) {
+                        current_class_fields_.insert(std::string(v.name));
+                        if (vl->modfs.has(ModfKind::Readonly)) {
+                            current_class_readonly_fields_.insert(std::string(v.name));
+                        }
+                    }
+                }
+                collect_decl(member);
+            }
+            
+            current_class_overloads_ = saved_overloads;
+            current_class_ = saved;
+            break;
+        }
+        
+        case DeclKind::Namespace: {
+            auto* ns = static_cast<Namespace*>(decl);
+            if (symbols_.lookup(std::string(ns->name))) {
+                error(ns->loc, "namespace already declared: " + std::string(ns->name));
+            } else {
+                Symbol sym(SymbolKind::Namespace, std::string(ns->name), nullptr, ns);
+                symbols_.insert(std::move(sym));
+            }
+            
+            for (Decl* member : ns->members) {
+                collect_decl(member);
+            }
+            break;
+        }
+        
+        case DeclKind::Extern: {
+            auto* ext = static_cast<Extern*>(decl);
+            for (Decl* member : ext->members) {
+                collect_decl(member);
+            }
+            break;
+        }
+        
+        case DeclKind::Enum: {
+            auto* e = static_cast<Enum*>(decl);
+            if (symbols_.lookup(std::string(e->name))) {
+                error(e->loc, "enum already declared: " + std::string(e->name));
+            } else {
+                Symbol sym(SymbolKind::Class, std::string(e->name), nullptr, e);
+                symbols_.insert(std::move(sym));
+            }
+            break;
+        }
+        
+        case DeclKind::SpecialMethod: {
+            auto* sm = static_cast<SpecialMethod*>(decl);
+            if (current_class_) {
+                register_special(sm);
+            } else {
+                error(sm->loc, "special method should be contained by class");
+            }
+            break;
+        }
+        
+        case DeclKind::Operator: {
+            auto* op = static_cast<Operator*>(decl);
+            if (current_class_) {
+                register_method(op, current_class_);
+            } else {
+                error(op->loc, "operator overload should be contained by class");
+            }
+            break;
+        }
+        
+        default:
+            break;
+    }
+}
+
+void SemanticAnalyzer::register_func(Func* f, const std::string& ns_name) {
+    std::string full_name = std::string(f->name);
+    if (!ns_name.empty()) {
+        full_name = ns_name + "::" + std::string(f->name);
+    }
+
+    bool has_template_params = !f->templates.empty();
+    std::string key = build_decl_key(f->params);
+
+    auto& candidates = overload_map_[full_name];
+    
+    if (!has_template_params) {
+        for (const auto& c : candidates) {
+            if (!c.has_template_params && c.key == key) {
+                error(f->loc, "duplicate non-template function overload: " + full_name);
+                return;
+            }
+        }
+    }
+
+    OverloadCandidate cand;
+    cand.name = full_name;
+    cand.mangled = full_name + (has_template_params ? "_tpl" : "") + key;
+    cand.key = key;
+    cand.param_count = f->params.size();
+    cand.decl = f;
+    cand.has_body = f->body != nullptr;
+    cand.has_template_params = has_template_params;
+    cand.template_count = f->templates.size();
+    if (!f->returns.empty() && f->returns[0] && f->returns[0]->type) {
+        cand.return_type = f->returns[0]->type;
+    } else {
+        cand.return_type = nullptr;
+    }
+    candidates.push_back(cand);
+
+    if (!symbols_.lookup(full_name)) {
+        Symbol sym(SymbolKind::Function, full_name, nullptr, f);
+        symbols_.insert(std::move(sym));
+    }
+}
+void SemanticAnalyzer::register_method(Func* f, Class* cls) {
+    if (!cls) return;
+    
+    bool has_template_params = !f->templates.empty();
+    std::string key = build_decl_key(f->params);
+
+    if (!current_class_overloads_) {
+        current_class_overloads_ = &class_overload_maps_[std::string(cls->name)];
+    }
+    
+    auto& candidates = (*current_class_overloads_)[std::string(f->name)];
+    
+    if (!has_template_params) {
+        for (const auto& c : candidates) {
+            if (!c.has_template_params && c.key == key) {
+                error(f->loc, "duplicate non-template method overload in class " + std::string(cls->name));
+                return;
+            }
+        }
+    }
+
+    OverloadCandidate cand;
+    cand.name = std::string(f->name);
+    cand.mangled = std::string(cls->name) + "::" + std::string(f->name) + key;
+    cand.key = key;
+    cand.param_count = f->params.size();
+    cand.decl = f;
+    cand.has_body = f->body != nullptr;
+    cand.has_template_params = has_template_params;
+    cand.template_count = f->templates.size();
+    if (!f->returns.empty() && f->returns[0] && f->returns[0]->type) {
+        cand.return_type = f->returns[0]->type;
+    } else {
+        cand.return_type = nullptr;
+    }
+    candidates.push_back(cand);
+}
+
+void SemanticAnalyzer::register_special(SpecialMethod* sm, const std::string& ns_name) {
+    if (!current_class_) {
+        error(sm->loc, "special method outside class");
+        return;
+    }
+    std::string method_name;
+    switch (sm->kind) {
+        case SpecialMethod::Kind::Drop:
+            method_name = "DROP";
+            break;
+        case SpecialMethod::Kind::Ref:
+            method_name = "REF";
+            break;
+        case SpecialMethod::Kind::Deref:
+            method_name = "DEREF";
+            break;
+        case SpecialMethod::Kind::Access:
+            method_name = "ACCESS";
+            break;
+        case SpecialMethod::Kind::Conversion:
+            method_name = "conversion";
+            break;
+        default:
+            return;
+    }
+    std::string key = build_decl_key({});
+    if (!current_class_overloads_) {
+        current_class_overloads_ = &class_overload_maps_[std::string(current_class_->name)];
+    }
+    std::string full_name = "special_" + method_name;
+    auto& candidates = (*current_class_overloads_)[full_name];
+    for (const auto& c : candidates) {
+        if (c.key == key) {
+            error(sm->loc, "duplicate special method: " + method_name);
+            return;
+        }
+    }
+
+    OverloadCandidate cand;
+    cand.name = full_name;
+    cand.mangled = std::string(current_class_->name) + "::" + full_name + key;
+    cand.key = key;
+    cand.param_count = 0;
+    cand.decl = sm;
+    cand.has_body = sm->body != nullptr;
+    cand.has_template_params = false;
+    cand.template_count = 0;
+    if (sm->kind == SpecialMethod::Kind::Conversion && sm->conv && sm->conv->type) {
+        cand.return_type = sm->conv->type;
+    } else {
+        cand.return_type = nullptr;
+    }
+    candidates.push_back(cand);
+}
+
+void SemanticAnalyzer::resolve_call(Expr* call, Expr::Call& c) {
+    std::string callee_name;
+    bool is_method_call = false;
+    Expr* object_expr = nullptr;
+
+    if (auto* member = c.callee->get_member()) {
+        object_expr = member->target;
+        callee_name = std::string(member->member);
+        is_method_call = true;
+    } else if (auto* scope = c.callee->get_scope()) {
+        if (auto* ident = scope->target->get_identifier()) {
+            callee_name = std::string(ident->name) + "::" + std::string(scope->member);
+        } else {
+            callee_name = std::string(scope->member);
+        }
+    } else if (auto* ident = c.callee->get_identifier()) {
+        callee_name = std::string(ident->name);
+    } else {
+        error(call->loc, "invalid callee in function call");
+        return;
+    }
+
+    std::string call_key = build_call_key(c.args);
+
+    const OverloadCandidate* best = nullptr;
+    
+    if (is_method_call) {
+        if (object_expr && object_expr->type) {
+            if (auto* custom = object_expr->type->get_custom()) {
+                std::string class_name = std::string(custom->name);
+                auto class_it = class_overload_maps_.find(class_name);
+                if (class_it != class_overload_maps_.end()) {
+                    auto& method_map = class_it->second;
+                    auto method_it = method_map.find(callee_name);
+                    if (method_it != method_map.end()) {
+                        best = match_candidates(callee_name, call_key, c.args, method_it->second);
+                    }
+                }
+            } else {
+                error(call->loc, "method call on non-class type");
+                return;
+            }
+        } else {
+            error(call->loc, "cannot determine object type for method call");
+            return;
+        }
+    } else {
+        auto it = overload_map_.find(callee_name);
+        if (it != overload_map_.end()) {
+            best = match_candidates(callee_name, call_key, c.args, it->second);
+        }
+    }
+
+    if (!best) {
+        error(call->loc, "no matching function for call to '" + callee_name + "'");
+        return;
+    }
+
+    if (best->return_type) {
+        set_expr_type(call, best->return_type);
+    } else {
+        set_expr_type(call, make_type(call->loc, Type::Void{}));
+    }
+
+    CallResolution res;
+    res.call = call;
+    res.callee_name = callee_name;
+    res.resolved_name = best->name;
+    res.resolved_decl = best->decl;
+    res.return_type = best->return_type;
+    res.is_constructor = false;
+    res.resolved = true;
+    res.ambiguous = false;
+    call_resolutions_.push_back(res);
+}
+
+const OverloadCandidate* SemanticAnalyzer::match_candidates(
+    const std::string& name,
+    const std::string& key,
+    const std::vector<Expr*>& args,
+    const std::vector<OverloadCandidate>& candidates) {
+    (void)name;
+    (void)args;
+
+    std::vector<const OverloadCandidate*> matches;
+    for (const auto& cand : candidates) {
+        if (cand.key == key) {
+            matches.push_back(&cand);
+        }
+    }
+
+    if (matches.empty()) return nullptr;
+    if (matches.size() > 1) {
+        warning(matches[0]->decl->loc, "ambiguous overload, choosing first");
+        return matches[0];
+    }
+    return matches[0];
+}
 } // namespace vo

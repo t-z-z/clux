@@ -237,11 +237,11 @@ foo(const $bool condition const $int expensive_computation) int r=0{
 尾随代码块：函数调用时可直接跟花括号，无需括号括起。
 
 ```vo
-with_lock(mutex) {
+with_lock(mutex)--{
     critical_section()
 }
 // 不可以不加花括号
-with_lock(mutex) critical_section() // 错误
+with_lock(mutex) --critical_section() // 错误
 ```
 
 允许在圆括号中使用 type 来传入类型参数
@@ -393,7 +393,7 @@ UNREF钩子在结束引用时触发
     int[MAXN] nums
     pub:
     int len
-    BigInt(int a){
+    INIT(int a){
         int i=0
         while a {
             nums[i]=a%10
@@ -627,26 +627,30 @@ add(1, 2)
 
 ## 八、编译期反射
 
-可以访问类型标识枚举，还可以访问字段和修饰符，type是一种enum
+可以访问类型标识枚举，还可以访问字段和修饰符，type是一种类
 
 ```vo
 @bar{
     int q
 }
 @foo#bar{
-    type a = type.foo
+    type a = type._foo
 }
 main(){
-    type a = _int
-    type x = _foo._a      // x = type
-    type y = _foo[0]     // y = type
-    int z = sizeof(_foo)     // z = type enum掩码占用字节数 + 4
-    int w = sizeof(_foo 0)   // w = z
-    int v = offset(_foo 1)   // v = type enum掩码占用字节数
+    type x = type._int
+    type y = type._foo._a    // y = type
+    type z = type._foo[0]    // z = type
+    type w = type(a)    // w = type
+    int i = sizeof(_foo)    // i = type enum掩码占用字节数 + 4
+    int j = sizeof(_foo 0)  // j = z
+    int k = offset(_foo 1)  // k = type enum掩码占用字节数
+    int l = sizeof(x)       // l = 4
 }
 ```
 
-在sizeof等内传入变量是不允许的
+如果代码中存在type，将会生成的type枚举，否则生成。
+
+如果代码中存在sizeof(变量)，将会生成运行时存在的sizeof函数，offset同理。
 
 ## 八、导入系统与标准库
 
