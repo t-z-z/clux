@@ -8,6 +8,7 @@
 #include <memory>
 #include <type_traits>
 
+#include "string_view_map.h"
 #include "token.h"
 
 namespace vo{
@@ -37,8 +38,8 @@ struct ASTVisitor;
 
 #define B_IS(a,b) inline bool is_##a() const { return std::holds_alternative<b>(data); }
 #define B_B(p,k) p(const Location& l, k v) : ASTNode(l), data(std::move(v)) {}
-#define B_GET(t,n) inline t* get_##n() { return std::get_if<t>(&data); }
-//t* get_##n() { return std::get_if<t>(&data); }
+#define B_GET(t,n) inline t* get_##n() { return std::get_if<t>(&data); } \
+    inline const t* get_##n() const { return std::get_if<t>(&data); }
 #define BBB(n,t,p) B_IS(n,t) B_B(p,t) B_GET(t,n)
 #define OP_KIND \
     /* 多种可能的的运算符 */\
@@ -229,6 +230,9 @@ struct Type : ASTNode {
         Type *element;
         Expr* length;
     };
+    struct StringLiteral {
+        
+    };
     struct Func {
         std::vector<Type*> params;
         Type *return_type;
@@ -247,6 +251,7 @@ struct Type : ASTNode {
         Primitive,
         Pointer,
         Array,
+        StringLiteral,
         Func,
         Custom,
         Reference,
@@ -259,6 +264,7 @@ struct Type : ASTNode {
     BBB(primitive, Primitive, Type)
     BBB(pointer, Pointer, Type)
     BBB(array, Array, Type)
+    BBB(string_literal, StringLiteral, Type)
     BBB(func, Func, Type)
     BBB(custom, Custom, Type)
     BBB(reference, Reference, Type)
@@ -286,8 +292,6 @@ inline OpKind token_to_op(TokenKind kind) {
             case TokenKind::name: return OpKind::name;
         OP_KIND
         #undef X
-        case TokenKind::AngleL: return OpKind::Less;
-        case TokenKind::AngleR: return OpKind::Greater;
         default: return OpKind::Unknown;
     }
 }
@@ -312,7 +316,6 @@ struct Expr : ASTNode {
     struct Ternary      { Expr* cond; Expr* then_expr; Expr* else_expr; };
     struct Index        { Expr* target; Expr* index; };
     struct Member       { Expr* target; std::string_view member; };
-    struct Scope        { Expr* target; std::string_view member; };
     struct Cast         { Type* target_type; Expr* operand; };
     struct Array        { std::vector<Expr*> members; Expr* fill_value = nullptr; };
     struct Closure      { std::vector<VarList*> params; std::vector<VarList*> returns;
@@ -321,7 +324,7 @@ struct Expr : ASTNode {
     
     using Variant = std::variant<
         Literal, Identifier, Binary, Unary, Assign,
-        Call, Ternary, Index, Member, Scope,
+        Call, Ternary, Index, Member,
         Cast, Array, Closure, PrimitiveType
     >;
     
@@ -340,7 +343,6 @@ struct Expr : ASTNode {
     BBB(ternary, Ternary, Expr)
     BBB(index, Index, Expr)
     BBB(member, Member, Expr)
-    BBB(scope, Scope, Expr)
     BBB(cast, Cast, Expr)
     BBB(array, Array, Expr)
     BBB(closure, Closure, Expr)
@@ -421,7 +423,6 @@ struct Decl : ASTNode {
 
 struct Cont : Decl { // container 容器，用于包含申明
     std::vector<Decl*> members;
-    svmap<Decl*> member_map;
     explicit Cont(const Location &loc, std::string_view n, const DeclKind &k,
         ModfList ml=ModfList(), std::vector<Decl*> m = {}) :
     Decl(loc, n, k, std::move(ml)), members(std::move(m)) {}
@@ -437,12 +438,7 @@ struct Cont : Decl { // container 容器，用于包含申明
             return false;
         }
         members.push_back(member);
-        member_map[member->name] = member;
         return true;
-    }
-    Decl* find_member(std::string_view name) const {
-        auto it = member_map.find(name);
-        return it == member_map.end() ? nullptr : it->second;
     }
 };
 // VarItem 是类型无关的单个变量申明
@@ -587,8 +583,13 @@ struct Enum : Decl {
 
 struct ASTVisitor {
     virtual ~ASTVisitor() = default;
-    virtual void scope_in(){}
+    virtual void scope_in(std::string){}
     virtual void scope_out(){}
+    Expr* current_expr;
+    Func* current_func;
+    Class* current_class;
+    Type* current_type;
+    Stmt* current_stmt;
     void walk(CompUnit& cu) {
         visit(cu);
         for (auto* d : cu.top_decls) {
@@ -604,16 +605,16 @@ struct ASTVisitor {
         walk_children(decl);
     }
     void walk(Expr& expr) {
-        visit(expr);
         walk_children(expr);
+        visit(expr);
     }
     void walk(Stmt& stmt) {
-        visit(stmt);
         walk_children(stmt);
+        visit(stmt);
     }
     void walk(Type& type) {
-        visit(type);
         walk_children(type);
+        visit(type);
     }
     void walk(Modification& mod) {
         visit(mod);
@@ -627,7 +628,6 @@ struct ASTVisitor {
     virtual void visit(Decl&) {}
     virtual void visit_var_list(VarList&) {}
     virtual void visit_func(Func&) {}
-    virtual void visit_operator(Operator&) {}
     virtual void visit_namespace(Namespace&) {}
     virtual void visit_extern(Extern&) {}
     virtual void visit_class(Class&) {}
@@ -645,7 +645,6 @@ struct ASTVisitor {
     virtual void visit_expr_call(Expr::Call&) {}
     virtual void visit_expr_index(Expr::Index&) {}
     virtual void visit_expr_member(Expr::Member&) {}
-    virtual void visit_expr_scope(Expr::Scope&) {}
     virtual void visit_expr_cast(Expr::Cast&) {}
     virtual void visit_expr_array(Expr::Array&) {}
     virtual void visit_expr_closure(Expr::Closure&) {}
@@ -675,6 +674,7 @@ struct ASTVisitor {
     virtual void visit_type_primitive(Type::Primitive&) {}
     virtual void visit_type_pointer(Type::Pointer&) {}
     virtual void visit_type_array(Type::Array&) {}
+    virtual void visit_type_string_literal(Type::StringLiteral&) {}
     virtual void visit_type_func(Type::Func&) {}
     virtual void visit_type_custom(Type::Custom&) {}
     virtual void visit_type_inferred(Type::Inferred&) {}
@@ -697,7 +697,9 @@ struct ASTVisitor {
     }
 
     void walk_children(Func& f) {
-        scope_in();
+        Func* pre = current_func;
+        current_func = &f;
+        scope_in(std::string(f.name));
         visit_func(f);
         for (auto* p : f.params) {
             if (p) walk(*p);
@@ -707,6 +709,7 @@ struct ASTVisitor {
         }
         if (f.body) walk(*f.body);
         scope_out();
+        current_func = pre;
     }
 
     void walk_children(VarList& vl) {
@@ -718,16 +721,19 @@ struct ASTVisitor {
     }
 
     void walk_children(Class& c) {
-        scope_in();
+        Class* pre = current_class;
+        current_class = &c;
+        scope_in(std::string(c.name));
         visit_class(c);
         for (auto* m : c.members) {
             if (m) walk(*m);
         }
         scope_out();
+        current_class = pre;
     }
 
     void walk_children(Namespace& ns) {
-        scope_in();
+        scope_in(std::string(ns.name));
         visit_namespace(ns);
         for (auto* m : ns.members) {
             if (m) walk(*m);
@@ -743,7 +749,7 @@ struct ASTVisitor {
     }
 
     void walk_children(SpecialMethod& sm) {
-        scope_in();
+        scope_in(std::string(sm.name));
         visit_special_method(sm);
         if (sm.body) walk(*sm.body);
         if (sm.conv) walk(*sm.conv);
@@ -752,104 +758,108 @@ struct ASTVisitor {
     void walk_children(Enum&) {}
     void walk_children(Keep&) {}
     void walk_children(Expr& expr) {
+        Expr* pre = current_expr;
+        current_expr = &expr;
         std::visit([this](auto& v) {
             using T = std::decay_t<decltype(v)>;
             if constexpr (std::is_same_v<T, Expr::Binary>) {
-                visit_expr_binary(v);
                 if (v.left) walk(*v.left);
                 if (v.right) walk(*v.right);
+                visit_expr_binary(v);
             } else if constexpr (std::is_same_v<T, Expr::Unary>) {
-                visit_expr_unary(v);
                 if (v.operand) walk(*v.operand);
+                visit_expr_unary(v);
             } else if constexpr (std::is_same_v<T, Expr::Assign>) {
-                visit_expr_assign(v);
                 if (v.target) walk(*v.target);
                 if (v.value) walk(*v.value);
+                visit_expr_assign(v);
             } else if constexpr (std::is_same_v<T, Expr::Call>) {
-                visit_expr_call(v);
                 if (v.callee) walk(*v.callee);
                 for (auto* a : v.args) if (a) walk(*a);
+                visit_expr_call(v);
             } else if constexpr (std::is_same_v<T, Expr::Ternary>) {
-                visit_expr_ternary(v);
                 if (v.cond) walk(*v.cond);
                 if (v.then_expr) walk(*v.then_expr);
                 if (v.else_expr) walk(*v.else_expr);
+                visit_expr_ternary(v);
             } else if constexpr (std::is_same_v<T, Expr::Index>) {
-                visit_expr_index(v);
                 if (v.target) walk(*v.target);
                 if (v.index) walk(*v.index);
+                visit_expr_index(v);
             } else if constexpr (std::is_same_v<T, Expr::Member>) {
+                if (v.target) walk(*v.target);
                 visit_expr_member(v);
-                if (v.target) walk(*v.target);
-            } else if constexpr (std::is_same_v<T, Expr::Scope>) {
-                visit_expr_scope(v);
-                if (v.target) walk(*v.target);
             } else if constexpr (std::is_same_v<T, Expr::Cast>) {
-                visit_expr_cast(v);
                 if (v.operand) walk(*v.operand);
                 if (v.target_type) walk(*v.target_type);
+                visit_expr_cast(v);
             } else if constexpr (std::is_same_v<T, Expr::Array>) {
-                visit_expr_array(v);
                 for (auto* m : v.members) if (m) walk(*m);
                 if (v.fill_value) walk(*v.fill_value);
+                visit_expr_array(v);
             } else if constexpr (std::is_same_v<T, Expr::Closure>) {
-                scope_in();
-                visit_expr_closure(v);
+                scope_in("");
                 for (auto* p : v.params) if (p) walk(*p);
                 for (auto* r : v.returns) if (r) walk(*r);
                 if (v.body) walk(*v.body);
+                visit_expr_closure(v);
                 scope_out();
             }
+            else if constexpr (std::is_same_v<T, Expr::Literal>) visit_expr_literal(v);
+            else if constexpr (std::is_same_v<T, Expr::Identifier>) visit_expr_identifier(v);
         }, expr.data);
+        current_expr = pre;
     }
 
     void walk_children(Stmt& stmt) {
+        Stmt* pre = current_stmt;
+        current_stmt = &stmt;
         std::visit([this](auto& v) {
             using T = std::decay_t<decltype(v)>;
             if constexpr (std::is_same_v<T, Stmt::Block>) {
-                visit_stmt_block(v);
                 for (auto* s : v.stmts) if (s) walk(*s);
+                visit_stmt_block(v);
             } else if constexpr (std::is_same_v<T, Stmt::ExprStmt>) {
-                visit_stmt_expr(v);
                 if (v.expr) walk(*v.expr);
+                visit_stmt_expr(v);
             } else if constexpr (std::is_same_v<T, Stmt::If>) {
-                scope_in();
-                visit_stmt_if(v);
+                scope_in("");
                 if (v.condition) walk(*v.condition);
                 if (v.then_branch) walk(*v.then_branch);
                 if (v.else_branch) walk(*v.else_branch);
+                visit_stmt_if(v);
                 scope_out();
             } else if constexpr (std::is_same_v<T, Stmt::While>) {
-                scope_in();
-                visit_stmt_while(v);
+                scope_in("");
                 if (v.condition) walk(*v.condition);
                 if (v.body) walk(*v.body);
+                visit_stmt_while(v);
                 scope_out();
             } else if constexpr (std::is_same_v<T, Stmt::For>) {
-                scope_in();
-                visit_stmt_for(v);
+                scope_in("");
                 if (v.init) walk(*v.init);
                 if (v.condition) walk(*v.condition);
                 if (v.next) walk(*v.next);
                 if (v.body) walk(*v.body);
+                visit_stmt_for(v);
                 scope_out();
             } else if constexpr (std::is_same_v<T, Stmt::ForIn>) {
-                scope_in();
-                visit_stmt_for_in(v);
+                scope_in("");
                 if (v.collection) walk(*v.collection);
                 if (v.body) walk(*v.body);
+                visit_stmt_for_in(v);
                 scope_out();
             } else if constexpr (std::is_same_v<T, Stmt::VarDecl>) {
-                visit_stmt_var_decl(v);
                 if (v.vars) walk(*v.vars);
+                visit_stmt_var_decl(v);
             } else if constexpr (std::is_same_v<T, Stmt::Spawn>) {
-                scope_in();
-                visit_stmt_spawn(v);
+                scope_in("");
                 if (v.body) walk(*v.body);
+                visit_stmt_spawn(v);
                 scope_out();
             } else if constexpr (std::is_same_v<T, Stmt::Wait>) {
-                visit_stmt_wait(v);
                 if (v.condition) walk(*v.condition);
+                visit_stmt_wait(v);
             }
             else if constexpr (std::is_same_v<T, Stmt::Return>) visit_stmt_return(v);
             else if constexpr (std::is_same_v<T, Stmt::Break>) visit_stmt_break(v);
@@ -859,9 +869,12 @@ struct ASTVisitor {
             else if constexpr (std::is_same_v<T, Stmt::Asm>) visit_stmt_asm(v);
             else if constexpr (std::is_same_v<T, Stmt::Keep>) visit_stmt_keep(v);
         }, stmt.data);
+        current_stmt = pre;
     }
 
     void walk_children(Type& type) {
+        Type* pre = current_type;
+        current_type = &type;
         std::visit([this](auto& v) {
             using T = std::decay_t<decltype(v)>;
             if constexpr (std::is_same_v<T, Type::Pointer>) {
@@ -880,7 +893,9 @@ struct ASTVisitor {
             else if constexpr (std::is_same_v<T, Type::Primitive>) visit_type_primitive(v);
             else if constexpr (std::is_same_v<T, Type::Inferred>) visit_type_inferred(v);
             else if constexpr (std::is_same_v<T, Type::Void>) visit_type_void(v);
+            else if constexpr (std::is_same_v<T, Type::StringLiteral>) visit_type_string_literal(v);
         }, type.data);
+        current_type = pre;
     }
 
     void walk_children(Modification&) {}

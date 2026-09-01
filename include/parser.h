@@ -64,7 +64,7 @@ private:
     inline Token get_token() {
         // 处理 >> 分裂产生的第二个 '>'
         if (pending_angle_r_loc.lin) {
-            Token res = Token(TokenKind::AngleR, ">", pending_angle_r_loc);
+            Token res = Token(TokenKind::Greater, ">", pending_angle_r_loc);
             pending_angle_r_loc.lin = 0;
             return res;
         }
@@ -104,8 +104,8 @@ private:
                 generic_nest_depth = std::max(0, generic_nest_depth - 2);
                 pending_angle_r_loc = tok.loc;
                 pending_angle_r_loc.col++;
-                return Token(TokenKind::AngleR, ">", tok.loc);
-            } else if (tok.kind == TokenKind::AngleR) {
+                return Token(TokenKind::Greater, ">", tok.loc);
+            } else if (tok.kind == TokenKind::Greater) {
                 generic_nest_depth--;
             }
         }

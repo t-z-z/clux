@@ -109,8 +109,6 @@ namespace vo{
     X(BraceR, "}") \
     X(BracketL, "[") \
     X(BracketR, "]") \
-    X(AngleL, "<") \
-    X(AngleR, ">") \
     X(Colon, ":") \
     X(Semicolon, ";") \
     X(Comma, ",") \
@@ -178,7 +176,7 @@ struct Location {
     int lin;
     int col;
     std::string_view filename;
-    Location():lin(0),col(0),filename(""){};
+    Location():lin(-1),col(-1),filename(""){};
     Location(const int &line,const int &colomn,std::string_view file):
     lin(line),col(colomn),filename(file){}
 };
@@ -226,10 +224,10 @@ struct Token {
         return kind > TokenKind::Identifier && kind < TokenKind::Unknown;
     }
     inline bool is_modf() const {
-        return kind >= TokenKind::Const && kind <= TokenKind::Readonly;
+        return kind >= TokenKind::Const && kind <= TokenKind::Alloca;
     }
     inline bool is_type() const {
-        return kind >= TokenKind::Int8 && kind <= TokenKind::Void;
+        return kind >= TokenKind::Int8 && kind <= TokenKind::Enum;
     }
     inline bool is_ident() const {
         return kind == TokenKind::Identifier;

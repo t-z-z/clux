@@ -978,9 +978,7 @@ int Parser::get_precedence(TokenKind kind) {
         case TokenKind::Equal:
         case TokenKind::NotEqual:   return 10;
         case TokenKind::Less:
-        case TokenKind::AngleL:
         case TokenKind::Greater:
-        case TokenKind::AngleR:
         case TokenKind::LessEqual:
         case TokenKind::GreaterEqual:return 11;
         case TokenKind::Shl:
@@ -1326,14 +1324,14 @@ Expr* Parser::parse_postfix(Expr* left) {
         case TokenKind::ColonColon: {
             advance();
             if (!curr().is_ident()) {
-                add_error("expected name after '::'");
+                add_error("expected member name after '::'");
                 return left;
             }
             std::string_view member = curr().get_val();
             advance();
             return cu_.add_node<Expr>(
                 loc,
-                Expr::Scope{left, member}
+                Expr::Member{left, member}
             );
         }
         // -&取地址/-*解引用
@@ -1716,7 +1714,7 @@ std::vector<TemplateParam> Parser::parse_template_params() {
         return {};
     }
     walk();
-    if (curr().kind == TokenKind::AngleR) {
+    if (curr().kind == TokenKind::Greater) {
         walk();
         return {};
     }
@@ -1731,7 +1729,7 @@ std::vector<TemplateParam> Parser::parse_template_params() {
         }
         if (curr().kind == TokenKind::Comma) {
             walk();
-        } else if(curr().kind == TokenKind::AngleR) {
+        } else if(curr().kind == TokenKind::Greater) {
             walk();
             break;
         } else if (is_eof()) {
@@ -1745,7 +1743,7 @@ std::vector<TemplateParam> Parser::parse_template_params() {
 std::vector<ASTNode*> Parser::parse_template_args() {
     return parse_list<ASTNode*>(
         TokenKind::GenericStart,
-        TokenKind::AngleR,
+        TokenKind::Greater,
         TokenKind::Comma,
         [this]{
             return parse_expr();
