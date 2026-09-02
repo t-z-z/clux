@@ -307,6 +307,16 @@ inline bool is_assign(OpKind op) {
     return op >= OpKind::Assign && op <= OpKind::ShrAssign;
 }
 
+inline std::string_view opkind_to_sv(OpKind kind) {
+    switch (kind) {
+        #define X(name, str) \
+            case OpKind::name: return str;
+        OP_KIND
+        #undef X
+        default: return "";
+    }
+}
+
 struct Expr : ASTNode {
     struct Literal      { LiteralKind kind; std::string_view value; };
     struct Identifier   { std::string_view name; };

@@ -252,7 +252,7 @@ with_lock(mutex) --critical_section() // 错误
 ```vo
 @message {
     string[] a;
-    init(string[] msg) {
+    INIT(string[] msg) {
         a=msg;
     }
 }

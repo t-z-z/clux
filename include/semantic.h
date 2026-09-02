@@ -126,12 +126,12 @@ struct Scope {
         return it == tpls.end() ? nullptr : it->second;
     }
 
-    inline const std::vector<Symbol>* lookup_member(std::string_view name) const {
+    inline std::vector<Symbol>* lookup_member(std::string_view name) {
         auto it = members.find(std::string(name));
         return it == members.end() ? nullptr : &it->second;
     }
 
-    inline const std::vector<OverloadCandidate>* lookup_overload(std::string_view name) const {
+    inline std::vector<OverloadCandidate>* lookup_overload(std::string_view name) {
         auto it = overloads.find(name);
         return it == overloads.end() ? nullptr : &it->second;
     }
@@ -202,9 +202,9 @@ struct SymbolTable {
         if (current_) current_->insert_member(std::move(sym));
     }
 
-    const std::vector<Symbol>* lookup_member(std::string_view name) const {
-        for (const Scope* s = current_; s; s = s->parent) {
-            if (const auto* vec = s->lookup_member(name)) {
+    std::vector<Symbol>* lookup_member(std::string_view name) {
+        for (Scope* s = current_; s; s = s->parent) {
+            if (auto* vec = s->lookup_member(name)) {
                 return vec;
             }
         }
@@ -212,15 +212,15 @@ struct SymbolTable {
     }
 
     // 在指定 scope 中查找成员（不向上搜索）
-    static const std::vector<Symbol>* lookup_member_in(Scope* scope, std::string_view name) {
+    static std::vector<Symbol>* lookup_member_in(Scope* scope, std::string_view name) {
         if (!scope) return nullptr;
         return scope->lookup_member(name);
     }
 
     // 在指定 scope 及其父链中查找成员
-    static const std::vector<Symbol>* lookup_member_up(Scope* scope, std::string_view name) {
-        for (const Scope* s = scope; s; s = s->parent) {
-            if (const auto* vec = s->lookup_member(name)) {
+    static std::vector<Symbol>* lookup_member_up(Scope* scope, std::string_view name) {
+        for (Scope* s = scope; s; s = s->parent) {
+            if (auto* vec = s->lookup_member(name)) {
                 return vec;
             }
         }
@@ -231,9 +231,9 @@ struct SymbolTable {
         if (current_) current_->insert_overload(full_name, std::move(cand));
     }
 
-    const std::vector<OverloadCandidate>* lookup_overload(std::string_view name) const {
-        for (const Scope* s = current_; s; s = s->parent) {
-            if (const auto* vec = s->lookup_overload(name)) {
+    std::vector<OverloadCandidate>* lookup_overload(std::string_view name) {
+        for (Scope* s = current_; s; s = s->parent) {
+            if (auto* vec = s->lookup_overload(name)) {
                 return vec;
             }
         }
@@ -316,7 +316,7 @@ public:
 
     // 供其他模块查询
     const SymbolTable& symbol_table() const { return symbols_; }
-    const std::vector<OverloadCandidate>* lookup_overload(std::string_view name) const {
+    std::vector<OverloadCandidate>* lookup_overload(std::string_view name) {
         return symbols_.lookup_overload(name);
     }
     const std::vector<CallResolution>& call_resolutions() const { return call_resolutions_; }
@@ -398,6 +398,7 @@ private:
     void set_expr_type(Expr* e, Type* t);
     Type* element_type(Type* t);
     void check_type(Type& t);
+    bool has_operator_overload(Type* type, OpKind op);
 
     // 声明收集与注册
     void collect();                     // 第一遍：收集所有声明到符号表和重载表
