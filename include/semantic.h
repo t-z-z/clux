@@ -18,6 +18,8 @@ namespace vo {
 
 // 符号表与作用域
 
+struct Scope;  // 前向声明
+
 enum class SymbolKind {
     Variable,
     Function,
@@ -31,12 +33,13 @@ struct Symbol {
     std::string_view name;          // 指向 AST 中的名字（由 AST 保证生命周期）
     Type* type = nullptr;           // 变量或函数的返回类型
     Decl* decl = nullptr;           // 对应的声明节点
+    Scope* scope = nullptr;         // 类/命名空间的符号表指针
     std::string ir_type;            // LLVM IR 类型字符串（缓存）
 
     Symbol() = default;
     Symbol(SymbolKind k, std::string_view n, Type* t = nullptr, Decl* d = nullptr,
-           std::string ir = "")
-        : kind(k), name(n), type(t), decl(d), ir_type(std::move(ir)) {}
+           Scope* s = nullptr, std::string ir = "")
+        : kind(k), name(n), type(t), decl(d), scope(s), ir_type(std::move(ir)) {}
     explicit Symbol(Decl* d) : name(d->name), decl(d) {
         switch (d->kind) {
             case DeclKind::VarList:       kind = SymbolKind::Variable; break;
@@ -208,6 +211,22 @@ struct SymbolTable {
         return nullptr;
     }
 
+    // 在指定 scope 中查找成员（不向上搜索）
+    static const std::vector<Symbol>* lookup_member_in(Scope* scope, std::string_view name) {
+        if (!scope) return nullptr;
+        return scope->lookup_member(name);
+    }
+
+    // 在指定 scope 及其父链中查找成员
+    static const std::vector<Symbol>* lookup_member_up(Scope* scope, std::string_view name) {
+        for (const Scope* s = scope; s; s = s->parent) {
+            if (const auto* vec = s->lookup_member(name)) {
+                return vec;
+            }
+        }
+        return nullptr;
+    }
+
     void insert_overload(const std::string& full_name, OverloadCandidate cand) {
         if (current_) current_->insert_overload(full_name, std::move(cand));
     }
@@ -275,7 +294,6 @@ class SemanticAnalyzer : public ASTVisitor {
     // 模板实例化缓存：键 = 函数完整限定名 + "(" + 具体参数类型编码 + ")"
     std::map<std::string, Func*> instantiated_templates_;
 
-    int suppress_undefined_ = 0;
     #define X(name,str) Type* type##name;
     TYPE
     #undef X
@@ -380,11 +398,6 @@ private:
     void set_expr_type(Expr* e, Type* t);
     Type* element_type(Type* t);
     void check_type(Type& t);
-
-    struct FieldInfo {
-        Type* type;
-        bool is_readonly;
-    } get_field_info(const std::string& cls, const std::string& field);
 
     // 声明收集与注册
     void collect();                     // 第一遍：收集所有声明到符号表和重载表

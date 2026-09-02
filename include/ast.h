@@ -35,6 +35,7 @@ struct SpecialMethod;
 struct Keep;
 struct TemplateParam;
 struct ASTVisitor;
+struct Symbol;  // 前向声明，定义在 semantic.h
 
 #define B_IS(a,b) inline bool is_##a() const { return std::holds_alternative<b>(data); }
 #define B_B(p,k) p(const Location& l, k v) : ASTNode(l), data(std::move(v)) {}
@@ -330,6 +331,7 @@ struct Expr : ASTNode {
     
     Variant data;
     Type* type = nullptr;
+    Symbol* sym = nullptr;   // 解析后的符号指针，用于成员查找和调用解析
     bool is_lvalue = false; // 是否可取地址
     
     Expr() = default;
