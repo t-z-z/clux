@@ -549,7 +549,6 @@ void SemanticAnalyzer::visit_expr_binary(Expr::Binary& b) {
         }
         
         // 检查自动推导的比较运算符
-        // spec.md:444 当比较符中存在至少一个时，会自动推导到其余的比较符
         if (b.op == OpKind::Less || b.op == OpKind::Greater || 
             b.op == OpKind::LessEqual || b.op == OpKind::GreaterEqual) {
             // 如果有任一比较运算符被重载，所有比较运算符都可用
@@ -574,7 +573,7 @@ void SemanticAnalyzer::visit_expr_binary(Expr::Binary& b) {
             }
         }
         
-        // spec.md:444 == 默认为完全相等，!=默认为非完全相等
+        // == 默认为完全相等，!=默认为非完全相等
         if (b.op == OpKind::Equal || b.op == OpKind::NotEqual) {
             // 对于自定义类型，== 和 != 默认按成员比较
             current_expr->type = typeBool;
@@ -802,9 +801,9 @@ void SemanticAnalyzer::resolve_call(Expr* call_expr, Expr::Call& c) {
             resolution.resolved_decl = callee_sym->decl;
             resolution.is_constructor = true;
             resolution.resolved = true;
-            resolution.return_type = callee_sym->type ? callee_sym->type : typeVoid;
+            resolution.return_types.push_back(typeVoid);
             
-            set_expr_type(call_expr, resolution.return_type);
+            set_expr_type(call_expr, typeVoid);
             call_expr->sym = callee_sym;
             current_expr->is_lvalue = false;
             call_resolutions_.push_back(std::move(resolution));
@@ -832,12 +831,19 @@ void SemanticAnalyzer::resolve_call(Expr* call_expr, Expr::Call& c) {
         resolution.resolved = true;
 
         if (auto* f = dynamic_cast<Func*>(best->decl)) {
-            if (!f->returns.empty() && f->returns[0]->type) {
-                resolution.return_type = f->returns[0]->type;
+            for (auto* ret : f->returns) {
+                if (ret && ret->type) {
+                    resolution.return_types.push_back(ret->type);
+                }
             }
         }
 
-        set_expr_type(call_expr, resolution.return_type);
+        // 设置表达式类型：单返回值直接使用，多返回值需要特殊处理
+        if (!resolution.return_types.empty()) {
+            set_expr_type(call_expr, resolution.return_types[0]);
+        } else {
+            set_expr_type(call_expr, typeVoid);
+        }
     } else {
         resolution.ambiguous = true;
         error(call_expr->loc, "no matching overload for call to '" + func_name + "'");

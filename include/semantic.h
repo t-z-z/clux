@@ -273,7 +273,7 @@ struct CallResolution {
     std::string callee_name;
     std::string resolved_name;
     Decl* resolved_decl = nullptr;
-    Type* return_type = nullptr;
+    std::vector<Type*> return_types;  // 所有返回类型
     bool is_constructor = false;
     bool resolved = false;
     bool ambiguous = false;
