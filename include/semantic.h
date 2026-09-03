@@ -34,12 +34,13 @@ struct Symbol {
     Type* type = nullptr;           // 变量或函数的返回类型
     Decl* decl = nullptr;           // 对应的声明节点
     Scope* scope = nullptr;         // 类/命名空间的符号表指针
-    std::string ir_type;            // LLVM IR 类型字符串（缓存）
+    std::string full_name;          // 完整限定名（如 "math::add"）
+    std::string key;                // callkey（如 "math::add_i32i32"，模板参数用 <n> 表示）
 
     Symbol() = default;
-    Symbol(SymbolKind k, std::string_view n, Type* t = nullptr, Decl* d = nullptr,
-           Scope* s = nullptr, std::string ir = "")
-        : kind(k), name(n), type(t), decl(d), scope(s), ir_type(std::move(ir)) {}
+    Symbol(SymbolKind kind_, std::string_view n, Type* t = nullptr, Decl* d = nullptr,
+           Scope* s = nullptr, std::string fn = "", std::string k = "")
+        : kind(kind_), name(n), type(t), decl(d), scope(s), full_name(std::move(fn)), key(std::move(k)) {}
     explicit Symbol(Decl* d) : name(d->name), decl(d) {
         switch (d->kind) {
             case DeclKind::VarList:       kind = SymbolKind::Variable; break;
@@ -54,18 +55,6 @@ struct Symbol {
     }
 };
 
-struct OverloadCandidate {
-    std::string name;           // 短名称（不带路径）
-    std::string full_name;      // 完整限定名（如 "math::add"）
-    std::string mangled;        // 名称修饰（用于 IR）
-    std::string key;            // 参数类型编码（模板参数用 <n> 表示）
-    size_t param_count = 0;
-    Decl* decl = nullptr;       // 对应的函数声明（Func* 或 SpecialMethod*）
-    Type* return_type = nullptr;
-    bool has_body = false;
-    bool has_template_params = false;  // 是否为模板函数
-};
-
 struct Scope {
     std::string name;
     Scope* parent = nullptr;
@@ -74,7 +63,7 @@ struct Scope {
     svmap<Symbol> locals;
     svmap<ASTNode*> tpls;
     std::unordered_map<std::string, std::vector<Symbol>> members;
-    svmap<std::vector<OverloadCandidate>> overloads;
+    svmap<Symbol> callkeys;
 
     Scope() = default;
     Scope(std::string n) : name(std::move(n)) {}
@@ -112,8 +101,8 @@ struct Scope {
         members[std::string(sym.name)].push_back(std::move(sym));
     }
 
-    inline void insert_overload(const std::string& full_name, OverloadCandidate cand) {
-        overloads[full_name].push_back(std::move(cand));
+    inline void insert_callkey(const std::string& key, Symbol sym) {
+        callkeys[key] = std::move(sym);
     }
 
     inline Symbol* lookup_local(std::string_view name) {
@@ -131,9 +120,9 @@ struct Scope {
         return it == members.end() ? nullptr : &it->second;
     }
 
-    inline std::vector<OverloadCandidate>* lookup_overload(std::string_view name) {
-        auto it = overloads.find(name);
-        return it == overloads.end() ? nullptr : &it->second;
+    inline Symbol* lookup_callkey(std::string_view key) {
+        auto it = callkeys.find(key);
+        return it == callkeys.end() ? nullptr : &it->second;
     }
 
     inline void insert_tpl(std::string_view name, ASTNode* n) {
@@ -155,9 +144,8 @@ struct Scope {
             auto& target = members[name];
             target.insert(target.end(), syms.begin(), syms.end());
         }
-        for (const auto& [name, candidates] : other.overloads) {
-            auto& target = overloads[name];
-            target.insert(target.end(), candidates.begin(), candidates.end());
+        for (const auto& [key, sym] : other.callkeys) {
+            callkeys[key] = sym;
         }
     }
 };
@@ -227,14 +215,14 @@ struct SymbolTable {
         return nullptr;
     }
 
-    void insert_overload(const std::string& full_name, OverloadCandidate cand) {
-        if (current_) current_->insert_overload(full_name, std::move(cand));
+    void insert_callkey(const std::string& key, Symbol sym) {
+        if (current_) current_->insert_callkey(key, std::move(sym));
     }
 
-    std::vector<OverloadCandidate>* lookup_overload(std::string_view name) {
+    Symbol* lookup_callkey(std::string_view key) {
         for (Scope* s = current_; s; s = s->parent) {
-            if (auto* vec = s->lookup_overload(name)) {
-                return vec;
+            if (auto* sym = s->lookup_callkey(key)) {
+                return sym;
             }
         }
         return nullptr;
@@ -316,13 +304,13 @@ public:
 
     // 供其他模块查询
     const SymbolTable& symbol_table() const { return symbols_; }
-    std::vector<OverloadCandidate>* lookup_overload(std::string_view name) {
-        return symbols_.lookup_overload(name);
+    Symbol* lookup_callkey(std::string_view key) {
+        return symbols_.lookup_callkey(key);
     }
     const std::vector<CallResolution>& call_resolutions() const { return call_resolutions_; }
     const CallResolution* find_call(Expr* e) const;
 
-    // 类型转 IR 字符串
+    // 类型转字符串（用于生成 callkey）
     std::string type_to_ir(Type& t) const;
 
     // 作用域管理（配合 ASTVisitor）
@@ -393,8 +381,9 @@ private:
 
     // 类型工具
     Type* make_type(const Location& loc, Type::Variant v);
-    std::string build_decl_key(const std::vector<VarList*>& params);
-    std::string build_call_key(const std::vector<Expr*>& args);
+    std::string build_callkey(const std::string& full_name, const std::vector<VarList*>& params,
+                               const std::vector<TemplateParam>& templates = {});
+    std::string build_callkey(const std::string& full_name, const std::vector<Expr*>& args);
     void set_expr_type(Expr* e, Type* t);
     Type* element_type(Type* t);
     void check_type(Type& t);
@@ -402,7 +391,7 @@ private:
     bool can_convert_to(Type* src, Type* dst);
 
     // 声明收集与注册
-    void collect();                     // 第一遍：收集所有声明到符号表和重载表
+    void collect();
     void collect_decl(Decl* decl);
     void register_func(Func* f);
     void register_special(SpecialMethod* sm);
@@ -412,10 +401,6 @@ private:
 
     // 调用解析
     void resolve_call(Expr* call, Expr::Call& c);
-    const OverloadCandidate* match_candidates(
-        const std::string& name,
-        size_t arg_count,
-        const std::vector<OverloadCandidate>& candidates);
 
     // 作用域路径解析（将 Expr 转换为命名空间路径）
     std::vector<std::string> resolve_namespace_path(Expr* target);
@@ -431,7 +416,7 @@ private:
     };
 
     bool can_instantiate(
-        const OverloadCandidate& cand,
+        Symbol* sym,
         const std::vector<Expr*>& args,
         std::vector<TemplateDeduction>& deductions);
 

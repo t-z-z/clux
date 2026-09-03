@@ -142,13 +142,25 @@ void SemanticAnalyzer::visit_enum(Enum&) {}
 void SemanticAnalyzer::visit_keep(Keep&) {}
 
 
-std::string SemanticAnalyzer::build_decl_key(const std::vector<VarList*>& params) {
-    std::string key;
+std::string SemanticAnalyzer::build_callkey(const std::string& full_name,
+    const std::vector<VarList*>& params, const std::vector<TemplateParam>& templates) {
+    std::string key = full_name + "_";
     for (const auto* param : params) {
-        if (!param || !param->type) {
+        if (!param || !param->type || param->type->is_inferred()) {
             key += "_";
-        } else if (param->type->is_inferred()) {
-            key += "_";
+        } else if (param->type->is_custom()) {
+            auto* ct = param->type->get_custom();
+            bool is_tpl = false;
+            for (size_t i = 0; i < templates.size(); ++i) {
+                if (templates[i].name == ct->name) {
+                    key += "<" + std::to_string(i) + ">";
+                    is_tpl = true;
+                    break;
+                }
+            }
+            if (!is_tpl) {
+                key += type_to_ir(*param->type);
+            }
         } else {
             key += type_to_ir(*param->type);
         }
@@ -156,12 +168,11 @@ std::string SemanticAnalyzer::build_decl_key(const std::vector<VarList*>& params
     return key;
 }
 
-std::string SemanticAnalyzer::build_call_key(const std::vector<Expr*>& args) {
-    std::string key;
+std::string SemanticAnalyzer::build_callkey(const std::string& full_name,
+    const std::vector<Expr*>& args) {
+    std::string key = full_name + "_";
     for (const auto* arg : args) {
-        if (!arg || !arg->type) {
-            key += "_";
-        } else if (arg->type->is_inferred()) {
+        if (!arg || !arg->type || arg->type->is_inferred()) {
             key += "_";
         } else {
             key += type_to_ir(*arg->type);
@@ -264,31 +275,16 @@ void SemanticAnalyzer::register_func(Func* f) {
     std::string path = get_current_full_path();
     std::string full_name = path.empty() ? name : path + "::" + name;
 
-    std::string key = build_decl_key(f->params);
+    std::string key = build_callkey(full_name, f->params, f->templates);
 
-    const auto* existing = symbols_.lookup_overload(full_name);
-    if (existing) {
-        for (const auto& cand : *existing) {
-            if (cand.key == key) {
-                error(f->loc, "duplicate declaration of function '" + name + "'");
-                return;
-            }
-        }
+    if (symbols_.lookup_callkey(key)) {
+        error(f->loc, "duplicate declaration of function '" + name + "'");
+        return;
     }
 
-    OverloadCandidate cand;
-    cand.name = name;
-    cand.full_name = full_name;
-    cand.key = key;
-    cand.param_count = f->params.size();
-    cand.decl = f;
-    cand.return_type = nullptr;
-    cand.has_body = (f->body != nullptr);
-    cand.has_template_params = !f->templates.empty();
-    symbols_.insert_overload(full_name, std::move(cand));
-
-    Symbol sym(SymbolKind::Function, f->name, nullptr, f);
+    Symbol sym(SymbolKind::Function, f->name, nullptr, f, nullptr, full_name, key);
     symbols_.insert_member(std::move(sym));
+    symbols_.insert_callkey(key, Symbol(SymbolKind::Function, f->name, nullptr, f, nullptr, full_name, key));
 }
 
 void SemanticAnalyzer::register_special(SpecialMethod* sm) {
@@ -305,30 +301,16 @@ void SemanticAnalyzer::register_special(SpecialMethod* sm) {
     std::string path = get_current_full_path();
     std::string full_name = path.empty() ? internal_name : path + "::" + internal_name;
 
-    std::string key = sm->conv ? build_decl_key({sm->conv}) : "";
-    const auto* existing = symbols_.lookup_overload(full_name);
-    if (existing) {
-        for (const auto& cand : *existing) {
-            if (cand.key == key) {
-                error(sm->loc, "duplicate special method '" + internal_name + "'");
-                return;
-            }
-        }
+    std::string key = sm->conv ? build_callkey(full_name, {sm->conv}, {}) : full_name;
+
+    if (symbols_.lookup_callkey(key)) {
+        error(sm->loc, "duplicate special method '" + internal_name + "'");
+        return;
     }
 
-    OverloadCandidate cand;
-    cand.name = internal_name;
-    cand.full_name = full_name;
-    cand.key = key;
-    cand.param_count = sm->conv ? 1 : 0;
-    cand.decl = sm;
-    cand.return_type = nullptr;
-    cand.has_body = (sm->body != nullptr);
-    cand.has_template_params = false;
-    symbols_.insert_overload(full_name, std::move(cand));
-
-    Symbol sym(SymbolKind::Function, internal_name, nullptr, sm);
+    Symbol sym(SymbolKind::Function, internal_name, nullptr, sm, nullptr, full_name, key);
     symbols_.insert_member(std::move(sym));
+    symbols_.insert_callkey(key, Symbol(SymbolKind::Function, internal_name, nullptr, sm, nullptr, full_name, key));
 }
 
 std::string SemanticAnalyzer::get_current_full_path() const {
@@ -537,8 +519,8 @@ bool SemanticAnalyzer::can_convert_to(Type* src, Type* dst) {
     if (auto* c = src->get_custom()) {
         if(c->resolved_decl && c->resolved_decl->kind == DeclKind::Class) {
             Class& cls = static_cast<Class&>(*c->resolved_decl);
-            auto* cands = cls.scope->lookup_overload("conversion");
-            ;;;
+            auto* cands = cls.scope->lookup_callkey("conversion");
+            if (cands) { (void)cands; }
         }
     }
     
@@ -831,26 +813,21 @@ void SemanticAnalyzer::resolve_call(Expr* call_expr, Expr::Call& c) {
         }
     }
 
-    // 按名称查找重载
+    // 按 callkey 直接查找
     std::string func_name = std::string(callee_sym->name);
+    std::string callkey = build_callkey(callee_sym->full_name, c.args);
 
-    const auto* candidates = symbols_.lookup_overload(func_name);
-    if (!candidates || candidates->empty()) {
-        error(call_expr->loc, "undefined function '" + func_name + "'");
-        return;
-    }
-
+    Symbol* resolved_sym = symbols_.lookup_callkey(callkey);
     CallResolution resolution;
     resolution.call = call_expr;
     resolution.callee_name = func_name;
 
-    const OverloadCandidate* best = match_candidates(func_name, c.args.size(), *candidates);
-        if (best) {
-        resolution.resolved_name = best->full_name;
-        resolution.resolved_decl = best->decl;
+    if (resolved_sym && resolved_sym->kind == SymbolKind::Function) {
+        resolution.resolved_name = resolved_sym->full_name;
+        resolution.resolved_decl = resolved_sym->decl;
         resolution.resolved = true;
 
-        if (auto* f = dynamic_cast<Func*>(best->decl)) {
+        if (auto* f = dynamic_cast<Func*>(resolved_sym->decl)) {
             for (auto* ret : f->returns) {
                 if (ret && ret->type) {
                     resolution.return_types.push_back(ret->type);
@@ -858,46 +835,37 @@ void SemanticAnalyzer::resolve_call(Expr* call_expr, Expr::Call& c) {
             }
         }
 
-        // 设置表达式类型：单返回值直接使用，多返回值需要特殊处理
         if (!resolution.return_types.empty()) {
             set_expr_type(call_expr, resolution.return_types[0]);
         } else {
             set_expr_type(call_expr, typeVoid);
         }
     } else {
+        // 检查是否为模板函数（实例化暂未实现）
+        auto* members_ptr = symbols_.lookup_member(func_name);
+        bool is_template = false;
+        if (members_ptr) {
+            for (auto& m : *members_ptr) {
+                if (m.kind == SymbolKind::Function) {
+                    if (auto* f = dynamic_cast<Func*>(m.decl)) {
+                        if (!f->templates.empty()) {
+                            is_template = true;
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+        if (is_template) {
+            error(call_expr->loc, "template instantiation not yet implemented for '" + func_name + "'");
+        } else {
+            error(call_expr->loc, "no matching overload for call to '" + func_name + "'");
+        }
         resolution.ambiguous = true;
-        error(call_expr->loc, "no matching overload for call to '" + func_name + "'");
     }
 
     current_expr->is_lvalue = false;
     call_resolutions_.push_back(std::move(resolution));
-}
-
-const OverloadCandidate* SemanticAnalyzer::match_candidates(
-    const std::string& name,
-    size_t arg_count,
-    const std::vector<OverloadCandidate>& candidates) {
-    const OverloadCandidate* best = nullptr;
-    int best_score = -1;
-
-    for (const auto& cand : candidates) {
-        if (cand.has_template_params) continue; // 模板函数需实例化，暂跳过
-
-        int score = 0;
-        if (cand.param_count == arg_count) {
-            score = 10; // 完美参数数量匹配
-        } else if (cand.param_count < arg_count) {
-            score = 5; // 参数多于形参（可变参数场景）
-        } else {
-            continue; // 参数不足
-        }
-
-        if (score > best_score) {
-            best_score = score;
-            best = &cand;
-        }
-    }
-    return best;
 }
 
 const CallResolution* SemanticAnalyzer::find_call(Expr* e) const {
@@ -1236,7 +1204,7 @@ void SemanticAnalyzer::visit_type_void(Type::Void&) {}
 // ---- 模板实例化辅助桩 ----
 
 bool SemanticAnalyzer::can_instantiate(
-    const OverloadCandidate&,
+    Symbol*,
     const std::vector<Expr*>&,
     std::vector<TemplateDeduction>&) {
     return false;
