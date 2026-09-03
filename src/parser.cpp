@@ -1338,15 +1338,9 @@ Expr* Parser::parse_postfix(Expr* left) {
         case TokenKind::Minus: {
             if (peek().kind == TokenKind::Mul || peek().kind == TokenKind::BitAnd) {
                 advance();
-                for(;;) {
-                    if (curr().kind == TokenKind::Mul) {
-                        left = make_unary(curr(), left, true);
-                        advance();
-                    }
-                    if (curr().kind == TokenKind::BitAnd) {
-                        left = make_unary(curr(), left, true);
-                        advance();
-                    }
+                while(peek().kind == TokenKind::Mul || peek().kind == TokenKind::BitAnd) {
+                    left = make_unary(curr(), left, true);
+                    advance();
                 }
                 return left;
             }

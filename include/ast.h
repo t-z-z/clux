@@ -36,6 +36,7 @@ struct Keep;
 struct TemplateParam;
 struct ASTVisitor;
 struct Symbol;  // 前向声明，定义在 semantic.h
+struct Scope;   // 前向声明，定义在 semantic.h
 
 #define B_IS(a,b) inline bool is_##a() const { return std::holds_alternative<b>(data); }
 #define B_B(p,k) p(const Location& l, k v) : ASTNode(l), data(std::move(v)) {}
@@ -231,9 +232,7 @@ struct Type : ASTNode {
         Type *element;
         Expr* length;
     };
-    struct StringLiteral {
-        
-    };
+    struct StringLiteral {};
     struct Func {
         std::vector<Type*> params;
         Type *return_type;
@@ -435,6 +434,7 @@ struct Decl : ASTNode {
 
 struct Cont : Decl { // container 容器，用于包含申明
     std::vector<Decl*> members;
+    Scope* scope = nullptr;  // 符号表指针，在collect阶段写入
     explicit Cont(const Location &loc, std::string_view n, const DeclKind &k,
         ModfList ml=ModfList(), std::vector<Decl*> m = {}) :
     Decl(loc, n, k, std::move(ml)), members(std::move(m)) {}
@@ -810,7 +810,7 @@ struct ASTVisitor {
                 if (v.fill_value) walk(*v.fill_value);
                 visit_expr_array(v);
             } else if constexpr (std::is_same_v<T, Expr::Closure>) {
-                scope_in("");
+                scope_in("closure");
                 for (auto* p : v.params) if (p) walk(*p);
                 for (auto* r : v.returns) if (r) walk(*r);
                 if (v.body) walk(*v.body);
@@ -835,20 +835,20 @@ struct ASTVisitor {
                 if (v.expr) walk(*v.expr);
                 visit_stmt_expr(v);
             } else if constexpr (std::is_same_v<T, Stmt::If>) {
-                scope_in("");
+                scope_in("if");
                 if (v.condition) walk(*v.condition);
                 if (v.then_branch) walk(*v.then_branch);
                 if (v.else_branch) walk(*v.else_branch);
                 visit_stmt_if(v);
                 scope_out();
             } else if constexpr (std::is_same_v<T, Stmt::While>) {
-                scope_in("");
+                scope_in("while");
                 if (v.condition) walk(*v.condition);
                 if (v.body) walk(*v.body);
                 visit_stmt_while(v);
                 scope_out();
             } else if constexpr (std::is_same_v<T, Stmt::For>) {
-                scope_in("");
+                scope_in("for");
                 if (v.init) walk(*v.init);
                 if (v.condition) walk(*v.condition);
                 if (v.next) walk(*v.next);
@@ -856,7 +856,7 @@ struct ASTVisitor {
                 visit_stmt_for(v);
                 scope_out();
             } else if constexpr (std::is_same_v<T, Stmt::ForIn>) {
-                scope_in("");
+                scope_in("forin");
                 if (v.collection) walk(*v.collection);
                 if (v.body) walk(*v.body);
                 visit_stmt_for_in(v);
@@ -865,7 +865,7 @@ struct ASTVisitor {
                 if (v.vars) walk(*v.vars);
                 visit_stmt_var_decl(v);
             } else if constexpr (std::is_same_v<T, Stmt::Spawn>) {
-                scope_in("");
+                scope_in("spawn");
                 if (v.body) walk(*v.body);
                 visit_stmt_spawn(v);
                 scope_out();

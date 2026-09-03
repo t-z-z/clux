@@ -46,6 +46,11 @@ static bool is_same_type(Type* a, Type* b) {
         return is_same_type(a->get_reference()->target, b->get_reference()->target);
     }
     if (a->is_custom() && b->is_custom()) {
+        // 优先使用resolved_decl判断，如果都有则比较声明指针
+        if (a->get_custom()->resolved_decl && b->get_custom()->resolved_decl) {
+            return a->get_custom()->resolved_decl == b->get_custom()->resolved_decl;
+        }
+        // 否则退回到名字比较
         return a->get_custom()->name == b->get_custom()->name;
     }
     if (a->is_string_literal() && b->is_string_literal()) return true;
@@ -198,6 +203,8 @@ void SemanticAnalyzer::collect_decl(Decl* decl) {
             // 再创建带 scope 指针的 Symbol
             Symbol cls_sym(SymbolKind::Class, cls->name, nullptr, cls, cls_scope);
             symbols_.insert_member(std::move(cls_sym));
+            // 将scope指针写入Cont
+            cls->scope = cls_scope;
 
             for (Decl* member : cls->members) {
                 collect_decl(member);
@@ -213,6 +220,8 @@ void SemanticAnalyzer::collect_decl(Decl* decl) {
             // 再创建带 scope 指针的 Symbol
             Symbol ns_sym(SymbolKind::Namespace, ns->name, nullptr, ns, ns_scope);
             symbols_.insert_member(std::move(ns_sym));
+            // 将scope指针写入Cont
+            ns->scope = ns_scope;
 
             for (Decl* member : ns->members) {
                 collect_decl(member);
@@ -223,12 +232,10 @@ void SemanticAnalyzer::collect_decl(Decl* decl) {
 
         case DeclKind::Extern: {
             auto* ext = static_cast<Extern*>(decl);
-            // Extern 块不引入新作用域，但成员函数需注册在当前作用域（可带前缀，但实际由 register_func 通过当前路径构造全名）
+            // Extern块不引入新作用域，使用当前作用域的scope
+            ext->scope = symbols_.current_scope();
             for (Decl* member : ext->members) {
-                if (member->kind == DeclKind::Func || member->kind == DeclKind::Operator) {
-                    register_func(static_cast<Func*>(member));
-                }
-                // 其他成员（如变量）按需处理，目前暂不处理
+                collect_decl(member);
             }
             break;
         }
@@ -247,9 +254,6 @@ void SemanticAnalyzer::collect_decl(Decl* decl) {
             register_special(static_cast<SpecialMethod*>(decl));
             break;
         }
-
-        case DeclKind::Keep:
-        case DeclKind::Compose:
         default:
             break;
     }
@@ -294,7 +298,7 @@ void SemanticAnalyzer::register_special(SpecialMethod* sm) {
         case SpecialMethod::Kind::Ref:        internal_name = "REF";        break;
         case SpecialMethod::Kind::Deref:      internal_name = "DEREF";      break;
         case SpecialMethod::Kind::Access:     internal_name = "ACCESS";     break;
-        case SpecialMethod::Kind::Conversion: internal_name = "__conversion"; break;
+        case SpecialMethod::Kind::Conversion: internal_name = "conversion"; break;
         default: error(sm->loc, "unknown special method"); return;
     }
 
@@ -523,6 +527,24 @@ bool SemanticAnalyzer::has_operator_overload(Type* type, OpKind op) {
     return false;
 }
 
+bool SemanticAnalyzer::can_convert_to(Type* src, Type* dst) {
+    if (!src || !dst) return false;
+    
+    // 如果类型相同，可以直接转换
+    if (is_same_type(src, dst)) return true;
+    
+    // 如果源类型是自定义类型（类），检查是否有Conversion方法
+    if (auto* c = src->get_custom()) {
+        if(c->resolved_decl && c->resolved_decl->kind == DeclKind::Class) {
+            Class& cls = static_cast<Class&>(*c->resolved_decl);
+            auto* cands = cls.scope->lookup_overload("conversion");
+            ;;;
+        }
+    }
+    
+    return false;
+}
+
 void SemanticAnalyzer::visit_expr_binary(Expr::Binary& b) {
     Type* lt = b.left ? b.left->type : nullptr;
     Type* rt = b.right ? b.right->type : nullptr;
@@ -655,39 +677,14 @@ void SemanticAnalyzer::visit_expr_unary(Expr::Unary& u) {
     switch (u.op) {
         case OpKind::Minus:
         case OpKind::Plus: {
-            if (u.is_postfix) {
-                // 后缀 -* 是解引用，-& 是取地址
-                if (u.op == OpKind::Minus) {
-                    // -* 解引用：指针类型 -> 指向的类型
-                    if (ot->is_pointer()) {
-                        current_expr->type = ot->get_pointer()->pointee;
-                        current_expr->is_lvalue = true;
-                    } else {
-                        error(current_expr->loc, "dereference requires pointer operand");
-                        current_expr->type = ot;
-                        current_expr->is_lvalue = false;
-                    }
-                } else {
-                    // -& 取地址：值类型 -> 指针类型
-                    if (u.operand && u.operand->is_lvalue) {
-                        current_expr->type = make_type(current_expr->loc, Type::Pointer{ot});
-                        current_expr->is_lvalue = false;
-                    } else {
-                        error(current_expr->loc, "address-of requires lvalue operand");
-                        current_expr->type = ot;
-                        current_expr->is_lvalue = false;
-                    }
-                }
+            // 前缀 +/- 要求操作数为数值类型
+            if (is_numeric_type(ot)) {
+                current_expr->type = ot;
             } else {
-                // 前缀 +/- 要求操作数为数值类型
-                if (is_numeric_type(ot)) {
-                    current_expr->type = ot;
-                } else {
-                    error(current_expr->loc, "unary +/- requires numeric operand");
-                    current_expr->type = ot;
-                }
-                current_expr->is_lvalue = false;
+                error(current_expr->loc, "unary +/- requires numeric operand");
+                current_expr->type = ot;
             }
+            current_expr->is_lvalue = false;
             break;
         }
         case OpKind::Not: {
@@ -704,6 +701,26 @@ void SemanticAnalyzer::visit_expr_unary(Expr::Unary& u) {
             }
             current_expr->is_lvalue = false;
             break;
+        }
+        case OpKind::Mul: {
+            if (ot->is_pointer()) {
+                current_expr->type = ot->get_pointer()->pointee;
+                current_expr->is_lvalue = true;
+            } else {
+                error(current_expr->loc, "dereference requires pointer operand");
+                current_expr->type = ot;
+                current_expr->is_lvalue = false;
+            }
+        }
+        case OpKind::BitAnd: {
+            if (u.operand && u.operand->is_lvalue) {
+                current_expr->type = make_type(current_expr->loc, Type::Pointer{ot});
+                current_expr->is_lvalue = false;
+            } else {
+                error(current_expr->loc, "address-of requires lvalue operand");
+                current_expr->type = ot;
+                current_expr->is_lvalue = false;
+            }
         }
         default:
             error(current_expr->loc, "invalid unary operator");
@@ -726,7 +743,10 @@ void SemanticAnalyzer::visit_expr_assign(Expr::Assign& a) {
     Type* rt = a.value->type;
 
     if (lt && rt && !is_same_type(lt, rt)) {
-        warning(current_expr->loc, "implicit conversion in assignment");
+        // 检查是否可以进行类型转换
+        if (!can_convert_to(rt, lt)) {
+            warning(current_expr->loc, "implicit conversion in assignment");
+        }
     }
 
     current_expr->type = lt;
@@ -1074,22 +1094,130 @@ void SemanticAnalyzer::visit_expr_ternary(Expr::Ternary& t) {
 void SemanticAnalyzer::visit(Modification&) {}
 
 void SemanticAnalyzer::visit(Stmt&) {}
+
 void SemanticAnalyzer::visit_stmt_block(Stmt::Block&) {}
+
 void SemanticAnalyzer::visit_stmt_expr(Stmt::ExprStmt&) {}
-void SemanticAnalyzer::visit_stmt_if(Stmt::If&) {}
-void SemanticAnalyzer::visit_stmt_while(Stmt::While&) {}
-void SemanticAnalyzer::visit_stmt_for(Stmt::For&) {}
-void SemanticAnalyzer::visit_stmt_for_in(Stmt::ForIn&) {}
-void SemanticAnalyzer::visit_stmt_return(Stmt::Return&) {}
-void SemanticAnalyzer::visit_stmt_break(Stmt::Break&) {}
-void SemanticAnalyzer::visit_stmt_continue(Stmt::Continue&) {}
+
+void SemanticAnalyzer::visit_stmt_if(Stmt::If& if_stmt) {
+    if (!if_stmt.condition) {
+        error(current_stmt->loc, "if statement missing condition");
+        return;
+    }
+    
+    Type* cond_type = if_stmt.condition->type;
+    if (cond_type && !is_bool_type(cond_type)) {
+        warning(if_stmt.condition->loc, "if condition is not bool, implicit conversion");
+    }
+}
+
+void SemanticAnalyzer::visit_stmt_while(Stmt::While& while_stmt) {
+    if (!while_stmt.condition) {
+        error(current_stmt->loc, "while statement missing condition");
+        return;
+    }
+    
+    Type* cond_type = while_stmt.condition->type;
+    if (cond_type && !is_bool_type(cond_type)) {
+        warning(while_stmt.condition->loc, "while condition is not bool, implicit conversion");
+    }
+}
+
+void SemanticAnalyzer::visit_stmt_for(Stmt::For& for_stmt) {
+    if (for_stmt.condition) {
+        Type* cond_type = for_stmt.condition->type;
+        if (cond_type && !is_bool_type(cond_type)) {
+            warning(for_stmt.condition->loc, "for condition is not bool, implicit conversion");
+        }
+    }
+}
+
+void SemanticAnalyzer::visit_stmt_for_in(Stmt::ForIn& for_in_stmt) {
+    if (!for_in_stmt.collection) {
+        error(current_stmt->loc, "for-in statement missing collection");
+        return;
+    }
+    
+    Type* coll_type = for_in_stmt.collection->type;
+    if (!coll_type) {
+        error(current_stmt->loc, "for-in collection has no type");
+        return;
+    }
+    
+    // Check if collection is iterable (array, pointer, or has iterator)
+    bool is_iterable = false;
+    if (coll_type->is_array()) {
+        is_iterable = true;
+    } else if (coll_type->is_pointer()) {
+        is_iterable = true;
+    } else if (coll_type->is_custom()) {
+        // Check for iterator protocol (has begin/end or similar)
+        is_iterable = true; // For now, allow custom types
+    }
+    
+    if (!is_iterable) {
+        error(current_stmt->loc, "for-in requires iterable collection (array, pointer, or iterable type)");
+    }
+}
+
+void SemanticAnalyzer::visit_stmt_return(Stmt::Return& return_stmt) {
+    if (!current_func) {
+        error(current_stmt->loc, "return statement outside of function");
+        return;
+    }
+    // return没有返回值
+}
+
+void SemanticAnalyzer::visit_stmt_break(Stmt::Break&) {
+    // 检查是否在循环中：遍历父作用域查找while/for/forin作用域
+    bool in_loop = false;
+    for (Scope* s = symbols_.current_scope(); s; s = s->parent) {
+        if (s->name == "while" || s->name == "for" || s->name == "forin") {
+            in_loop = true;
+            break;
+        }
+    }
+    if (!in_loop) {
+        error(current_stmt->loc, "break statement not inside a loop");
+    }
+}
+
+void SemanticAnalyzer::visit_stmt_continue(Stmt::Continue&) {
+    bool in_loop = false;
+    for (Scope* s = symbols_.current_scope(); s; s = s->parent) {
+        if (s->name == "while" || s->name == "for" || s->name == "forin") {
+            in_loop = true;
+            break;
+        }
+    }
+    if (!in_loop) {
+        error(current_stmt->loc, "continue statement not inside a loop");
+    }
+}
+
 void SemanticAnalyzer::visit_stmt_flag(Stmt::Flag&) {}
+
 void SemanticAnalyzer::visit_stmt_goto(Stmt::Goto&) {}
+
 void SemanticAnalyzer::visit_stmt_asm(Stmt::Asm&) {}
+
 void SemanticAnalyzer::visit_stmt_keep(Stmt::Keep&) {}
+
 void SemanticAnalyzer::visit_stmt_var_decl(Stmt::VarDecl&) {}
+
 void SemanticAnalyzer::visit_stmt_spawn(Stmt::Spawn&) {}
-void SemanticAnalyzer::visit_stmt_wait(Stmt::Wait&) {}
+
+void SemanticAnalyzer::visit_stmt_wait(Stmt::Wait& wait_stmt) {
+    if (!wait_stmt.condition) {
+        error(current_stmt->loc, "wait statement missing condition");
+        return;
+    }
+    
+    Type* cond_type = wait_stmt.condition->type;
+    if (cond_type && !is_bool_type(cond_type)) {
+        warning(wait_stmt.condition->loc, "wait condition is not bool, implicit conversion");
+    }
+}
 
 void SemanticAnalyzer::visit(Type&) {}
 void SemanticAnalyzer::visit_type_primitive(Type::Primitive&) {}

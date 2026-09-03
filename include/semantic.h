@@ -399,6 +399,7 @@ private:
     Type* element_type(Type* t);
     void check_type(Type& t);
     bool has_operator_overload(Type* type, OpKind op);
+    bool can_convert_to(Type* src, Type* dst);
 
     // 声明收集与注册
     void collect();                     // 第一遍：收集所有声明到符号表和重载表
