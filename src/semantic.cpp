@@ -46,11 +46,9 @@ static bool is_same_type(Type* a, Type* b) {
         return is_same_type(a->get_reference()->target, b->get_reference()->target);
     }
     if (a->is_custom() && b->is_custom()) {
-        // 优先使用resolved_decl判断，如果都有则比较声明指针
         if (a->get_custom()->resolved_decl && b->get_custom()->resolved_decl) {
             return a->get_custom()->resolved_decl == b->get_custom()->resolved_decl;
         }
-        // 否则退回到名字比较
         return a->get_custom()->name == b->get_custom()->name;
     }
     if (a->is_string_literal() && b->is_string_literal()) return true;
@@ -69,10 +67,6 @@ static bool is_integer_promotable(Type* t) {
 static bool is_void_type(Type* t) {
     return t && t->is_void();
 }
-void SemanticAnalyzer::merge_external_symbols(const SymbolTable& external) {
-    symbols_.merge(external);
-}
-// 语义分析器：工具
 
 void SemanticAnalyzer::error(const Location& loc, const std::string& msg) {
     diagnostics_.push_back(Diagnostic(DiagLevel::Error, msg, loc));
@@ -91,7 +85,6 @@ Type* SemanticAnalyzer::make_type(const Location& loc, Type::Variant v) {
     return cu_.add_node<Type>(loc, std::move(v));
 }
 
-// 分析
 bool SemanticAnalyzer::analyze() {
     diagnostics_.clear();
     call_resolutions_.clear();
@@ -101,17 +94,18 @@ bool SemanticAnalyzer::analyze() {
     return !has_error_;
 }
 
-// 语义分析器：入口
-void SemanticAnalyzer::visit(CompUnit&) {}
+void SemanticAnalyzer::visit(CompUnit& cu) {
+    for (auto* imp : cu.imports) {
+        if (imp) {
+            (void)imp;
+        }
+    }
+}
 void SemanticAnalyzer::visit(Decl&) {}
 void SemanticAnalyzer::visit(Import&) {}
 void SemanticAnalyzer::scope_in(std::string name) {
     symbols_.push_scope(std::move(name));
 }
-void SemanticAnalyzer::check_type(Type& t) {
-
-}
-
 void SemanticAnalyzer::visit_func(Func& f) {
     for (const auto& tpl : f.templates) {
         symbols_.insert_local_tpl(tpl.name, tpl.dft);
@@ -121,12 +115,8 @@ void SemanticAnalyzer::visit_func(Func& f) {
 void SemanticAnalyzer::visit_special_method(SpecialMethod&) {}
 
 void SemanticAnalyzer::visit_var_list(VarList& vl) {
-    if(vl.type) check_type(*vl.type);
     for (const auto& var : vl.vars) {
-        Symbol sym(SymbolKind::Variable, var.name, vl.type, &vl);
-        if (!symbols_.insert_local(std::move(sym))) {
-            error(vl.loc, "duplicate declaration of variable'" + std::string(var.name) + "'");
-        }
+        symbols_.insert_local(var.name, Symbol(SymbolKind::Variable, &vl, vl.type, &vl));
     }
 }
 
@@ -142,9 +132,9 @@ void SemanticAnalyzer::visit_enum(Enum&) {}
 void SemanticAnalyzer::visit_keep(Keep&) {}
 
 
-std::string SemanticAnalyzer::build_callkey(const std::string& full_name,
+std::string SemanticAnalyzer::build_callkey(const std::string& name,
     const std::vector<VarList*>& params, const std::vector<TemplateParam>& templates) {
-    std::string key = full_name + "_";
+    std::string key = name + "_";
     for (const auto* param : params) {
         if (!param || !param->type || param->type->is_inferred()) {
             key += "_";
@@ -168,9 +158,9 @@ std::string SemanticAnalyzer::build_callkey(const std::string& full_name,
     return key;
 }
 
-std::string SemanticAnalyzer::build_callkey(const std::string& full_name,
+std::string SemanticAnalyzer::build_callkey(const std::string& name,
     const std::vector<Expr*>& args) {
-    std::string key = full_name + "_";
+    std::string key = name + "_";
     for (const auto* arg : args) {
         if (!arg || !arg->type || arg->type->is_inferred()) {
             key += "_";
@@ -182,7 +172,6 @@ std::string SemanticAnalyzer::build_callkey(const std::string& full_name,
 }
 
 void SemanticAnalyzer::collect() {
-    // 根作用域已在构造函数中存在，直接遍历顶层声明
     for (Decl* decl : cu_.top_decls) {
         collect_decl(decl);
     }
@@ -195,8 +184,8 @@ void SemanticAnalyzer::collect_decl(Decl* decl) {
         case DeclKind::VarList: {
             auto* vl = static_cast<VarList*>(decl);
             for (const auto& var : vl->vars) {
-                Symbol sym(SymbolKind::Variable, var.name, vl->type, vl);
-                symbols_.insert_member(std::move(sym));
+                Symbol sym(SymbolKind::Variable, vl, vl->type, vl);
+                symbols_.insert_member(std::string(var.name), std::move(sym));
             }
             break;
         }
@@ -209,12 +198,9 @@ void SemanticAnalyzer::collect_decl(Decl* decl) {
 
         case DeclKind::Class: {
             auto* cls = static_cast<Class*>(decl);
-            // 先创建 scope，获取指针
             Scope* cls_scope = symbols_.push_scope(std::string(cls->name));
-            // 再创建带 scope 指针的 Symbol
-            Symbol cls_sym(SymbolKind::Class, cls->name, nullptr, cls, cls_scope);
-            symbols_.insert_member(std::move(cls_sym));
-            // 将scope指针写入Cont
+            Symbol cls_sym(SymbolKind::Class, cls, nullptr, cls, cls_scope);
+            symbols_.insert_member(std::string(cls->name), std::move(cls_sym));
             cls->scope = cls_scope;
 
             for (Decl* member : cls->members) {
@@ -226,12 +212,9 @@ void SemanticAnalyzer::collect_decl(Decl* decl) {
 
         case DeclKind::Namespace: {
             auto* ns = static_cast<Namespace*>(decl);
-            // 先创建 scope，获取指针
             Scope* ns_scope = symbols_.push_scope(std::string(ns->name));
-            // 再创建带 scope 指针的 Symbol
-            Symbol ns_sym(SymbolKind::Namespace, ns->name, nullptr, ns, ns_scope);
-            symbols_.insert_member(std::move(ns_sym));
-            // 将scope指针写入Cont
+            Symbol ns_sym(SymbolKind::Namespace, ns, nullptr, ns, ns_scope);
+            symbols_.insert_member(std::string(ns->name), std::move(ns_sym));
             ns->scope = ns_scope;
 
             for (Decl* member : ns->members) {
@@ -243,7 +226,6 @@ void SemanticAnalyzer::collect_decl(Decl* decl) {
 
         case DeclKind::Extern: {
             auto* ext = static_cast<Extern*>(decl);
-            // Extern块不引入新作用域，使用当前作用域的scope
             ext->scope = symbols_.current_scope();
             for (Decl* member : ext->members) {
                 collect_decl(member);
@@ -253,10 +235,9 @@ void SemanticAnalyzer::collect_decl(Decl* decl) {
 
         case DeclKind::Enum: {
             auto* e = static_cast<Enum*>(decl);
-            // 注册每个枚举变体到当前作用域
             for (const Token& var : e->variants) {
-                Symbol var_sym(SymbolKind::EnumVar, var.val, nullptr, e);
-                symbols_.insert_member(std::move(var_sym));
+                Symbol var_sym(SymbolKind::EnumVar, e, nullptr, e);
+                symbols_.insert_member(std::string(var.val), std::move(var_sym));
             }
             break;
         }
@@ -272,19 +253,15 @@ void SemanticAnalyzer::collect_decl(Decl* decl) {
 
 void SemanticAnalyzer::register_func(Func* f) {
     std::string name = std::string(f->name);
-    std::string path = get_current_full_path();
-    std::string full_name = path.empty() ? name : path + "::" + name;
+    std::string key = build_callkey(name, f->params, f->templates);
 
-    std::string key = build_callkey(full_name, f->params, f->templates);
-
-    if (symbols_.lookup_callkey(key)) {
+    if (symbols_.lookup_member(name)) {
         error(f->loc, "duplicate declaration of function '" + name + "'");
         return;
     }
 
-    Symbol sym(SymbolKind::Function, f->name, nullptr, f, nullptr, full_name, key);
-    symbols_.insert_member(std::move(sym));
-    symbols_.insert_callkey(key, Symbol(SymbolKind::Function, f->name, nullptr, f, nullptr, full_name, key));
+    Symbol sym(SymbolKind::Function, f, nullptr, f, nullptr);
+    symbols_.insert_member(name, std::move(sym));
 }
 
 void SemanticAnalyzer::register_special(SpecialMethod* sm) {
@@ -298,34 +275,15 @@ void SemanticAnalyzer::register_special(SpecialMethod* sm) {
         default: error(sm->loc, "unknown special method"); return;
     }
 
-    std::string path = get_current_full_path();
-    std::string full_name = path.empty() ? internal_name : path + "::" + internal_name;
+    std::string key = sm->conv ? build_callkey(internal_name, {sm->conv}, {}) : internal_name;
 
-    std::string key = sm->conv ? build_callkey(full_name, {sm->conv}, {}) : full_name;
-
-    if (symbols_.lookup_callkey(key)) {
+    if (symbols_.lookup_member(internal_name)) {
         error(sm->loc, "duplicate special method '" + internal_name + "'");
         return;
     }
 
-    Symbol sym(SymbolKind::Function, internal_name, nullptr, sm, nullptr, full_name, key);
-    symbols_.insert_member(std::move(sym));
-    symbols_.insert_callkey(key, Symbol(SymbolKind::Function, internal_name, nullptr, sm, nullptr, full_name, key));
-}
-
-std::string SemanticAnalyzer::get_current_full_path() const {
-    std::vector<std::string> parts;
-    for (Scope* s = symbols_.current_scope(); s && s->parent; s = s->parent) {
-        if (!s->name.empty()) {
-            parts.push_back(s->name);
-        }
-    }
-    std::string result;
-    for (auto it = parts.rbegin(); it != parts.rend(); ++it) {
-        if (!result.empty()) result += "::";
-        result += *it;
-    }
-    return result;
+    Symbol sym(SymbolKind::Function, sm, nullptr, sm, nullptr);
+    symbols_.insert_member(internal_name, std::move(sym));
 }
 
 void SemanticAnalyzer::scope_out() {
@@ -368,7 +326,6 @@ std::string SemanticAnalyzer::type_to_ir(Type& t) const {
     if (t.is_array()) {
         auto* arr = t.get_array();
         std::string elem_ir = arr->element ? type_to_ir(*arr->element) : "i8";
-        // 数组长度在编译期已确定
         return "[" + elem_ir + " x " + elem_ir + "]";
     }
     if (t.is_func()) {
@@ -389,31 +346,6 @@ std::string SemanticAnalyzer::type_to_ir(Type& t) const {
     return "i8";
 }
 
-void SemanticAnalyzer::set_expr_type(Expr* e, Type* t) {
-    if (e) e->type = t;
-}
-
-Type* SemanticAnalyzer::element_type(Type* t) {
-    if (!t) return nullptr;
-    if (t->is_array()) return t->get_array()->element;
-    if (t->is_pointer()) return t->get_pointer()->pointee;
-    return nullptr;
-}
-
-std::vector<std::string> SemanticAnalyzer::resolve_namespace_path(Expr* target) {
-    std::vector<std::string> path;
-    if (!target) return path;
-
-    if (auto* id = target->get_identifier()) {
-        path.push_back(std::string(id->name));
-    } else if (auto* mem = target->get_member()) {
-        auto prefix = resolve_namespace_path(mem->target);
-        path.insert(path.end(), prefix.begin(), prefix.end());
-        path.push_back(std::string(mem->member));
-    }
-    return path;
-}
-
 void SemanticAnalyzer::visit(Expr&) {}
 
 void SemanticAnalyzer::visit_expr_literal(Expr::Literal& lit) {
@@ -429,46 +361,40 @@ void SemanticAnalyzer::visit_expr_identifier(Expr::Identifier& id) {
     Symbol* sym = symbols_.lookup_local(id.name);
     if (sym) {
         current_expr->sym = sym;
-        set_expr_type(current_expr, sym->type);
+        current_expr->type = sym->type;
         current_expr->is_lvalue = (sym->kind == SymbolKind::Variable);
         return;
     }
 
-    // 模板参数占位，实例化时用具体类型替换
     ASTNode* tpl = symbols_.lookup_local_tpl(id.name);
     if (tpl) {
-        current_expr->type = make_type(current_expr->loc, Type::Inferred{});
+        current_expr->type = typeInferred;
         current_expr->is_lvalue = true;
         return;
     }
 
-    // 尝试查找成员（函数、类、枚举等）
-    auto* members = symbols_.lookup_member(id.name);
+    Symbol* members = symbols_.lookup_member(std::string(id.name));
     if (members) {
-        for (auto& m : *members) {
-            if (m.kind == SymbolKind::Function) {
-                // 函数名作为表达式，记录 sym 但类型为 nullptr（重载需调用时解析）
-                current_expr->sym = &m;
-                current_expr->type = nullptr;
-                current_expr->is_lvalue = false;
-                return;
-            }
-            if (m.kind == SymbolKind::Class) {
-                current_expr->sym = &m;
-                current_expr->type = nullptr;
-                current_expr->is_lvalue = false;
-                return;
-            }
-            if (m.kind == SymbolKind::Variable) {
-                current_expr->sym = &m;
-                set_expr_type(current_expr, m.type);
-                current_expr->is_lvalue = true;
-                return;
-            }
+        if (members->kind == SymbolKind::Function) {
+            current_expr->sym = members;
+            current_expr->type = nullptr;
+            current_expr->is_lvalue = false;
+            return;
         }
-        // 找到成员但不是支持的类型
-        current_expr->sym = &(*members)[0];
-        current_expr->type = (*members)[0].type;
+        if (members->kind == SymbolKind::Class) {
+            current_expr->sym = members;
+            current_expr->type = nullptr;
+            current_expr->is_lvalue = false;
+            return;
+        }
+        if (members->kind == SymbolKind::Variable) {
+            current_expr->sym = members;
+            current_expr->type = members->type;
+            current_expr->is_lvalue = true;
+            return;
+        }
+        current_expr->sym = members;
+        current_expr->type = members->type;
         current_expr->is_lvalue = false;
         return;
     }
@@ -477,33 +403,26 @@ void SemanticAnalyzer::visit_expr_identifier(Expr::Identifier& id) {
 }
 
 bool SemanticAnalyzer::has_operator_overload(Type* type, OpKind op) {
-    if (!type || !type->is_custom()) return false;
-    
-    std::string cls_name = std::string(type->get_custom()->name);
-    std::string op_name(opkind_to_sv(op));
-    
-    // 构建操作符方法名，如 "operator+"
-    std::string method_name = "operator" + op_name;
-    
-    // 在类的 scope 中查找该操作符
+    if (!type) return false;
+    auto* cus = type->get_custom();
+    if (!cus || !cus->resolved_decl) return false;
+    Scope* s = static_cast<Class*>(cus->resolved_decl)->scope;
+    if (!s) return false;
+    std::string cls_name = std::string(cus->name);
+    std::string_view method_name = opkind_to_sv(op);
     Scope* cls_scope = nullptr;
-    const auto* cls_syms = symbols_.lookup_member(cls_name);
+    Symbol* cls_syms = symbols_.lookup_member(cls_name);
     if (cls_syms) {
-        for (const auto& s : *cls_syms) {
-            if ((s.kind == SymbolKind::Class || s.kind == SymbolKind::Namespace) && s.scope) {
-                cls_scope = s.scope;
-                break;
-            }
+        if ((cls_syms->kind == SymbolKind::Class || cls_syms->kind == SymbolKind::Namespace) && cls_syms->scope) {
+            cls_scope = cls_syms->scope;
         }
     }
     
     if (!cls_scope) return false;
     
-    auto* methods = SymbolTable::lookup_member_in(cls_scope, method_name);
+    Symbol* methods = SymbolTable::lookup_member_in(cls_scope, std::string(method_name));
     if (methods) {
-        for (const auto& m : *methods) {
-            if (m.kind == SymbolKind::Function) return true;
-        }
+        if (methods->kind == SymbolKind::Function) return true;
     }
     
     return false;
@@ -512,15 +431,15 @@ bool SemanticAnalyzer::has_operator_overload(Type* type, OpKind op) {
 bool SemanticAnalyzer::can_convert_to(Type* src, Type* dst) {
     if (!src || !dst) return false;
     
-    // 如果类型相同，可以直接转换
     if (is_same_type(src, dst)) return true;
     
-    // 如果源类型是自定义类型（类），检查是否有Conversion方法
     if (auto* c = src->get_custom()) {
         if(c->resolved_decl && c->resolved_decl->kind == DeclKind::Class) {
             Class& cls = static_cast<Class&>(*c->resolved_decl);
-            auto* cands = cls.scope->lookup_callkey("conversion");
-            if (cands) { (void)cands; }
+            Symbol* cands = cls.scope->lookup_member("conversion");
+            if (cands) {
+                return true;
+            }
         }
     }
     
@@ -536,38 +455,33 @@ void SemanticAnalyzer::visit_expr_binary(Expr::Binary& b) {
         return;
     }
 
-    // 检查类是否有操作符重载
     bool left_is_class = lt->is_custom();
     bool right_is_class = rt->is_custom();
     
     if (left_is_class || right_is_class) {
-        // 检查是否有对应的操作符重载
         bool has_left_overload = left_is_class && has_operator_overload(lt, b.op);
         bool has_right_overload = right_is_class && has_operator_overload(rt, b.op);
         
         if (has_left_overload || has_right_overload) {
-            // 有操作符重载，设置返回类型为左操作数类型（或重载指定的类型）
             current_expr->type = lt;
             current_expr->is_lvalue = false;
             return;
         }
         
-        // 检查自动推导的比较运算符
         if (b.op == OpKind::Less || b.op == OpKind::Greater || 
             b.op == OpKind::LessEqual || b.op == OpKind::GreaterEqual) {
-            // 如果有任一比较运算符被重载，所有比较运算符都可用
             bool has_any_comparison = false;
             if (left_is_class) {
                 has_any_comparison = has_operator_overload(lt, OpKind::Less) ||
-                                   has_operator_overload(lt, OpKind::Greater) ||
-                                   has_operator_overload(lt, OpKind::LessEqual) ||
-                                   has_operator_overload(lt, OpKind::GreaterEqual);
+                                    has_operator_overload(lt, OpKind::Greater) ||
+                                    has_operator_overload(lt, OpKind::LessEqual) ||
+                                    has_operator_overload(lt, OpKind::GreaterEqual);
             }
             if (!has_any_comparison && right_is_class) {
                 has_any_comparison = has_operator_overload(rt, OpKind::Less) ||
-                                   has_operator_overload(rt, OpKind::Greater) ||
-                                   has_operator_overload(rt, OpKind::LessEqual) ||
-                                   has_operator_overload(rt, OpKind::GreaterEqual);
+                                    has_operator_overload(rt, OpKind::Greater) ||
+                                    has_operator_overload(rt, OpKind::LessEqual) ||
+                                    has_operator_overload(rt, OpKind::GreaterEqual);
             }
             
             if (has_any_comparison) {
@@ -577,9 +491,7 @@ void SemanticAnalyzer::visit_expr_binary(Expr::Binary& b) {
             }
         }
         
-        // == 默认为完全相等，!=默认为非完全相等
         if (b.op == OpKind::Equal || b.op == OpKind::NotEqual) {
-            // 对于自定义类型，== 和 != 默认按成员比较
             current_expr->type = typeBool;
             current_expr->is_lvalue = false;
             return;
@@ -594,7 +506,6 @@ void SemanticAnalyzer::visit_expr_binary(Expr::Binary& b) {
         case OpKind::Mod: {
             if (is_numeric_type(lt) && is_numeric_type(rt)) {
                 if (is_float_type(lt) || is_float_type(rt)) {
-                    // 浮点优先级更高的类型
                     auto lk = lt->get_primitive()->kind;
                     auto rk = rt->get_primitive()->kind;
                     int lp = lk == PrimitiveTypeKind::Double ? 2 : (lk == PrimitiveTypeKind::Float ? 1 : 0);
@@ -659,7 +570,6 @@ void SemanticAnalyzer::visit_expr_unary(Expr::Unary& u) {
     switch (u.op) {
         case OpKind::Minus:
         case OpKind::Plus: {
-            // 前缀 +/- 要求操作数为数值类型
             if (is_numeric_type(ot)) {
                 current_expr->type = ot;
             } else {
@@ -693,6 +603,7 @@ void SemanticAnalyzer::visit_expr_unary(Expr::Unary& u) {
                 current_expr->type = ot;
                 current_expr->is_lvalue = false;
             }
+            break;
         }
         case OpKind::BitAnd: {
             if (u.operand && u.operand->is_lvalue) {
@@ -703,6 +614,7 @@ void SemanticAnalyzer::visit_expr_unary(Expr::Unary& u) {
                 current_expr->type = ot;
                 current_expr->is_lvalue = false;
             }
+            break;
         }
         default:
             error(current_expr->loc, "invalid unary operator");
@@ -725,7 +637,6 @@ void SemanticAnalyzer::visit_expr_assign(Expr::Assign& a) {
     Type* rt = a.value->type;
 
     if (lt && rt && !is_same_type(lt, rt)) {
-        // 检查是否可以进行类型转换
         if (!can_convert_to(rt, lt)) {
             warning(current_expr->loc, "implicit conversion in assignment");
         }
@@ -749,23 +660,15 @@ void SemanticAnalyzer::resolve_call(Expr* call_expr, Expr::Call& c) {
 
     Symbol* callee_sym = c.callee->sym;
 
-    // 成员函数调用
     if (auto* mem = c.callee->get_member()) {
         Symbol* target_sym = mem->target->sym;
         if (target_sym) {
-            // target scope 已由 visit_expr_member 处理，直接使用
             Scope* target_scope = target_sym->scope;
-
             if (target_scope) {
                 std::string method = std::string(mem->member);
-                auto* methods = SymbolTable::lookup_member_in(target_scope, method);
-                if (methods) {
-                    for (auto& m : *methods) {
-                        if (m.kind == SymbolKind::Function) {
-                            callee_sym = &m;
-                            break;
-                        }
-                    }
+                Symbol* method_sym = SymbolTable::lookup_member_in(target_scope, method);
+                if (method_sym && method_sym->kind == SymbolKind::Function) {
+                    callee_sym = method_sym;
                 }
             }
         }
@@ -776,27 +679,20 @@ void SemanticAnalyzer::resolve_call(Expr* call_expr, Expr::Call& c) {
         return;
     }
 
-    // 类名调用：调用 INIT 方法
     if (callee_sym->kind == SymbolKind::Class && callee_sym->scope) {
-        std::string class_name = std::string(callee_sym->name);
+        std::string class_name = std::string(static_cast<Decl*>(callee_sym->node)->name);
         Scope* cls_scope = callee_sym->scope;
         
-        // 查找 INIT 方法
-        auto* init_methods = SymbolTable::lookup_member_in(cls_scope, "INIT");
+        Symbol* init_methods = SymbolTable::lookup_member_in(cls_scope, "INIT");
         if (init_methods) {
-            for (auto& m : *init_methods) {
-                if (m.kind == SymbolKind::Function) {
-                    callee_sym = &m;
-                    break;
-                }
+            if (init_methods->kind == SymbolKind::Function) {
+                callee_sym = init_methods;
             }
         } else {
-            // 没有 INIT 方法，检查参数数量是否为0
             if (!c.args.empty()) {
                 error(call_expr->loc, "class '" + class_name + "' has no INIT method but called with arguments");
                 return;
             }
-            // 无参调用，返回 void
             CallResolution resolution;
             resolution.call = call_expr;
             resolution.callee_name = class_name;
@@ -805,7 +701,7 @@ void SemanticAnalyzer::resolve_call(Expr* call_expr, Expr::Call& c) {
             resolution.resolved = true;
             resolution.return_types.push_back(typeVoid);
             
-            set_expr_type(call_expr, typeVoid);
+            current_expr->type = typeVoid;
             call_expr->sym = callee_sym;
             current_expr->is_lvalue = false;
             call_resolutions_.push_back(std::move(resolution));
@@ -813,17 +709,16 @@ void SemanticAnalyzer::resolve_call(Expr* call_expr, Expr::Call& c) {
         }
     }
 
-    // 按 callkey 直接查找
-    std::string func_name = std::string(callee_sym->name);
-    std::string callkey = build_callkey(callee_sym->full_name, c.args);
+    std::string func_name = std::string(static_cast<Decl*>(callee_sym->node)->name);
+    std::string callkey = build_callkey(func_name, c.args);
 
-    Symbol* resolved_sym = symbols_.lookup_callkey(callkey);
+    Symbol* resolved_sym = symbols_.lookup_member(func_name);
     CallResolution resolution;
     resolution.call = call_expr;
     resolution.callee_name = func_name;
 
     if (resolved_sym && resolved_sym->kind == SymbolKind::Function) {
-        resolution.resolved_name = resolved_sym->full_name;
+        resolution.resolved_name = std::string(static_cast<Decl*>(resolved_sym->node)->name);
         resolution.resolved_decl = resolved_sym->decl;
         resolution.resolved = true;
 
@@ -836,23 +731,17 @@ void SemanticAnalyzer::resolve_call(Expr* call_expr, Expr::Call& c) {
         }
 
         if (!resolution.return_types.empty()) {
-            set_expr_type(call_expr, resolution.return_types[0]);
+            current_expr->type = resolution.return_types[0];
         } else {
-            set_expr_type(call_expr, typeVoid);
+            current_expr->type = typeVoid;
         }
     } else {
-        // 检查是否为模板函数（实例化暂未实现）
-        auto* members_ptr = symbols_.lookup_member(func_name);
+        Symbol* members_ptr = symbols_.lookup_member(func_name);
         bool is_template = false;
-        if (members_ptr) {
-            for (auto& m : *members_ptr) {
-                if (m.kind == SymbolKind::Function) {
-                    if (auto* f = dynamic_cast<Func*>(m.decl)) {
-                        if (!f->templates.empty()) {
-                            is_template = true;
-                            break;
-                        }
-                    }
+        if (members_ptr && members_ptr->kind == SymbolKind::Function) {
+            if (auto* f = dynamic_cast<Func*>(members_ptr->decl)) {
+                if (!f->templates.empty()) {
+                    is_template = true;
                 }
             }
         }
@@ -917,21 +806,16 @@ void SemanticAnalyzer::visit_expr_member(Expr::Member& m) {
     Scope* target_scope = target_sym->scope;
     if (!target_scope) {
         Type* tt = target_sym->type;
-        // 如果目标是指针类型，自动解引用
-        if (tt->is_pointer()) {
+        if (tt && tt->is_pointer()) {
             tt = tt->get_pointer()->pointee;
         }
-        // 尝试通过类型名查找 scope
         if (tt && tt->is_custom()) {
             std::string cls_name = std::string(tt->get_custom()->name);
-            const auto* cls_syms = symbols_.lookup_member(cls_name);
+            Symbol* cls_syms = symbols_.lookup_member(cls_name);
             if (cls_syms) {
-                for (const auto& s : *cls_syms) {
-                    if ((s.kind == SymbolKind::Class || s.kind == SymbolKind::Namespace)
-                        && s.scope) {
-                        target_scope = s.scope;
-                        break;
-                    }
+                if ((cls_syms->kind == SymbolKind::Class || cls_syms->kind == SymbolKind::Namespace)
+                    && cls_syms->scope) {
+                    target_scope = cls_syms->scope;
                 }
             }
         }
@@ -945,22 +829,19 @@ void SemanticAnalyzer::visit_expr_member(Expr::Member& m) {
 
     std::string field = std::string(m.member);
 
-    // 在目标 scope 中查找成员
-    std::vector<vo::Symbol>* members = SymbolTable::lookup_member_in(target_scope, field);
+    Symbol* members = SymbolTable::lookup_member_in(target_scope, field);
     if (members) {
-        for (Symbol& sym : *members) {
-            if (sym.kind == SymbolKind::Variable && sym.type) {
-                current_expr->sym = &sym;
-                current_expr->type = sym.type;
-                current_expr->is_lvalue = true;
-                return;
-            }
-            if (sym.kind == SymbolKind::Function) {
-                current_expr->sym = &sym;
-                current_expr->type = nullptr;
-                current_expr->is_lvalue = false;
-                return;
-            }
+        if (members->kind == SymbolKind::Variable && members->type) {
+            current_expr->sym = members;
+            current_expr->type = members->type;
+            current_expr->is_lvalue = true;
+            return;
+        }
+        if (members->kind == SymbolKind::Function) {
+            current_expr->sym = members;
+            current_expr->type = nullptr;
+            current_expr->is_lvalue = false;
+            return;
         }
     }
 
@@ -974,8 +855,6 @@ void SemanticAnalyzer::visit_expr_cast(Expr::Cast& cast) {
         current_expr->type = nullptr;
         return;
     }
-
-    check_type(*cast.target_type);
     current_expr->type = cast.target_type;
     current_expr->is_lvalue = false;
 
@@ -990,7 +869,6 @@ void SemanticAnalyzer::visit_expr_cast(Expr::Cast& cast) {
 
 void SemanticAnalyzer::visit_expr_array(Expr::Array& arr) {
     if (arr.members.empty()) {
-        // 空数组：尝试从 fill_value 推导
         if (arr.fill_value && arr.fill_value->type) {
             current_expr->type = make_type(current_expr->loc,
                 Type::Array{arr.fill_value->type, nullptr});
@@ -1018,7 +896,6 @@ void SemanticAnalyzer::visit_expr_array(Expr::Array& arr) {
 }
 
 void SemanticAnalyzer::visit_expr_closure(Expr::Closure& clo) {
-    // 闭包类型: $(params) return_type
     std::vector<Type*> param_types;
     for (auto* p : clo.params) {
         if (p && p->type) {
@@ -1060,11 +937,8 @@ void SemanticAnalyzer::visit_expr_ternary(Expr::Ternary& t) {
 }
 
 void SemanticAnalyzer::visit(Modification&) {}
-
 void SemanticAnalyzer::visit(Stmt&) {}
-
 void SemanticAnalyzer::visit_stmt_block(Stmt::Block&) {}
-
 void SemanticAnalyzer::visit_stmt_expr(Stmt::ExprStmt&) {}
 
 void SemanticAnalyzer::visit_stmt_if(Stmt::If& if_stmt) {
@@ -1112,15 +986,13 @@ void SemanticAnalyzer::visit_stmt_for_in(Stmt::ForIn& for_in_stmt) {
         return;
     }
     
-    // Check if collection is iterable (array, pointer, or has iterator)
     bool is_iterable = false;
     if (coll_type->is_array()) {
         is_iterable = true;
     } else if (coll_type->is_pointer()) {
         is_iterable = true;
     } else if (coll_type->is_custom()) {
-        // Check for iterator protocol (has begin/end or similar)
-        is_iterable = true; // For now, allow custom types
+        is_iterable = true;
     }
     
     if (!is_iterable) {
@@ -1133,11 +1005,9 @@ void SemanticAnalyzer::visit_stmt_return(Stmt::Return& return_stmt) {
         error(current_stmt->loc, "return statement outside of function");
         return;
     }
-    // return没有返回值
 }
 
 void SemanticAnalyzer::visit_stmt_break(Stmt::Break&) {
-    // 检查是否在循环中：遍历父作用域查找while/for/forin作用域
     bool in_loop = false;
     for (Scope* s = symbols_.current_scope(); s; s = s->parent) {
         if (s->name == "while" || s->name == "for" || s->name == "forin") {
@@ -1164,15 +1034,10 @@ void SemanticAnalyzer::visit_stmt_continue(Stmt::Continue&) {
 }
 
 void SemanticAnalyzer::visit_stmt_flag(Stmt::Flag&) {}
-
 void SemanticAnalyzer::visit_stmt_goto(Stmt::Goto&) {}
-
 void SemanticAnalyzer::visit_stmt_asm(Stmt::Asm&) {}
-
 void SemanticAnalyzer::visit_stmt_keep(Stmt::Keep&) {}
-
 void SemanticAnalyzer::visit_stmt_var_decl(Stmt::VarDecl&) {}
-
 void SemanticAnalyzer::visit_stmt_spawn(Stmt::Spawn&) {}
 
 void SemanticAnalyzer::visit_stmt_wait(Stmt::Wait& wait_stmt) {
@@ -1196,12 +1061,14 @@ void SemanticAnalyzer::visit_type_custom(Type::Custom& c) {
     if (cu_.is_type_name(c.name)) {
         auto* decl = cu_.type_registry[c.name];
         c.resolved_decl = decl;
+    } else {
+        error(current_type->loc, "unresolved type '" + std::string(c.name) + "'");
     }
 }
-void SemanticAnalyzer::visit_type_inferred(Type::Inferred&) {}
+void SemanticAnalyzer::visit_type_inferred(Type::Inferred&) {
+    error(current_type->loc, "cannot use inferred type in this context");
+}
 void SemanticAnalyzer::visit_type_void(Type::Void&) {}
-
-// ---- 模板实例化辅助桩 ----
 
 bool SemanticAnalyzer::can_instantiate(
     Symbol*,

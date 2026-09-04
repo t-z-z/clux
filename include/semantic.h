@@ -30,18 +30,15 @@ enum class SymbolKind {
 
 struct Symbol {
     SymbolKind kind = SymbolKind::Variable;
-    std::string_view name;          // 指向 AST 中的名字（由 AST 保证生命周期）
+    ASTNode* node = nullptr;
     Type* type = nullptr;           // 变量或函数的返回类型
     Decl* decl = nullptr;           // 对应的声明节点
     Scope* scope = nullptr;         // 类/命名空间的符号表指针
-    std::string full_name;          // 完整限定名（如 "math::add"）
-    std::string key;                // callkey（如 "math::add_i32i32"，模板参数用 <n> 表示）
 
     Symbol() = default;
-    Symbol(SymbolKind kind_, std::string_view n, Type* t = nullptr, Decl* d = nullptr,
-           Scope* s = nullptr, std::string fn = "", std::string k = "")
-        : kind(kind_), name(n), type(t), decl(d), scope(s), full_name(std::move(fn)), key(std::move(k)) {}
-    explicit Symbol(Decl* d) : name(d->name), decl(d) {
+    Symbol(SymbolKind kind_, ASTNode* n, Type* t = nullptr, Decl* d = nullptr, Scope* s = nullptr)
+        : kind(kind_), node(n), type(t), decl(d), scope(s) {}
+    explicit Symbol(Decl* d) : node(d), decl(d) {
         switch (d->kind) {
             case DeclKind::VarList:       kind = SymbolKind::Variable; break;
             case DeclKind::Func:          kind = SymbolKind::Function; break;
@@ -62,8 +59,8 @@ struct Scope {
 
     svmap<Symbol> locals;
     svmap<ASTNode*> tpls;
-    std::unordered_map<std::string, std::vector<Symbol>> members;
-    svmap<Symbol> callkeys;
+    // 函数，类，命名空间，成员变量的统一表，函数使用mangled name作为键
+    std::unordered_map<std::string, Symbol> members;
 
     Scope() = default;
     Scope(std::string n) : name(std::move(n)) {}
@@ -84,8 +81,8 @@ struct Scope {
         return raw;
     }
 
-    inline bool insert_local(Symbol sym) {
-        auto it = locals.find(sym.name);
+    inline bool insert_local(std::string_view name, Symbol sym) {
+        auto it = locals.find(name);
         if (it != locals.end()) {
             if (it->second.kind == SymbolKind::Variable && sym.kind == SymbolKind::Variable) {
                 it->second = std::move(sym);
@@ -93,16 +90,16 @@ struct Scope {
             }
             return false;
         }
-        locals[sym.name] = std::move(sym);
+        locals[name] = std::move(sym);
         return true;
     }
 
-    inline void insert_member(Symbol sym) {
-        members[std::string(sym.name)].push_back(std::move(sym));
-    }
-
-    inline void insert_callkey(const std::string& key, Symbol sym) {
-        callkeys[key] = std::move(sym);
+    inline bool insert_member(std::string name, Symbol sym) {
+        if(members.find(name) != members.end()) {
+            return false;
+        }
+        members[name] = std::move(sym);
+        return true;
     }
 
     inline Symbol* lookup_local(std::string_view name) {
@@ -115,38 +112,13 @@ struct Scope {
         return it == tpls.end() ? nullptr : it->second;
     }
 
-    inline std::vector<Symbol>* lookup_member(std::string_view name) {
-        auto it = members.find(std::string(name));
+    inline Symbol* lookup_member(std::string name) {
+        auto it = members.find(name);
         return it == members.end() ? nullptr : &it->second;
-    }
-
-    inline Symbol* lookup_callkey(std::string_view key) {
-        auto it = callkeys.find(key);
-        return it == callkeys.end() ? nullptr : &it->second;
     }
 
     inline void insert_tpl(std::string_view name, ASTNode* n) {
         tpls[name] = n;
-    }
-
-    void merge_from(const Scope& other) {
-        for (const auto& [name, sym] : other.locals) {
-            if (locals.find(name) == locals.end()) {
-                locals[name] = sym;
-            }
-        }
-        for (const auto& tpl : other.tpls) {
-            if (tpls.find(tpl.first) == tpls.end()) {
-                tpls[tpl.first] = tpl.second;
-            }
-        }
-        for (const auto& [name, syms] : other.members) {
-            auto& target = members[name];
-            target.insert(target.end(), syms.begin(), syms.end());
-        }
-        for (const auto& [key, sym] : other.callkeys) {
-            callkeys[key] = sym;
-        }
     }
 };
 
@@ -173,8 +145,8 @@ struct SymbolTable {
     Scope* current_scope() const { return current_; }
     Scope* root() const { return root_.get(); }
 
-    bool insert_local(Symbol sym) {
-        return current_ ? current_->insert_local(std::move(sym)) : false;
+    bool insert_local(std::string_view name, Symbol sym) {
+        return current_ ? current_->insert_local(name, std::move(sym)) : false;
     }
 
     Symbol* lookup_local(std::string_view name) {
@@ -186,42 +158,29 @@ struct SymbolTable {
         return nullptr;
     }
 
-    void insert_member(Symbol sym) {
-        if (current_) current_->insert_member(std::move(sym));
+    void insert_member(std::string name, Symbol sym) {
+        if (current_) current_->insert_member(std::move(name), std::move(sym));
     }
 
-    std::vector<Symbol>* lookup_member(std::string_view name) {
+    Symbol* lookup_member(std::string name) {
         for (Scope* s = current_; s; s = s->parent) {
-            if (auto* vec = s->lookup_member(name)) {
-                return vec;
+            if (Symbol* sym = s->lookup_member(name)) {
+                return sym;
             }
         }
         return nullptr;
     }
 
     // 在指定 scope 中查找成员（不向上搜索）
-    static std::vector<Symbol>* lookup_member_in(Scope* scope, std::string_view name) {
+    static Symbol* lookup_member_in(Scope* scope, std::string name) {
         if (!scope) return nullptr;
-        return scope->lookup_member(name);
+        return scope->lookup_member(std::move(name));
     }
 
     // 在指定 scope 及其父链中查找成员
-    static std::vector<Symbol>* lookup_member_up(Scope* scope, std::string_view name) {
+    static Symbol* lookup_member_up(Scope* scope, std::string name) {
         for (Scope* s = scope; s; s = s->parent) {
-            if (auto* vec = s->lookup_member(name)) {
-                return vec;
-            }
-        }
-        return nullptr;
-    }
-
-    void insert_callkey(const std::string& key, Symbol sym) {
-        if (current_) current_->insert_callkey(key, std::move(sym));
-    }
-
-    Symbol* lookup_callkey(std::string_view key) {
-        for (Scope* s = current_; s; s = s->parent) {
-            if (auto* sym = s->lookup_callkey(key)) {
+            if (Symbol* sym = s->lookup_member(std::move(name))) {
                 return sym;
             }
         }
@@ -239,19 +198,6 @@ struct SymbolTable {
             }
         }
         return nullptr;
-    }
-
-    void merge(const SymbolTable& other) {
-        if (!other.root_) return;
-        merge_scope(*root_, *other.root_);
-    }
-
-    static void merge_scope(Scope& dst, const Scope& src) {
-        dst.merge_from(src);
-        for (const auto& src_child : src.children) {
-            Scope* dst_child = dst.get_or_create_child(src_child->name);
-            merge_scope(*dst_child, *src_child);
-        }
     }
 };
 
@@ -286,6 +232,7 @@ class SemanticAnalyzer : public ASTVisitor {
     TYPE
     #undef X
     Type* typeString; // StringLiteral
+    Type* typeInferred;
     
 public:
     explicit SemanticAnalyzer(CompUnit& cu) : cu_(cu){
@@ -293,8 +240,32 @@ public:
         TYPE
         #undef X
         typeString = make_type(Location(), Type::StringLiteral{});
+        typeInferred = make_type(Location(), Type::Inferred{});
     }
-    void merge_external_symbols(const SymbolTable& external);
+    void merge_external_symbols(const SymbolTable& external){
+        merge_scope(*symbols_.root(), *external.root());
+    }
+    void merge_scope(Scope& dst, const Scope& src) {
+        for (const auto& [name, sym] : src.locals) {
+            if (dst.locals.find(name) == dst.locals.end()) {
+                dst.locals[name] = sym;
+            }
+        }
+        for (const auto& [name, node] : src.tpls) {
+            if (dst.tpls.find(name) == dst.tpls.end()) {
+                dst.tpls[name] = node;
+            }
+        }
+        for (const auto& [name, sym] : src.members) {
+            if (dst.members.find(name) == dst.members.end()) {
+                dst.members[name] = sym;
+            }
+        }
+        for (const auto& src_child : src.children) {
+            Scope* dst_child = dst.get_or_create_child(src_child->name);
+            merge_scope(*dst_child, *src_child);
+        }
+    }
     // 主入口
     bool analyze();
 
@@ -304,9 +275,6 @@ public:
 
     // 供其他模块查询
     const SymbolTable& symbol_table() const { return symbols_; }
-    Symbol* lookup_callkey(std::string_view key) {
-        return symbols_.lookup_callkey(key);
-    }
     const std::vector<CallResolution>& call_resolutions() const { return call_resolutions_; }
     const CallResolution* find_call(Expr* e) const;
 
@@ -381,12 +349,10 @@ private:
 
     // 类型工具
     Type* make_type(const Location& loc, Type::Variant v);
-    std::string build_callkey(const std::string& full_name, const std::vector<VarList*>& params,
+    std::string build_callkey(const std::string& name, const std::vector<VarList*>& params,
                                const std::vector<TemplateParam>& templates = {});
-    std::string build_callkey(const std::string& full_name, const std::vector<Expr*>& args);
-    void set_expr_type(Expr* e, Type* t);
-    Type* element_type(Type* t);
-    void check_type(Type& t);
+std::string build_callkey(const std::string& name, const std::vector<Expr*>& args);
+    
     bool has_operator_overload(Type* type, OpKind op);
     bool can_convert_to(Type* src, Type* dst);
 
@@ -401,9 +367,6 @@ private:
 
     // 调用解析
     void resolve_call(Expr* call, Expr::Call& c);
-
-    // 作用域路径解析（将 Expr 转换为命名空间路径）
-    std::vector<std::string> resolve_namespace_path(Expr* target);
 
     // 模板实例化辅助
     struct TemplateDeduction {
