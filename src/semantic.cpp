@@ -190,9 +190,12 @@ void SemanticAnalyzer::collect_decl(Decl* decl) {
             break;
         }
 
-        case DeclKind::Func:
-        case DeclKind::Operator: {
+        case DeclKind::Func:{
             register_func(static_cast<Func*>(decl));
+            break;
+        }
+        case DeclKind::Operator: {
+            // 标记之后做
             break;
         }
 
@@ -402,30 +405,16 @@ void SemanticAnalyzer::visit_expr_identifier(Expr::Identifier& id) {
     error(current_expr->loc, "undefined identifier '" + std::string(id.name) + "'");
 }
 
-bool SemanticAnalyzer::has_operator_overload(Type* type, OpKind op) {
-    if (!type) return false;
+bool SemanticAnalyzer::has_operator_overload(Type* type, OpKind op, Type* other) {
+    if (!type || !other) return false;
     auto* cus = type->get_custom();
     if (!cus || !cus->resolved_decl) return false;
-    Scope* s = static_cast<Class*>(cus->resolved_decl)->scope;
-    if (!s) return false;
+    Scope* scope = static_cast<Class*>(cus->resolved_decl)->scope;
+    if (!scope) return false;
     std::string cls_name = std::string(cus->name);
-    std::string_view method_name = opkind_to_sv(op);
-    Scope* cls_scope = nullptr;
-    Symbol* cls_syms = symbols_.lookup_member(cls_name);
-    if (cls_syms) {
-        if ((cls_syms->kind == SymbolKind::Class || cls_syms->kind == SymbolKind::Namespace) && cls_syms->scope) {
-            cls_scope = cls_syms->scope;
-        }
-    }
-    
-    if (!cls_scope) return false;
-    
-    Symbol* methods = SymbolTable::lookup_member_in(cls_scope, std::string(method_name));
-    if (methods) {
-        if (methods->kind == SymbolKind::Function) return true;
-    }
-    
-    return false;
+    std::string key = type_to_ir(*type) + std::string(opkind_to_sv(op)) + type_to_ir(*other);
+    Symbol* cls_syms = scope->lookup_member(key);
+    return cls_syms;
 }
 
 bool SemanticAnalyzer::can_convert_to(Type* src, Type* dst) {
@@ -459,10 +448,9 @@ void SemanticAnalyzer::visit_expr_binary(Expr::Binary& b) {
     bool right_is_class = rt->is_custom();
     
     if (left_is_class || right_is_class) {
-        bool has_left_overload = left_is_class && has_operator_overload(lt, b.op);
-        bool has_right_overload = right_is_class && has_operator_overload(rt, b.op);
+        bool has = left_is_class && has_operator_overload(lt, b.op, rt);
         
-        if (has_left_overload || has_right_overload) {
+        if (has) {
             current_expr->type = lt;
             current_expr->is_lvalue = false;
             return;
@@ -472,16 +460,17 @@ void SemanticAnalyzer::visit_expr_binary(Expr::Binary& b) {
             b.op == OpKind::LessEqual || b.op == OpKind::GreaterEqual) {
             bool has_any_comparison = false;
             if (left_is_class) {
-                has_any_comparison = has_operator_overload(lt, OpKind::Less) ||
-                                    has_operator_overload(lt, OpKind::Greater) ||
-                                    has_operator_overload(lt, OpKind::LessEqual) ||
-                                    has_operator_overload(lt, OpKind::GreaterEqual);
+                // 这里有问题，会反复调用type to ir导致性能浪费
+                has_any_comparison = has_operator_overload(lt, OpKind::Less, rt) ||
+                                    has_operator_overload(lt, OpKind::Greater, rt) ||
+                                    has_operator_overload(lt, OpKind::LessEqual, rt) ||
+                                    has_operator_overload(lt, OpKind::GreaterEqual, rt);
             }
             if (!has_any_comparison && right_is_class) {
-                has_any_comparison = has_operator_overload(rt, OpKind::Less) ||
-                                    has_operator_overload(rt, OpKind::Greater) ||
-                                    has_operator_overload(rt, OpKind::LessEqual) ||
-                                    has_operator_overload(rt, OpKind::GreaterEqual);
+                has_any_comparison = has_operator_overload(rt, OpKind::Less, rt) ||
+                                    has_operator_overload(rt, OpKind::Greater, rt) ||
+                                    has_operator_overload(rt, OpKind::LessEqual, rt) ||
+                                    has_operator_overload(rt, OpKind::GreaterEqual, rt);
             }
             
             if (has_any_comparison) {

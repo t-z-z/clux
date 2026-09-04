@@ -60,7 +60,7 @@ struct Scope {
     svmap<Symbol> locals;
     svmap<ASTNode*> tpls;
     // 函数，类，命名空间，成员变量的统一表，函数使用mangled name作为键
-    std::unordered_map<std::string, Symbol> members;
+    std::unordered_map<std::string, Symbol, StringViewHash, StringViewEqual> members;
 
     Scope() = default;
     Scope(std::string n) : name(std::move(n)) {}
@@ -94,7 +94,7 @@ struct Scope {
         return true;
     }
 
-    inline bool insert_member(std::string name, Symbol sym) {
+    inline bool insert_member(const std::string& name, Symbol sym) {
         if(members.find(name) != members.end()) {
             return false;
         }
@@ -112,7 +112,7 @@ struct Scope {
         return it == tpls.end() ? nullptr : it->second;
     }
 
-    inline Symbol* lookup_member(std::string name) {
+    inline Symbol* lookup_member(const std::string& name) {
         auto it = members.find(name);
         return it == members.end() ? nullptr : &it->second;
     }
@@ -125,7 +125,8 @@ struct Scope {
 struct SymbolTable {
     std::unique_ptr<Scope> root_;
     Scope* current_ = nullptr;
-
+    // 操作符重载表，使用type_ir + op + type_ir作为键，例如"int+int"
+    std::unordered_map<std::string, Operator*> operator_overloads;
     SymbolTable() {
         root_ = std::make_unique<Scope>("<global>");
         current_ = root_.get();
@@ -162,7 +163,7 @@ struct SymbolTable {
         if (current_) current_->insert_member(std::move(name), std::move(sym));
     }
 
-    Symbol* lookup_member(std::string name) {
+    Symbol* lookup_member(const std::string& name) {
         for (Scope* s = current_; s; s = s->parent) {
             if (Symbol* sym = s->lookup_member(name)) {
                 return sym;
@@ -172,15 +173,15 @@ struct SymbolTable {
     }
 
     // 在指定 scope 中查找成员（不向上搜索）
-    static Symbol* lookup_member_in(Scope* scope, std::string name) {
+    static Symbol* lookup_member_in(Scope* scope, const std::string& name) {
         if (!scope) return nullptr;
         return scope->lookup_member(std::move(name));
     }
 
     // 在指定 scope 及其父链中查找成员
-    static Symbol* lookup_member_up(Scope* scope, std::string name) {
+    static Symbol* lookup_member_up(Scope* scope, const std::string& name) {
         for (Scope* s = scope; s; s = s->parent) {
-            if (Symbol* sym = s->lookup_member(std::move(name))) {
+            if (Symbol* sym = s->lookup_member(name)) {
                 return sym;
             }
         }
@@ -198,6 +199,14 @@ struct SymbolTable {
             }
         }
         return nullptr;
+    }
+
+    bool insert_operator(const std::string& key, Operator* decl) {
+        if (operator_overloads.find(key) != operator_overloads.end()) {
+            return false;
+        }
+        operator_overloads[key] = decl;
+        return true;
     }
 };
 
@@ -353,7 +362,7 @@ private:
                                const std::vector<TemplateParam>& templates = {});
 std::string build_callkey(const std::string& name, const std::vector<Expr*>& args);
     
-    bool has_operator_overload(Type* type, OpKind op);
+    bool has_operator_overload(Type* type, OpKind op, Type* other);
     bool can_convert_to(Type* src, Type* dst);
 
     // 声明收集与注册

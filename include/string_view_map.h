@@ -10,14 +10,19 @@
 struct StringViewHash {
     using is_transparent = void;  // 启用透明查找
     std::size_t operator()(std::string_view sv) const noexcept {
-        // 使用标准哈希
         return std::hash<std::string_view>{}(sv);
+    }
+    std::size_t operator()(const std::string& sv) const noexcept {
+        return std::hash<std::string>{}(sv);
     }
 };
 
 struct StringViewEqual {
     using is_transparent = void;
     bool operator()(std::string_view lhs, std::string_view rhs) const noexcept {
+        return lhs == rhs;
+    }
+    bool operator()(const std::string& lhs, const std::string& rhs) const noexcept {
         return lhs == rhs;
     }
 };
