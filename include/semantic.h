@@ -18,7 +18,7 @@ namespace vo {
 
 // 符号表与作用域
 
-struct Scope;  // 前向声明
+struct Scope;
 
 enum class SymbolKind {
     Variable,
@@ -31,24 +31,50 @@ enum class SymbolKind {
 struct Symbol {
     SymbolKind kind = SymbolKind::Variable;
     ASTNode* node = nullptr;
-    Type* type = nullptr;           // 变量或函数的返回类型
-    Decl* decl = nullptr;           // 对应的声明节点
     Scope* scope = nullptr;         // 类/命名空间的符号表指针
 
     Symbol() = default;
-    Symbol(SymbolKind kind_, ASTNode* n, Type* t = nullptr, Decl* d = nullptr, Scope* s = nullptr)
-        : kind(kind_), node(n), type(t), decl(d), scope(s) {}
-    explicit Symbol(Decl* d) : node(d), decl(d) {
+    Symbol(SymbolKind k, ASTNode* n, Scope* s = nullptr)
+        : kind(k), node(n), scope(s) {}
+    explicit Symbol(Decl* d) : node(d) {
         switch (d->kind) {
             case DeclKind::VarList:       kind = SymbolKind::Variable; break;
             case DeclKind::Func:          kind = SymbolKind::Function; break;
             case DeclKind::Class:         kind = SymbolKind::Class; break;
-            case DeclKind::Enum:          kind = SymbolKind::Class; break;
+            case DeclKind::Enum:          kind = SymbolKind::EnumVar; break;
             case DeclKind::Namespace:     kind = SymbolKind::Namespace; break;
             case DeclKind::SpecialMethod: kind = SymbolKind::Function; break;
             case DeclKind::Operator:      kind = SymbolKind::Function; break;
             default:                      kind = SymbolKind::Variable; break;
         }
+    }
+    Type* get_type() {
+        if (!node) return nullptr;
+        if (auto* vl = dynamic_cast<VarList*>(node)) {
+            return vl->type;
+        }
+        if (auto* vi = dynamic_cast<VarItem*>(node)) {
+            return vi->type;
+        }
+        return nullptr;
+    }
+    Decl* get_decl() {
+        if (!node) return nullptr;
+        if (Type* t = dynamic_cast<Type*>(node)) {
+            if (auto* c = t->get_custom()) {
+                return c->resolved_decl;
+            }
+        } else if (Decl* d = dynamic_cast<Decl*>(node)) {
+            return d;
+        }
+        return nullptr;
+    }
+    template<typename T>
+    T* get() {
+        if (T* d = dynamic_cast<T*>(node)) {
+            return d;
+        }
+        return nullptr;
     }
 };
 
@@ -94,12 +120,10 @@ struct Scope {
         return true;
     }
 
-    inline bool insert_member(const std::string& name, Symbol sym) {
-        if(members.find(name) != members.end()) {
-            return false;
-        }
-        members[name] = std::move(sym);
-        return true;
+    inline Symbol* insert_member(const std::string& name, Symbol sym) {
+        auto [it, inserted] = members.emplace(name, std::move(sym));
+        if (!inserted) return nullptr;
+        return &it->second;
     }
 
     inline Symbol* lookup_local(std::string_view name) {
@@ -125,8 +149,6 @@ struct Scope {
 struct SymbolTable {
     std::unique_ptr<Scope> root_;
     Scope* current_ = nullptr;
-    // 操作符重载表，使用type_ir + op + type_ir作为键，例如"int+int"
-    std::unordered_map<std::string, Operator*> operator_overloads;
     SymbolTable() {
         root_ = std::make_unique<Scope>("<global>");
         current_ = root_.get();
@@ -159,8 +181,9 @@ struct SymbolTable {
         return nullptr;
     }
 
-    void insert_member(std::string name, Symbol sym) {
-        if (current_) current_->insert_member(std::move(name), std::move(sym));
+    Symbol* insert_member(std::string name, Symbol sym) {
+        if (current_) return current_->insert_member(std::move(name), std::move(sym));
+        return nullptr;
     }
 
     Symbol* lookup_member(const std::string& name) {
@@ -170,6 +193,12 @@ struct SymbolTable {
             }
         }
         return nullptr;
+    }
+
+    Symbol* insert_and_push(std::string name, Symbol sym) {
+        Symbol* s = insert_member(name, std::move(sym));
+        s->scope = push_scope(name);
+        return s;
     }
 
     // 在指定 scope 中查找成员（不向上搜索）
@@ -199,14 +228,6 @@ struct SymbolTable {
             }
         }
         return nullptr;
-    }
-
-    bool insert_operator(const std::string& key, Operator* decl) {
-        if (operator_overloads.find(key) != operator_overloads.end()) {
-            return false;
-        }
-        operator_overloads[key] = decl;
-        return true;
     }
 };
 
@@ -346,8 +367,10 @@ public:
     void visit_type_array(Type::Array&) override;
     void visit_type_func(Type::Func&) override;
     void visit_type_custom(Type::Custom&) override;
+    void visit_type_reference(Type::Reference&) override;
     void visit_type_inferred(Type::Inferred&) override;
     void visit_type_void(Type::Void&) override;
+    void visit_type_string_literal(Type::StringLiteral&) override;
 
 private:
 
@@ -358,23 +381,23 @@ private:
 
     // 类型工具
     Type* make_type(const Location& loc, Type::Variant v);
-    std::string build_callkey(const std::string& name, const std::vector<VarList*>& params,
-                               const std::vector<TemplateParam>& templates = {});
+    std::string build_callkey(const std::string& name, const std::vector<VarList*>& params);
 std::string build_callkey(const std::string& name, const std::vector<Expr*>& args);
     
-    bool has_operator_overload(Type* type, OpKind op, Type* other);
+    Symbol* find_operator_overload(Type& type, OpKind op, Type& other);
     bool can_convert_to(Type* src, Type* dst);
 
     // 声明收集与注册
     void collect();
     void collect_decl(Decl* decl);
-    void register_func(Func* f);
-    void register_special(SpecialMethod* sm);
+    void register_func(Func& f);
+    void register_special(SpecialMethod& sm);
+    void register_operator(Operator& op);
 
     // 辅助：获取当前作用域的完整路径字符串（用 "::" 连接）
     std::string get_current_full_path() const;
 
-    // 调用解析
+// 调用解析
     void resolve_call(Expr* call, Expr::Call& c);
 
     // 模板实例化辅助

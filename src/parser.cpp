@@ -249,7 +249,7 @@ VarList* Parser::parse_var_decl(ModfList &ml, Location &loc) {
         type = parse_type();
         if (!type) return nullptr;
     }
-    std::vector<VarItem> vars;
+    std::vector<VarItem*> vars;
     for (;;) {
         if (curr().is_ident()) {
             std::string_view name = curr().get_val();
@@ -265,7 +265,7 @@ VarList* Parser::parse_var_decl(ModfList &ml, Location &loc) {
             }else if(type->is_inferred()) {
                 add_error("can not infer type");
             }
-            vars.push_back(VarItem(name, init));
+            vars.push_back(cu_.add_node<VarItem>(get_loc(), name, init));
         } else if (vars.empty()) {
             return nullptr;
         } else {
@@ -634,9 +634,6 @@ Stmt* Parser::parse_stmt() {
         Location l = get_loc();
         VarList* vl = parse_var_decl(ml,l);
         if (vl) {
-            // 形如 `data[0] = 5` / `foo(1)` 会被 parse_generic_type 误读成
-            // `Custom(data) data` 变量声明：类型为裸自定义名且名称后紧跟后缀 token 时回退
-            // 需要修复 parse_generic_type 解决 标记
             result = cu_.add_node<Stmt>(loc, Stmt::VarDecl{vl});
             goto End;
         } else {

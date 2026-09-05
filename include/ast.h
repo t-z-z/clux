@@ -454,19 +454,20 @@ struct Cont : Decl { // container 容器，用于包含申明
     }
 };
 // VarItem 是类型无关的单个变量申明
-struct VarItem{
+struct VarItem : ASTNode {
     std::string_view name;
     Expr *init;
+    Type* type = nullptr;  // 语义分析后解析的类型
     VarItem() = default;
-    VarItem(std::string_view n, Expr* i):
-        name(n), init(i) {}
+    VarItem(const Location& loc, std::string_view n, Expr* i):
+        ASTNode(loc), name(n), init(i) {}
 };
 // VarList 是同一种类型的多个变量申明
 struct VarList : Decl {
     Type* type = nullptr;
-    std::vector<VarItem> vars;
+    std::vector<VarItem*> vars;
     VarList(const Location& loc,ModfList ml,
-            Type* t, std::vector<VarItem> v
+            Type* t, std::vector<VarItem*> v
         ):
         Decl(loc, "", DeclKind::VarList, std::move(ml)),
         type(t), vars(std::move(v)) {}
@@ -613,8 +614,8 @@ struct ASTVisitor {
         for (auto* mod : decl.modfs.customs) {
             if (mod) walk(*mod);
         }
-        visit(decl);
         walk_children(decl);
+        visit(decl);
     }
     void walk(Expr& expr) {
         walk_children(expr);
@@ -629,8 +630,13 @@ struct ASTVisitor {
         visit(type);
     }
     void walk(Modification& mod) {
-        visit(mod);
         walk_children(mod);
+        visit(mod);
+    }
+
+    void walk(VarItem& vi) {
+        walk_children(vi);
+        visit(vi);
     }
 
     virtual void visit(CompUnit&) {}
@@ -639,6 +645,7 @@ struct ASTVisitor {
 
     virtual void visit(Decl&) {}
     virtual void visit_var_list(VarList&) {}
+    virtual void visit_var_item(VarItem&) {}
     virtual void visit_func(Func&) {}
     virtual void visit_namespace(Namespace&) {}
     virtual void visit_extern(Extern&) {}
@@ -648,6 +655,7 @@ struct ASTVisitor {
     virtual void visit_keep(Keep&) {}
 
     virtual void visit(Expr&) {}
+    virtual void visit(VarItem&) {}
 
     virtual void visit_expr_literal(Expr::Literal&) {}
     virtual void visit_expr_identifier(Expr::Identifier&) {}
@@ -689,8 +697,10 @@ struct ASTVisitor {
     virtual void visit_type_string_literal(Type::StringLiteral&) {}
     virtual void visit_type_func(Type::Func&) {}
     virtual void visit_type_custom(Type::Custom&) {}
+    virtual void visit_type_reference(Type::Reference&) {}
     virtual void visit_type_inferred(Type::Inferred&) {}
     virtual void visit_type_void(Type::Void&) {}
+    virtual void visit_type_string_literal(Type::StringLiteral&) {}
 
     // 递归遍历子节点（基类驱动，结构变更只改这里）
     void walk_children(Decl& decl) {
@@ -712,7 +722,6 @@ struct ASTVisitor {
         Func* pre = current_func;
         current_func = &f;
         scope_in(std::string(f.name));
-        visit_func(f);
         for (auto* p : f.params) {
             if (p) walk(*p);
         }
@@ -720,51 +729,52 @@ struct ASTVisitor {
             if (r) walk(*r);
         }
         if (f.body) walk(*f.body);
+        visit_func(f);
         scope_out();
         current_func = pre;
     }
 
     void walk_children(VarList& vl) {
-        visit_var_list(vl);
         if (vl.type) walk(*vl.type);
-        for (auto& v : vl.vars) {
-            if (v.init) walk(*v.init);
+        for (auto* v : vl.vars) {
+            if (v) walk(*v);
         }
+        visit_var_list(vl);
     }
 
     void walk_children(Class& c) {
         Class* pre = current_class;
         current_class = &c;
         scope_in(std::string(c.name));
-        visit_class(c);
         for (auto* m : c.members) {
             if (m) walk(*m);
         }
+        visit_class(c);
         scope_out();
         current_class = pre;
     }
 
     void walk_children(Namespace& ns) {
         scope_in(std::string(ns.name));
-        visit_namespace(ns);
         for (auto* m : ns.members) {
             if (m) walk(*m);
         }
+        visit_namespace(ns);
         scope_out();
     }
 
     void walk_children(Extern& e) {
-        visit_extern(e);
         for (auto* m : e.members) {
             if (m) walk(*m);
         }
+        visit_extern(e);
     }
 
     void walk_children(SpecialMethod& sm) {
         scope_in(std::string(sm.name));
-        visit_special_method(sm);
         if (sm.body) walk(*sm.body);
         if (sm.conv) walk(*sm.conv);
+        visit_special_method(sm);
         scope_out();
     }
     void walk_children(Enum&) {}
@@ -890,19 +900,22 @@ struct ASTVisitor {
         std::visit([this](auto& v) {
             using T = std::decay_t<decltype(v)>;
             if constexpr (std::is_same_v<T, Type::Pointer>) {
-                visit_type_pointer(v);
                 if (v.pointee) walk(*v.pointee);
+                visit_type_pointer(v);
             } else if constexpr (std::is_same_v<T, Type::Array>) {
-                visit_type_array(v);
                 if (v.element) walk(*v.element);
                 if (v.length) walk(*v.length);
+                visit_type_array(v);
             } else if constexpr (std::is_same_v<T, Type::Func>) {
-                visit_type_func(v);
                 for (auto* p : v.params) if (p) walk(*p);
                 if (v.return_type) walk(*v.return_type);
-            }
-            else if constexpr (std::is_same_v<T, Type::Custom>) visit_type_custom(v);
-            else if constexpr (std::is_same_v<T, Type::Primitive>) visit_type_primitive(v);
+                visit_type_func(v);
+            } else if constexpr (std::is_same_v<T, Type::Custom>) {
+                visit_type_custom(v);
+            } else if constexpr (std::is_same_v<T, Type::Reference>) {
+                if (v.target) walk(*v.target);
+                visit_type_reference(v);
+            } else if constexpr (std::is_same_v<T, Type::Primitive>) visit_type_primitive(v);
             else if constexpr (std::is_same_v<T, Type::Inferred>) visit_type_inferred(v);
             else if constexpr (std::is_same_v<T, Type::Void>) visit_type_void(v);
             else if constexpr (std::is_same_v<T, Type::StringLiteral>) visit_type_string_literal(v);
@@ -911,6 +924,10 @@ struct ASTVisitor {
     }
 
     void walk_children(Modification&) {}
+    void walk_children(VarItem& vi) {
+        visit_var_item(vi);
+        if (vi.init) walk(*vi.init);
+    }
 };
 
 }// namespace vo
