@@ -13,7 +13,7 @@ static bool is_numeric_type(Type* t) {
     return k != PrimitiveTypeKind::Bool && k != PrimitiveTypeKind::Type && k != PrimitiveTypeKind::Void;
 }
 
-static bool is_integer_type(Type* t) {
+bool SemanticAnalyzer::is_integer_type(Type* t) {
     if (!t) return false;
     if(auto* p = t->get_primitive()){
         PrimitiveTypeKind k = p->kind;
@@ -23,19 +23,20 @@ static bool is_integer_type(Type* t) {
             || k == PrimitiveTypeKind::ULong || k == PrimitiveTypeKind::UInt128
             || k == PrimitiveTypeKind::Char || k == PrimitiveTypeKind::UChar;
     }
+    return false;
 }
 
-static bool is_float_type(Type* t) {
+bool SemanticAnalyzer::is_float_type(Type* t) {
     if (!t || !t->is_primitive()) return false;
     auto k = t->get_primitive()->kind;
     return k == PrimitiveTypeKind::Float16 || k == PrimitiveTypeKind::Float || k == PrimitiveTypeKind::Double;
 }
 
-static bool is_bool_type(Type* t) {
+bool SemanticAnalyzer::is_bool_type(Type* t) {
     return t && t->is_primitive() && t->get_primitive()->kind == PrimitiveTypeKind::Bool;
 }
 
-static bool is_same_type(Type* a, Type* b) {
+bool SemanticAnalyzer::is_same_type(Type* a, Type* b) {
     if (!a || !b) return false;
     if (a->data.index() != b->data.index()) return false;
     if (a->is_primitive() && b->is_primitive()) {
@@ -58,7 +59,7 @@ static bool is_same_type(Type* a, Type* b) {
     return false;
 }
 
-static bool is_integer_promotable(Type* t) {
+bool SemanticAnalyzer::is_integer_promotable(Type* t) {
     if (!t || !t->is_primitive()) return false;
     auto k = t->get_primitive()->kind;
     return k == PrimitiveTypeKind::Int8 || k == PrimitiveTypeKind::Short
@@ -66,7 +67,7 @@ static bool is_integer_promotable(Type* t) {
         || k == PrimitiveTypeKind::Char;
 }
 
-static bool is_void_type(Type* t) {
+bool SemanticAnalyzer::is_void_type(Type* t) {
     return t && t->is_void();
 }
 
@@ -290,6 +291,12 @@ std::string SemanticAnalyzer::type_to_key(Type& t) {
     return "i8";
 }
 
+void SemanticAnalyzer::scope_in(std::string name) {
+    symbols_.push_scope(std::move(name));
+}
+void SemanticAnalyzer::scope_out() {
+    symbols_.pop_scope();
+}
 void SemanticAnalyzer::visit(CompUnit& cu) {
     for (auto* imp : cu.imports) {
         if (imp) {
@@ -299,9 +306,6 @@ void SemanticAnalyzer::visit(CompUnit& cu) {
 }
 void SemanticAnalyzer::visit(Decl&) {}
 void SemanticAnalyzer::visit(Import&) {}
-void SemanticAnalyzer::scope_in(std::string name) {
-    symbols_.push_scope(std::move(name));
-}
 void SemanticAnalyzer::visit_func(Func& f) {
     for (const auto& tpl : f.templates) {
         symbols_.insert_local_tpl(tpl.name, tpl.dft);
@@ -326,10 +330,6 @@ void SemanticAnalyzer::visit_namespace(Namespace&) {}
 void SemanticAnalyzer::visit_extern(Extern&) {}
 void SemanticAnalyzer::visit_enum(Enum&) {}
 void SemanticAnalyzer::visit_keep(Keep&) {}
-
-void SemanticAnalyzer::scope_out() {
-    symbols_.pop_scope();
-}
 
 void SemanticAnalyzer::visit(Expr&) {}
 

@@ -388,6 +388,15 @@ private:
     Symbol* find_operator_overload(OpKind op, Type& type);
     bool can_convert_to(Type* src, Type* dst);
 
+    // 类型判断
+    bool is_numeric_type(Type* t);
+    bool is_integer_type(Type* t);
+    bool is_float_type(Type* t);
+    bool is_bool_type(Type* t);
+    bool is_same_type(Type* a, Type* b);
+    bool is_integer_promotable(Type* t);
+    bool is_void_type(Type* t);
+
     // 声明收集与注册
     void collect();
     void collect_decl(Decl* decl);
