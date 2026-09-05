@@ -700,7 +700,6 @@ struct ASTVisitor {
     virtual void visit_type_reference(Type::Reference&) {}
     virtual void visit_type_inferred(Type::Inferred&) {}
     virtual void visit_type_void(Type::Void&) {}
-    virtual void visit_type_string_literal(Type::StringLiteral&) {}
 
     // 递归遍历子节点（基类驱动，结构变更只改这里）
     void walk_children(Decl& decl) {

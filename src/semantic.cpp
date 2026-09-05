@@ -14,13 +14,15 @@ static bool is_numeric_type(Type* t) {
 }
 
 static bool is_integer_type(Type* t) {
-    if (!t || !t->is_primitive()) return false;
-    auto k = t->get_primitive()->kind;
-    return k == PrimitiveTypeKind::Int8 || k == PrimitiveTypeKind::Short || k == PrimitiveTypeKind::Int
-        || k == PrimitiveTypeKind::Long || k == PrimitiveTypeKind::Int128
-        || k == PrimitiveTypeKind::UInt8 || k == PrimitiveTypeKind::UShort || k == PrimitiveTypeKind::UInt
-        || k == PrimitiveTypeKind::ULong || k == PrimitiveTypeKind::UInt128
-        || k == PrimitiveTypeKind::Char || k == PrimitiveTypeKind::UChar;
+    if (!t) return false;
+    if(auto* p = t->get_primitive()){
+        PrimitiveTypeKind k = p->kind;
+        return k == PrimitiveTypeKind::Int8 || k == PrimitiveTypeKind::Short || k == PrimitiveTypeKind::Int
+            || k == PrimitiveTypeKind::Long || k == PrimitiveTypeKind::Int128
+            || k == PrimitiveTypeKind::UInt8 || k == PrimitiveTypeKind::UShort || k == PrimitiveTypeKind::UInt
+            || k == PrimitiveTypeKind::ULong || k == PrimitiveTypeKind::UInt128
+            || k == PrimitiveTypeKind::Char || k == PrimitiveTypeKind::UChar;
+    }
 }
 
 static bool is_float_type(Type* t) {
@@ -94,44 +96,6 @@ bool SemanticAnalyzer::analyze() {
     return !has_error_;
 }
 
-void SemanticAnalyzer::visit(CompUnit& cu) {
-    for (auto* imp : cu.imports) {
-        if (imp) {
-            (void)imp;
-        }
-    }
-}
-void SemanticAnalyzer::visit(Decl&) {}
-void SemanticAnalyzer::visit(Import&) {}
-void SemanticAnalyzer::scope_in(std::string name) {
-    symbols_.push_scope(std::move(name));
-}
-void SemanticAnalyzer::visit_func(Func& f) {
-    for (const auto& tpl : f.templates) {
-        symbols_.insert_local_tpl(tpl.name, tpl.dft);
-    }
-}
-
-void SemanticAnalyzer::visit_special_method(SpecialMethod&) {}
-
-void SemanticAnalyzer::visit_var_list(VarList& vl) {
-    for (VarItem* var : vl.vars) {
-        symbols_.insert_local(var->name, Symbol(SymbolKind::Variable, var));
-    }
-}
-
-void SemanticAnalyzer::visit_class(Class& c) {
-    for (const auto& tpl : c.templates) {
-        symbols_.insert_local_tpl(tpl.name, tpl.dft);
-    }
-}
-
-void SemanticAnalyzer::visit_namespace(Namespace&) {}
-void SemanticAnalyzer::visit_extern(Extern&) {}
-void SemanticAnalyzer::visit_enum(Enum&) {}
-void SemanticAnalyzer::visit_keep(Keep&) {}
-
-
 std::string SemanticAnalyzer::build_callkey(const std::string& name,
     const std::vector<VarList*>& params/*, const std::vector<TemplateParam>& templates = {}*/) {
     std::string key = name + "_";
@@ -139,9 +103,9 @@ std::string SemanticAnalyzer::build_callkey(const std::string& name,
         if (!param || !param->type || param->type->is_inferred()) {
             key += "_";
         } else if (param->type->is_custom()) {
-            key += type_to_ir(*param->type);
+            key += type_to_key(*param->type);
         } else {
-            key += type_to_ir(*param->type);
+            key += type_to_key(*param->type);
         }
     }
     return key;
@@ -154,7 +118,7 @@ std::string SemanticAnalyzer::build_callkey(const std::string& name,
         if (!arg || !arg->type || arg->type->is_inferred()) {
             key += "_";
         } else {
-            key += type_to_ir(*arg->type);
+            key += type_to_key(*arg->type);
         }
     }
     return key;
@@ -236,13 +200,13 @@ void SemanticAnalyzer::register_func(Func& f) {
     std::string name = std::string(f.name);
     std::string key = build_callkey(name, f.params);
 
-    if (symbols_.lookup_member(name)) {
+    if (symbols_.lookup_member(key)) {
         error(f.loc, "duplicate declaration of function '" + name + "'");
         return;
     }
 
     Symbol sym(SymbolKind::Function, &f);
-    symbols_.insert_member(name, std::move(sym));
+    symbols_.insert_member(key, std::move(sym));
 }
 
 void SemanticAnalyzer::register_special(SpecialMethod& sm) {
@@ -267,64 +231,104 @@ void SemanticAnalyzer::register_special(SpecialMethod& sm) {
     symbols_.insert_member(internal_name, std::move(sym));
 }
 
-void SemanticAnalyzer::scope_out() {
-    symbols_.pop_scope();
-}
-
-std::string SemanticAnalyzer::type_to_ir(Type& t) const {
+std::string SemanticAnalyzer::type_to_key(Type& t) {
     if (t.is_primitive()) {
         auto k = t.get_primitive()->kind;
         switch (k) {
-            case PrimitiveTypeKind::Int8:   return "i8";
-            case PrimitiveTypeKind::Short:  return "i16";
-            case PrimitiveTypeKind::Int:    return "i32";
-            case PrimitiveTypeKind::Long:   return "i64";
-            case PrimitiveTypeKind::Int128: return "i128";
-            case PrimitiveTypeKind::UInt8:  return "i8";
-            case PrimitiveTypeKind::UShort: return "i16";
-            case PrimitiveTypeKind::UInt:   return "i32";
-            case PrimitiveTypeKind::ULong:  return "i64";
-            case PrimitiveTypeKind::UInt128:return "i128";
-            case PrimitiveTypeKind::Float16:return "half";
-            case PrimitiveTypeKind::Float:  return "float";
-            case PrimitiveTypeKind::Double: return "double";
-            case PrimitiveTypeKind::Char:   return "i8";
-            case PrimitiveTypeKind::UChar:  return "i8";
-            case PrimitiveTypeKind::Bool:   return "i1";
-            case PrimitiveTypeKind::Type:   return "i32";
-            case PrimitiveTypeKind::Void:   return "void";
-            case PrimitiveTypeKind::Enum:   return "i32";
-            default: return "i8";
+            case PrimitiveTypeKind::Int8:    return "i8";
+            case PrimitiveTypeKind::Short:   return "i16";
+            case PrimitiveTypeKind::Int:     return "i32";
+            case PrimitiveTypeKind::Long:    return "i64";
+            case PrimitiveTypeKind::Int128:  return "i128";
+            case PrimitiveTypeKind::UInt8:   return "u8";
+            case PrimitiveTypeKind::UShort:  return "u16";
+            case PrimitiveTypeKind::UInt:    return "u32";
+            case PrimitiveTypeKind::ULong:   return "u64";
+            case PrimitiveTypeKind::UInt128: return "u128";
+            case PrimitiveTypeKind::Float16: return "f16";
+            case PrimitiveTypeKind::Float:   return "f32";
+            case PrimitiveTypeKind::Double:  return "f64";
+            case PrimitiveTypeKind::Char:    return "char";
+            case PrimitiveTypeKind::UChar:   return "uchar";
+            case PrimitiveTypeKind::Bool:    return "bool";
+            case PrimitiveTypeKind::Type:    return "type";
+            case PrimitiveTypeKind::Void:    return "void";
+            case PrimitiveTypeKind::Enum:    return "enum";
+            default: error(t.loc, "unknown primitive type"); return "?";
         }
     }
-    if (t.is_string_literal()) return "i8*";
+    if (t.is_string_literal()) return "string";
     if (t.is_pointer()) {
-        return type_to_ir(*t.get_pointer()->pointee) + "*";
+        return type_to_key(*t.get_pointer()->pointee) + "*";
     }
     if (t.is_reference()) {
-        return type_to_ir(*t.get_reference()->target) + "*";
+        return type_to_key(*t.get_reference()->target) + "&";
     }
     if (t.is_array()) {
         auto* arr = t.get_array();
-        std::string elem_ir = arr->element ? type_to_ir(*arr->element) : "i8";
-        return "[" + elem_ir + " x " + elem_ir + "]";
+        std::string elem_ir = arr->element ? type_to_key(*arr->element) : "i8";
+        return "[" + elem_ir + "]";
     }
     if (t.is_func()) {
         auto* f = t.get_func();
-        std::string ret = f->return_type ? type_to_ir(*f->return_type) : "void";
+        std::string ret = f->return_type ? type_to_key(*f->return_type) : "void";
         std::string params;
         for (size_t i = 0; i < f->params.size(); ++i) {
-            if (i > 0) params += ", ";
-            params += f->params[i] ? type_to_ir(*f->params[i]) : "i8";
+            if (i > 0) params += ",";
+            params += f->params[i] ? type_to_key(*f->params[i]) : "i8";
         }
-        return ret + " (" + params + ")*";
+        return ret + "(" + params + ")";
     }
     if (t.is_custom()) {
         return "%" + std::string(t.get_custom()->name);
     }
     if (t.is_void()) return "void";
-    if (t.is_inferred()) return "i8";
+    if (t.is_inferred()) {
+        error(t.loc, "cannot convert inferred type to unique key");
+        return "_";
+    }
     return "i8";
+}
+
+void SemanticAnalyzer::visit(CompUnit& cu) {
+    for (auto* imp : cu.imports) {
+        if (imp) {
+            (void)imp;
+        }
+    }
+}
+void SemanticAnalyzer::visit(Decl&) {}
+void SemanticAnalyzer::visit(Import&) {}
+void SemanticAnalyzer::scope_in(std::string name) {
+    symbols_.push_scope(std::move(name));
+}
+void SemanticAnalyzer::visit_func(Func& f) {
+    for (const auto& tpl : f.templates) {
+        symbols_.insert_local_tpl(tpl.name, tpl.dft);
+    }
+}
+
+void SemanticAnalyzer::visit_special_method(SpecialMethod&) {}
+
+void SemanticAnalyzer::visit_var_list(VarList& vl) {
+    for (VarItem* var : vl.vars) {
+        symbols_.insert_local(var->name, Symbol(SymbolKind::Variable, var));
+    }
+}
+
+void SemanticAnalyzer::visit_class(Class& c) {
+    for (const auto& tpl : c.templates) {
+        symbols_.insert_local_tpl(tpl.name, tpl.dft);
+    }
+}
+
+void SemanticAnalyzer::visit_namespace(Namespace&) {}
+void SemanticAnalyzer::visit_extern(Extern&) {}
+void SemanticAnalyzer::visit_enum(Enum&) {}
+void SemanticAnalyzer::visit_keep(Keep&) {}
+
+void SemanticAnalyzer::scope_out() {
+    symbols_.pop_scope();
 }
 
 void SemanticAnalyzer::visit(Expr&) {}
@@ -370,23 +374,34 @@ void SemanticAnalyzer::visit_expr_identifier(Expr::Identifier& id) {
     error(current_expr->loc, "undefined identifier '" + std::string(id.name) + "'");
 }
 
-Symbol* SemanticAnalyzer::find_operator_overload(Type& type, OpKind op, Type& other) {
+Symbol* SemanticAnalyzer::find_operator_overload(OpKind op, Type& type, Type& other) {
     auto* cus = type.get_custom();
-    if (!cus || !cus->resolved_decl) return false;
+    if (!cus || !cus->resolved_decl) return nullptr;
     Scope* scope = static_cast<Class*>(cus->resolved_decl)->scope;
-    if (!scope) return false;
+    if (!scope) return nullptr;
 
-    std::string cls_name = std::string(cus->name);
-    std::string key = std::string(opkind_to_sv(op)) + "_" + type_to_ir(other);
-    Symbol* cls_syms = scope->lookup_member(key);
-    if (cls_syms) return cls_syms;
-    key = std::string(opkind_to_sv(op)) + "_" + type_to_ir(type) + type_to_ir(other);
+    std::string key = std::string(opkind_to_sv(op)) + "_" + type_to_key(other);
+    Symbol* cls_sym = scope->lookup_member(key);
+    if (cls_sym) return cls_sym;
+    key = std::string(opkind_to_sv(op)) + "_" + type_to_key(type) + type_to_key(other);
+    return symbols_.lookup_member(key);
+}
+
+Symbol* SemanticAnalyzer::find_operator_overload(OpKind op, Type& type) {
+    auto* cus = type.get_custom();
+    if (!cus || !cus->resolved_decl) return nullptr;
+    Scope* scope = static_cast<Class*>(cus->resolved_decl)->scope;
+    if (!scope) return nullptr;
+
+    std::string key = std::string(opkind_to_sv(op)) + "_";
+    Symbol* cls_sym = scope->lookup_member(key);
+    if(cls_sym) return cls_sym;
+    key += type_to_key(type);
     return symbols_.lookup_member(key);
 }
 
 bool SemanticAnalyzer::can_convert_to(Type* src, Type* dst) {
     if (!src || !dst) return false;
-    
     if (is_same_type(src, dst)) return true;
     
     if (auto* c = src->get_custom()) {
@@ -405,13 +420,12 @@ bool SemanticAnalyzer::can_convert_to(Type* src, Type* dst) {
 void SemanticAnalyzer::visit_expr_binary(Expr::Binary& b) {
     Type* lt = b.left ? b.left->type : nullptr;
     Type* rt = b.right ? b.right->type : nullptr;
-
     if (!lt || !rt) {
         current_expr->type = nullptr;
         return;
     }
 
-    if (Symbol* s = find_operator_overload(*lt, b.op, *rt)) {
+    if (Symbol* s = find_operator_overload(b.op, *lt, *rt)) {
         current_expr->type = s->get<Operator>()->returns[0]->type;
         current_expr->is_lvalue = false;
         return;
@@ -484,6 +498,19 @@ void SemanticAnalyzer::visit_expr_unary(Expr::Unary& u) {
     if (!ot) {
         current_expr->type = nullptr;
         return;
+    }
+
+    if (Symbol* s = find_operator_overload(u.op, *ot)) {
+        if (auto* op = s->get<Operator>()) {
+            if (!op->returns.empty() && op->returns[0]->type) {
+                current_expr->type = op->returns[0]->type;
+            } else {
+                current_expr->type = typeVoid;
+            }
+            current_expr->is_lvalue = false;
+            current_expr->sym = s;
+            return;
+        }
     }
 
     switch (u.op) {
@@ -972,22 +999,38 @@ void SemanticAnalyzer::visit_stmt_wait(Stmt::Wait& wait_stmt) {
 }
 
 void SemanticAnalyzer::visit(Type&) {}
-void SemanticAnalyzer::visit_type_primitive(Type::Primitive&) {}
+void SemanticAnalyzer::visit_type_primitive(Type::Primitive& p) {
+    if (p.kind == PrimitiveTypeKind::Void) {
+        error(current_type->loc, "cannot create void type");
+    }
+}
+// ast本来应该有指针指向的节点如果是nullptr，说明已经在parser报过错了，不要重复报错
 void SemanticAnalyzer::visit_type_pointer(Type::Pointer&) {}
 void SemanticAnalyzer::visit_type_array(Type::Array&) {}
 void SemanticAnalyzer::visit_type_func(Type::Func&) {}
+void SemanticAnalyzer::visit_type_reference(Type::Reference&) {}
+
+void SemanticAnalyzer::visit_type_string_literal(Type::StringLiteral&) {
+    // StringLiteral is a valid type, no additional checks needed
+}
+void SemanticAnalyzer::visit_type_void(Type::Void&) {
+    // Void is valid as a return type or pointer pointee context, checked by callers
+}
+
 void SemanticAnalyzer::visit_type_custom(Type::Custom& c) {
-    if (cu_.is_type_name(c.name)) {
-        auto* decl = cu_.type_registry[c.name];
-        c.resolved_decl = decl;
-    } else {
+    std::string name(c.name);
+    if (Symbol* s = symbols_.lookup_member(name)) {
+        if (Decl* d = s->get_decl()) {
+            c.resolved_decl = d;
+        } else {
+            error(current_type->loc, "unknown type '" + name + "'");
+        }
+    } else if (!symbols_.lookup_local_tpl(name)) {
         error(current_type->loc, "unresolved type '" + std::string(c.name) + "'");
     }
 }
-void SemanticAnalyzer::visit_type_inferred(Type::Inferred&) {
-    error(current_type->loc, "cannot use inferred type in this context");
-}
-void SemanticAnalyzer::visit_type_void(Type::Void&) {}
+
+void SemanticAnalyzer::visit_type_inferred(Type::Inferred&) {}
 
 bool SemanticAnalyzer::can_instantiate(
     Symbol*,

@@ -309,7 +309,7 @@ public:
     const CallResolution* find_call(Expr* e) const;
 
     // 类型转字符串（用于生成 callkey）
-    std::string type_to_ir(Type& t) const;
+    std::string type_to_key(Type& t);
 
     // 作用域管理（配合 ASTVisitor）
     void scope_in(std::string) override;
@@ -382,9 +382,10 @@ private:
     // 类型工具
     Type* make_type(const Location& loc, Type::Variant v);
     std::string build_callkey(const std::string& name, const std::vector<VarList*>& params);
-std::string build_callkey(const std::string& name, const std::vector<Expr*>& args);
+    std::string build_callkey(const std::string& name, const std::vector<Expr*>& args);
     
-    Symbol* find_operator_overload(Type& type, OpKind op, Type& other);
+    Symbol* find_operator_overload(OpKind op, Type& type, Type& other);
+    Symbol* find_operator_overload(OpKind op, Type& type);
     bool can_convert_to(Type* src, Type* dst);
 
     // 声明收集与注册
@@ -392,7 +393,6 @@ std::string build_callkey(const std::string& name, const std::vector<Expr*>& arg
     void collect_decl(Decl* decl);
     void register_func(Func& f);
     void register_special(SpecialMethod& sm);
-    void register_operator(Operator& op);
 
     // 辅助：获取当前作用域的完整路径字符串（用 "::" 连接）
     std::string get_current_full_path() const;
