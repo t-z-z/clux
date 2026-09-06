@@ -2,12 +2,14 @@
 
 #include <algorithm>
 #include <cctype>
+#include <functional>
 #include <optional>
 #include <sstream>
+#include <unordered_set>
 
 namespace vo {
 
-static bool is_numeric_type(Type* t) {
+bool SemanticAnalyzer::is_numeric_type(Type* t) {
     if (!t || !t->is_primitive()) return false;
     auto k = t->get_primitive()->kind;
     return k != PrimitiveTypeKind::Bool && k != PrimitiveTypeKind::Type && k != PrimitiveTypeKind::Void;
@@ -199,13 +201,18 @@ void SemanticAnalyzer::collect_decl(Decl* decl) {
 
 void SemanticAnalyzer::register_func(Func& f) {
     std::string name = std::string(f.name);
-    std::string key = build_callkey(name, f.params);
 
+    if (!f.templates.empty()) {
+        Symbol sym(SymbolKind::Function, &f);
+        symbols_.insert_member(name, std::move(sym));
+        return;
+    }
+
+    std::string key = build_callkey(name, f.params);
     if (symbols_.lookup_member(key)) {
         error(f.loc, "duplicate declaration of function '" + name + "'");
         return;
     }
-
     Symbol sym(SymbolKind::Function, &f);
     symbols_.insert_member(key, std::move(sym));
 }
@@ -306,11 +313,7 @@ void SemanticAnalyzer::visit(CompUnit& cu) {
 }
 void SemanticAnalyzer::visit(Decl&) {}
 void SemanticAnalyzer::visit(Import&) {}
-void SemanticAnalyzer::visit_func(Func& f) {
-    for (const auto& tpl : f.templates) {
-        symbols_.insert_local_tpl(tpl.name, tpl.dft);
-    }
-}
+void SemanticAnalyzer::visit_func(Func& f) {}
 
 void SemanticAnalyzer::visit_special_method(SpecialMethod&) {}
 
@@ -320,11 +323,7 @@ void SemanticAnalyzer::visit_var_list(VarList& vl) {
     }
 }
 
-void SemanticAnalyzer::visit_class(Class& c) {
-    for (const auto& tpl : c.templates) {
-        symbols_.insert_local_tpl(tpl.name, tpl.dft);
-    }
-}
+void SemanticAnalyzer::visit_class(Class& c) {}
 
 void SemanticAnalyzer::visit_namespace(Namespace&) {}
 void SemanticAnalyzer::visit_extern(Extern&) {}
@@ -348,13 +347,6 @@ void SemanticAnalyzer::visit_expr_identifier(Expr::Identifier& id) {
         current_expr->sym = sym;
         current_expr->type = sym->get_type();
         current_expr->is_lvalue = (sym->kind == SymbolKind::Variable);
-        return;
-    }
-
-    ASTNode* tpl = symbols_.lookup_local_tpl(id.name);
-    if (tpl) {
-        current_expr->type = typeInferred;
-        current_expr->is_lvalue = true;
         return;
     }
 
@@ -603,7 +595,7 @@ void SemanticAnalyzer::visit_expr_call(Expr::Call& c) {
 
 void SemanticAnalyzer::resolve_call(Expr* call_expr, Expr::Call& c) {
     if (!c.callee) return;
-
+    c.callee->type;
     Symbol* callee_sym = c.callee->sym;
 
     if (auto* mem = c.callee->get_member()) {
@@ -656,14 +648,52 @@ void SemanticAnalyzer::resolve_call(Expr* call_expr, Expr::Call& c) {
     }
 
     std::string func_name = std::string(static_cast<Decl*>(callee_sym->node)->name);
-    std::string callkey = build_callkey(func_name, c.args);
-
     Symbol* resolved_sym = symbols_.lookup_member(func_name);
     CallResolution resolution;
     resolution.call = call_expr;
     resolution.callee_name = func_name;
 
-    if (resolved_sym && resolved_sym->kind == SymbolKind::Function) {
+    // 模板函数按普通名注册，找到即实例化
+    auto* target_f = (resolved_sym && resolved_sym->kind == SymbolKind::Function)
+        ? dynamic_cast<Func*>(static_cast<Decl*>(resolved_sym->node)) : nullptr;
+    if (target_f && !target_f->templates.empty()) {
+        std::vector<ASTNode*> tpl_args;
+        if (c.templates.empty()) {
+            if (!deduce_from_args(target_f, c.args, tpl_args)) {
+                error(call_expr->loc, "cannot deduce template parameters for '" + func_name + "'");
+                resolution.ambiguous = true;
+            } else if (Func* inst = instantiate(target_f, tpl_args)) {
+                resolution.resolved_name = func_name;
+                resolution.resolved = true;
+                resolution.resolved_decl = inst;
+                for (auto* ret : inst->returns) {
+                    if (ret && ret->type) {
+                        resolution.return_types.push_back(ret->type);
+                    }
+                }
+                current_expr->type = resolution.return_types.empty() ? typeVoid : resolution.return_types[0];
+            } else {
+                error(call_expr->loc, "template instantiation failed for '" + func_name + "'");
+                resolution.ambiguous = true;
+            }
+        } else {
+            tpl_args.assign(c.templates.begin(), c.templates.end());
+            if (Func* inst = instantiate(target_f, tpl_args)) {
+                resolution.resolved_name = func_name;
+                resolution.resolved = true;
+                resolution.resolved_decl = inst;
+                for (auto* ret : inst->returns) {
+                    if (ret && ret->type) {
+                        resolution.return_types.push_back(ret->type);
+                    }
+                }
+                current_expr->type = resolution.return_types.empty() ? typeVoid : resolution.return_types[0];
+            } else {
+                error(call_expr->loc, "template instantiation failed for '" + func_name + "'");
+                resolution.ambiguous = true;
+            }
+        }
+    } else if (resolved_sym && resolved_sym->kind == SymbolKind::Function) {
         resolution.resolved_name = std::string(static_cast<Decl*>(resolved_sym->node)->name);
         resolution.resolved_decl = static_cast<Decl*>(resolved_sym->node);
         resolution.resolved = true;
@@ -682,20 +712,7 @@ void SemanticAnalyzer::resolve_call(Expr* call_expr, Expr::Call& c) {
             current_expr->type = typeVoid;
         }
     } else {
-        Symbol* members_ptr = symbols_.lookup_member(func_name);
-        bool is_template = false;
-        if (members_ptr && members_ptr->kind == SymbolKind::Function) {
-            if (auto* f = dynamic_cast<Func*>(static_cast<Decl*>(members_ptr->node))) {
-                if (!f->templates.empty()) {
-                    is_template = true;
-                }
-            }
-        }
-        if (is_template) {
-            error(call_expr->loc, "template instantiation not yet implemented for '" + func_name + "'");
-        } else {
-            error(call_expr->loc, "no matching overload for call to '" + func_name + "'");
-        }
+        error(call_expr->loc, "no matching overload for call to '" + func_name + "'");
         resolution.ambiguous = true;
     }
 
@@ -1025,47 +1042,441 @@ void SemanticAnalyzer::visit_type_custom(Type::Custom& c) {
         } else {
             error(current_type->loc, "unknown type '" + name + "'");
         }
-    } else if (!symbols_.lookup_local_tpl(name)) {
-        error(current_type->loc, "unresolved type '" + std::string(c.name) + "'");
+    } else {
+        error(current_type->loc, "unknown type '" + name + "'");
     }
 }
 
 void SemanticAnalyzer::visit_type_inferred(Type::Inferred&) {}
 
-bool SemanticAnalyzer::can_instantiate(
-    Symbol*,
-    const std::vector<Expr*>&,
-    std::vector<TemplateDeduction>&) {
+// 模板实例化
+
+Type* SemanticAnalyzer::clone_type(Type* t) {
+    if (!t) return nullptr;
+    Location loc = t->loc;
+    if (auto* p = t->get_primitive()) return cu_.add_node<Type>(loc, Type::Primitive{p->kind});
+    if (t->is_string_literal()) return cu_.add_node<Type>(loc, Type::StringLiteral{});
+    if (t->is_void()) return cu_.add_node<Type>(loc, Type::Void{});
+    if (t->is_inferred()) return cu_.add_node<Type>(loc, Type::Inferred{});
+    if (auto* p = t->get_pointer()) return cu_.add_node<Type>(loc, Type::Pointer{clone_type(p->pointee)});
+    if (auto* r = t->get_reference()) return cu_.add_node<Type>(loc, Type::Reference{clone_type(r->target)});
+    if (auto* a = t->get_array()) {
+        return cu_.add_node<Type>(loc, Type::Array{clone_type(a->element), clone_expr(a->length)});
+    }
+    if (auto* f = t->get_func()) {
+        std::vector<Type*> params;
+        params.reserve(f->params.size());
+        for (auto* p : f->params) params.push_back(clone_type(p));
+        return cu_.add_node<Type>(loc, Type::Func{std::move(params), clone_type(f->return_type)});
+    }
+    if (auto* c = t->get_custom()) {
+        std::vector<ASTNode*> args;
+        args.reserve(c->args.size());
+        for (auto* a : c->args) {
+            if (Expr* e = dynamic_cast<Expr*>(a)) args.push_back(clone_expr(e));
+            else args.push_back(a);
+        }
+        return cu_.add_node<Type>(loc, Type::Custom{c->name, std::move(args), nullptr});
+    }
+    return cu_.add_node<Type>(loc, t->data);
+}
+
+Expr* SemanticAnalyzer::clone_expr(Expr* e) {
+    if (!e) return nullptr;
+    Location loc = e->loc;
+    if (auto* v = e->get_literal()) return cu_.add_node<Expr>(loc, Expr::Literal{*v});
+    if (auto* v = e->get_identifier()) return cu_.add_node<Expr>(loc, Expr::Identifier{v->name});
+    if (auto* v = e->get_binary()) {
+        return cu_.add_node<Expr>(loc, Expr::Binary{
+            clone_expr(v->left), v->op, clone_expr(v->right)});
+    }
+    if (auto* v = e->get_unary()) {
+        return cu_.add_node<Expr>(loc, Expr::Unary{v->op, clone_expr(v->operand), v->is_postfix});
+    }
+    if (auto* v = e->get_assign()) {
+        return cu_.add_node<Expr>(loc, Expr::Assign{clone_expr(v->target), v->op, clone_expr(v->value)});
+    }
+    if (auto* v = e->get_call()) {
+        std::vector<ASTNode*> tpls;
+        tpls.reserve(v->templates.size());
+        for (auto* a : v->templates) {
+            if (Expr* te = dynamic_cast<Expr*>(a)) tpls.push_back(clone_expr(te));
+            else tpls.push_back(a);
+        }
+        std::vector<Expr*> args;
+        args.reserve(v->args.size());
+        for (auto* a : v->args) args.push_back(clone_expr(a));
+        return cu_.add_node<Expr>(loc, Expr::Call{clone_expr(v->callee), std::move(tpls), std::move(args)});
+    }
+    if (auto* v = e->get_ternary()) {
+        return cu_.add_node<Expr>(loc, Expr::Ternary{
+            clone_expr(v->cond), clone_expr(v->then_expr), clone_expr(v->else_expr)});
+    }
+    if (auto* v = e->get_index()) {
+        return cu_.add_node<Expr>(loc, Expr::Index{clone_expr(v->target), clone_expr(v->index)});
+    }
+    if (auto* v = e->get_member()) {
+        return cu_.add_node<Expr>(loc, Expr::Member{clone_expr(v->target), v->member});
+    }
+    if (auto* v = e->get_cast()) {
+        return cu_.add_node<Expr>(loc, Expr::Cast{clone_type(v->target_type), clone_expr(v->operand)});
+    }
+    if (auto* v = e->get_array()) {
+        std::vector<Expr*> members;
+        members.reserve(v->members.size());
+        for (auto* m : v->members) members.push_back(clone_expr(m));
+        return cu_.add_node<Expr>(loc, Expr::Array{std::move(members), clone_expr(v->fill_value)});
+    }
+    if (auto* v = e->get_closure()) {
+        std::vector<VarList*> params;
+        for (auto* p : v->params) params.push_back(clone_varlist(p));
+        std::vector<VarList*> returns;
+        for (auto* r : v->returns) returns.push_back(clone_varlist(r));
+        return cu_.add_node<Expr>(loc, Expr::Closure{std::move(params), std::move(returns),
+            clone_stmt(v->body), v->capture});
+    }
+    if (auto* v = e->get_primitive_type()) {
+        return cu_.add_node<Expr>(loc, Expr::PrimitiveType{clone_type(v->type)});
+    }
+    return cu_.add_node<Expr>(loc, e->data);
+}
+
+Stmt* SemanticAnalyzer::clone_stmt(Stmt* s) {
+    if (!s) return nullptr;
+    Location loc = s->loc;
+    if (auto* v = s->get_block()) {
+        std::vector<Stmt*> stmts;
+        stmts.reserve(v->stmts.size());
+        for (auto* x : v->stmts) stmts.push_back(clone_stmt(x));
+        return cu_.add_node<Stmt>(loc, Stmt::Block{std::move(stmts)});
+    }
+    if (auto* v = s->get_expr()) return cu_.add_node<Stmt>(loc, Stmt::ExprStmt{clone_expr(v->expr)});
+    if (auto* v = s->get_if()) {
+        return cu_.add_node<Stmt>(loc, Stmt::If{
+            clone_expr(v->condition), clone_stmt(v->then_branch), clone_stmt(v->else_branch)});
+    }
+    if (auto* v = s->get_while()) {
+        return cu_.add_node<Stmt>(loc, Stmt::While{clone_expr(v->condition), clone_stmt(v->body)});
+    }
+    if (auto* v = s->get_for()) {
+        return cu_.add_node<Stmt>(loc, Stmt::For{
+            clone_stmt(v->init), clone_expr(v->condition), clone_stmt(v->next), clone_stmt(v->body)});
+    }
+    if (auto* v = s->get_for_in()) {
+        return cu_.add_node<Stmt>(loc, Stmt::ForIn{v->var_name, clone_expr(v->collection), clone_stmt(v->body)});
+    }
+    if (s->is_return()) return cu_.add_node<Stmt>(loc, Stmt::Return{});
+    if (s->is_break()) return cu_.add_node<Stmt>(loc, Stmt::Break{});
+    if (s->is_continue()) return cu_.add_node<Stmt>(loc, Stmt::Continue{});
+    if (auto* v = s->get_flag()) return cu_.add_node<Stmt>(loc, Stmt::Flag{v->label});
+    if (auto* v = s->get_goto()) return cu_.add_node<Stmt>(loc, Stmt::Goto{v->label});
+    if (auto* v = s->get_asm()) return cu_.add_node<Stmt>(loc, Stmt::Asm{v->code});
+    if (auto* v = s->get_keep()) return cu_.add_node<Stmt>(loc, Stmt::Keep{v->tokens});
+    if (auto* v = s->get_var_decl()) {
+        return cu_.add_node<Stmt>(loc, Stmt::VarDecl{clone_varlist(v->vars)});
+    }
+    if (auto* v = s->get_spawn()) return cu_.add_node<Stmt>(loc, Stmt::Spawn{clone_stmt(v->body)});
+    if (auto* v = s->get_wait()) return cu_.add_node<Stmt>(loc, Stmt::Wait{clone_expr(v->condition)});
+    return cu_.add_node<Stmt>(loc, s->data);
+}
+
+VarItem* SemanticAnalyzer::clone_varitem(VarItem* vi) {
+    if (!vi) return nullptr;
+    return cu_.add_node<VarItem>(vi->loc, vi->name, clone_expr(vi->init));
+}
+
+VarList* SemanticAnalyzer::clone_varlist(VarList* vl) {
+    if (!vl) return nullptr;
+    std::vector<VarItem*> vars;
+    vars.reserve(vl->vars.size());
+    for (auto* vi : vl->vars) vars.push_back(clone_varitem(vi));
+    return cu_.add_node<VarList>(vl->loc, vl->modfs, clone_type(vl->type), std::move(vars));
+}
+
+Func* SemanticAnalyzer::clone_func(Func* f) {
+    std::vector<VarList*> params;
+    params.reserve(f->params.size());
+    for (auto* p : f->params) params.push_back(clone_varlist(p));
+    std::vector<VarList*> returns;
+    returns.reserve(f->returns.size());
+    for (auto* r : f->returns) returns.push_back(clone_varlist(r));
+    return cu_.add_node<Func>(f->loc, f->name, f->modfs, f->templates,
+        std::move(params), std::move(returns), clone_stmt(f->body));
+}
+
+Scope* SemanticAnalyzer::clone_scope(Scope* src) {
+    if (!src) return nullptr;
+    auto* dst = new Scope(src->name);
+    dst->locals = src->locals;
+    dst->members = src->members;
+    for (const auto& ch : src->children) {
+        auto* c = clone_scope(ch.get());
+        c->parent = dst;
+        dst->children.emplace_back(c);
+    }
+    return dst;
+}
+
+// 实参 ASTNode 目前统一是 Expr*，这里把它转成可用于类型位置的 Type（新建节点）
+Type* SemanticAnalyzer::arg_to_type(Expr* e) {
+    if (!e) return nullptr;
+    if (auto* pt = e->get_primitive_type()) {
+        return pt->type ? clone_type(pt->type) : nullptr;
+    }
+    if (auto* id = e->get_identifier()) {
+        return cu_.add_node<Type>(e->loc, Type::Custom{id->name, {}, nullptr});
+    }
+    if (auto* call = e->get_call()) {
+        if (auto* id = call->callee ? call->callee->get_identifier() : nullptr) {
+            std::vector<ASTNode*> args;
+            args.reserve(call->templates.size());
+            for (auto* a : call->templates) {
+                if (Expr* te = dynamic_cast<Expr*>(a)) args.push_back(clone_expr(te));
+                else args.push_back(a);
+            }
+            return cu_.add_node<Type>(e->loc, Type::Custom{id->name, std::move(args), nullptr});
+        }
+    }
+    return nullptr;
+}
+
+void SemanticAnalyzer::subst_type(Type*& t, const std::unordered_map<std::string, ASTNode*>& m) {
+    if (!t) return;
+    if (auto* c = t->get_custom()) {
+        auto it = m.find(std::string(c->name));
+        if (it != m.end()) {
+            if (Type* rep = dynamic_cast<Type*>(it->second)) {
+                t = rep;
+            } else if (Expr* e = dynamic_cast<Expr*>(it->second)) {
+                Type* rt = arg_to_type(e);
+                if (rt) t = rt;
+            }
+            return;
+        }
+        for (auto& a : c->args) {
+            if (Expr* ae = dynamic_cast<Expr*>(a)) {
+                Expr* ne = ae;
+                subst_expr(ne, m);
+                a = ne;
+            }
+        }
+        return;
+    }
+    if (auto* p = t->get_pointer()) { subst_type(p->pointee, m); return; }
+    if (auto* r = t->get_reference()) { subst_type(r->target, m); return; }
+    if (auto* a = t->get_array()) {
+        subst_type(a->element, m);
+        Expr* le = a->length;
+        subst_expr(le, m);
+        a->length = le;
+        return;
+    }
+    if (auto* f = t->get_func()) {
+        for (auto& p : f->params) subst_type(p, m);
+        subst_type(f->return_type, m);
+        return;
+    }
+}
+
+void SemanticAnalyzer::subst_expr(Expr*& e, const std::unordered_map<std::string, ASTNode*>& m) {
+    if (!e) return;
+    if (auto* v = e->get_identifier()) {
+        auto it = m.find(std::string(v->name));
+        if (it != m.end()) {
+            if (Expr* arg = dynamic_cast<Expr*>(it->second)) {
+                e = clone_expr(arg);
+            } else if (Type* tp = dynamic_cast<Type*>(it->second)) {
+                e = cu_.add_node<Expr>(current_expr ? current_expr->loc : Location(), Expr::PrimitiveType{clone_type(tp)});
+            }
+            return;
+        }
+    }
+    if (auto* v = e->get_binary()) { subst_expr(v->left, m); subst_expr(v->right, m); return; }
+    if (auto* v = e->get_unary()) { subst_expr(v->operand, m); return; }
+    if (auto* v = e->get_assign()) { subst_expr(v->target, m); subst_expr(v->value, m); return; }
+    if (auto* v = e->get_call()) {
+        subst_expr(v->callee, m);
+        for (size_t i = 0; i < v->templates.size(); ++i) {
+            if (Expr* te = dynamic_cast<Expr*>(v->templates[i])) {
+                Expr* ne = te;
+                subst_expr(ne, m);
+                v->templates[i] = ne;
+            }
+        }
+        for (auto& a : v->args) subst_expr(a, m);
+        return;
+    }
+    if (auto* v = e->get_ternary()) {
+        subst_expr(v->cond, m); subst_expr(v->then_expr, m); subst_expr(v->else_expr, m); return;
+    }
+    if (auto* v = e->get_index()) { subst_expr(v->target, m); subst_expr(v->index, m); return; }
+    if (auto* v = e->get_member()) { subst_expr(v->target, m); return; }
+    if (auto* v = e->get_cast()) {
+        subst_type(v->target_type, m);
+        subst_expr(v->operand, m);
+        return;
+    }
+    if (auto* v = e->get_array()) {
+        for (auto& a : v->members) subst_expr(a, m);
+        subst_expr(v->fill_value, m);
+        return;
+    }
+    if (auto* v = e->get_closure()) {
+        for (auto* p : v->params) subst_varlist(p, m);
+        for (auto* r : v->returns) subst_varlist(r, m);
+        subst_stmt(v->body, m);
+        return;
+    }
+    if (auto* v = e->get_primitive_type()) { subst_type(v->type, m); return; }
+}
+
+void SemanticAnalyzer::subst_varlist(VarList* vl, const std::unordered_map<std::string, ASTNode*>& m) {
+    if (!vl) return;
+    subst_type(vl->type, m);
+    for (auto* vi : vl->vars) {
+        if (!vi) continue;
+        subst_expr(vi->init, m);
+        if (vi->type) subst_type(vi->type, m);
+    }
+}
+
+void SemanticAnalyzer::subst_stmt(Stmt* s, const std::unordered_map<std::string, ASTNode*>& m) {
+    if (!s) return;
+    if (auto* v = s->get_block()) {
+        for (auto* x : v->stmts) subst_stmt(x, m);
+        return;
+    }
+    if (auto* v = s->get_expr()) { subst_expr(v->expr, m); return; }
+    if (auto* v = s->get_if()) {
+        subst_expr(v->condition, m);
+        subst_stmt(v->then_branch, m);
+        subst_stmt(v->else_branch, m);
+        return;
+    }
+    if (auto* v = s->get_while()) { subst_expr(v->condition, m); subst_stmt(v->body, m); return; }
+    if (auto* v = s->get_for()) {
+        subst_stmt(v->init, m);
+        subst_expr(v->condition, m);
+        subst_stmt(v->next, m);
+        subst_stmt(v->body, m);
+        return;
+    }
+    if (auto* v = s->get_for_in()) { subst_expr(v->collection, m); subst_stmt(v->body, m); return; }
+    if (auto* v = s->get_var_decl()) { subst_varlist(v->vars, m); return; }
+    if (auto* v = s->get_spawn()) { subst_stmt(v->body, m); return; }
+    if (auto* v = s->get_wait()) { subst_expr(v->condition, m); return; }
+}
+
+// 无显式模板实参时，从调用实参类型反推各模板参数
+bool SemanticAnalyzer::deduce_from_args(
+    Func* f,
+    const std::vector<Expr*>& args,
+    std::vector<ASTNode*>& out_args) {
+
+    out_args.assign(f->templates.size(), nullptr);
+    if (f->templates.empty()) return true;
+
+    std::unordered_map<std::string, Type*> found;
+    std::unordered_set<std::string> names;
+    for (const auto& tp : f->templates) names.insert(std::string(tp.name));
+
+    std::function<bool(Type*, Type*)> match = [&](Type* pt, Type* at) -> bool {
+        if (!pt || !at) return false;
+        if (pt->is_custom()) {
+            auto* c = pt->get_custom();
+            auto it = names.find(std::string(c->name));
+            if (it != names.end()) {
+                if (found.find(*it) == found.end()) found[*it] = at;
+                return true;
+            }
+            return false;
+        }
+        if (pt->is_pointer() && at->is_pointer()) {
+            return match(pt->get_pointer()->pointee, at->get_pointer()->pointee);
+        }
+        if (pt->is_reference() && at->is_reference()) {
+            return match(pt->get_reference()->target, at->get_reference()->target);
+        }
+        if (pt->is_array() && at->is_array()) {
+            return match(pt->get_array()->element, at->get_array()->element);
+        }
+        return false;
+    };
+
+    size_t ai = 0;
+    for (auto* vl : f->params) {
+        if (!vl) continue;
+        for (size_t k = 0; k < vl->vars.size(); ++k, ++ai) {
+            const Expr* arg = (ai < args.size()) ? args[ai] : nullptr;
+            if (arg && arg->type) match(vl->type, arg->type);
+        }
+    }
+
+    size_t idx = 0;
+    for (const auto& tp : f->templates) {
+        auto it = found.find(std::string(tp.name));
+        if (it != found.end()) {
+            out_args[idx] = clone_type(it->second);
+        }
+        ++idx;
+    }
+    for (auto* a : out_args) {
+        if (a) return true;
+    }
     return false;
 }
 
-bool SemanticAnalyzer::deduce_template_params(
-    const Func*,
-    const std::vector<Expr*>&,
-    const std::vector<ASTNode*>&,
-    std::vector<TemplateDeduction>&) {
-    return false;
+// 克隆整个模板子树，替换模板参数名节点为实参节点，再 walk 检查
+Func* SemanticAnalyzer::instantiate(Func* f, const std::vector<ASTNode*>& tpl_args) {
+    if (!f) return nullptr;
+
+    // 缓存：同一模板 + 同类型实参只实例化一次
+    std::string key = std::to_string(reinterpret_cast<std::uintptr_t>(f)) + "(";
+    for (auto* a : tpl_args) {
+        if (!a) { key += "_"; continue; }
+        if (Expr* e = dynamic_cast<Expr*>(a)) {
+            if (auto* pt = e->get_primitive_type()) {
+                key += pt->type ? type_to_key(*pt->type) : "?";
+            } else if (auto* id = e->get_identifier()) {
+                key += std::string(id->name);
+            } else {
+                key += "e";
+            }
+        } else {
+            key += "?";
+        }
+    }
+    key += ")";
+    auto cached = instantiated_templates_.find(key);
+    if (cached != instantiated_templates_.end()) return cached->second;
+
+    // 建立 模板参数名 -> 实参节点 的映射（缺实参时回落到默认值）
+    std::unordered_map<std::string, ASTNode*> sub;
+    for (size_t i = 0; i < f->templates.size(); ++i) {
+        const auto& tp = f->templates[i];
+        if (i < tpl_args.size() && tpl_args[i]) {
+            sub[std::string(tp.name)] = tpl_args[i];
+        } else if (tp.dft) {
+            sub[std::string(tp.name)] = tp.dft;
+        } else {
+            return nullptr;
+        }
+    }
+
+    Func* c = clone_func(f);
+    c->templates.clear();
+    for (auto* p : c->params) subst_varlist(p, sub);
+    for (auto* r : c->returns) subst_varlist(r, sub);
+    subst_stmt(c->body, sub);
+
+    // 每次实例化使用独立唯一作用域名，避免复用同一符号表导致相互污染
+    std::string nm = std::string(f->name) + "#" + std::to_string(++instantiate_seq_);
+    instantiated_names_.push_back(nm);
+    c->name = instantiated_names_.back();
+
+    walk(*c);
+    instantiated_templates_[key] = c;
+    return c;
 }
-
-Type* SemanticAnalyzer::substitute_type(Type* t, const std::vector<TemplateDeduction>&) {
-    return t;
-}
-
-Expr* SemanticAnalyzer::substitute_expr(Expr* e, const std::vector<TemplateDeduction>&) {
-    return e;
-}
-
-bool SemanticAnalyzer::can_use_as_type(ASTNode*) { return false; }
-bool SemanticAnalyzer::can_use_as_expr(ASTNode*) { return true; }
-bool SemanticAnalyzer::param_used_as_type(const std::string&, const Func*) { return false; }
-bool SemanticAnalyzer::param_used_as_expr(const std::string&, const Func*) { return false; }
-
-bool SemanticAnalyzer::check_instantiated_body(Stmt*,
-    const std::vector<TemplateDeduction>&) { return true; }
-
-bool SemanticAnalyzer::check_instantiated_expr(Expr*,
-    const std::vector<TemplateDeduction>&) { return true; }
-
-bool SemanticAnalyzer::is_template_param_type(Type*, const Func*) { return false; }
 
 } // namespace vo

@@ -63,7 +63,7 @@ private:
 
     inline Token get_token() {
         // 处理 >> 分裂产生的第二个 '>'
-        if (pending_angle_r_loc.lin) {
+        if (pending_angle_r_loc.lin > 0) {
             Token res = Token(TokenKind::Greater, ">", pending_angle_r_loc);
             pending_angle_r_loc.lin = 0;
             return res;

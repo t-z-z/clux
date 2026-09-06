@@ -643,6 +643,11 @@ struct ASTVisitor {
     virtual void visit(Import&) {}
     virtual void visit(Modification&) {}
 
+    // 模板声明无实参上下文，首轮遍历只注册不检查其体，
+    // 语义分析器可覆写为 false 以跳过函数体/类成员
+    virtual bool should_walk(const Func&) const { return true; }
+    virtual bool should_walk(const Class&) const { return true; }
+
     virtual void visit(Decl&) {}
     virtual void visit_var_list(VarList&) {}
     virtual void visit_var_item(VarItem&) {}
@@ -721,6 +726,13 @@ struct ASTVisitor {
         Func* pre = current_func;
         current_func = &f;
         scope_in(std::string(f.name));
+        if (!should_walk(f)) {
+            // 只注册（visit_func 注册模板参数），不检查函数体
+            visit_func(f);
+            scope_out();
+            current_func = pre;
+            return;
+        }
         for (auto* p : f.params) {
             if (p) walk(*p);
         }
@@ -745,6 +757,13 @@ struct ASTVisitor {
         Class* pre = current_class;
         current_class = &c;
         scope_in(std::string(c.name));
+        if (!should_walk(c)) {
+            // 只注册（visit_class 注册模板参数），不检查成员体
+            visit_class(c);
+            scope_out();
+            current_class = pre;
+            return;
+        }
         for (auto* m : c.members) {
             if (m) walk(*m);
         }

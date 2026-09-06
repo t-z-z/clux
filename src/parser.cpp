@@ -1713,8 +1713,14 @@ std::vector<TemplateParam> Parser::parse_template_params() {
         if (curr().is_ident()) {
             std::string_view name = curr().get_val();
             ASTNode* dft = nullptr;
+            walk();
+            size_t sp = point();
             if (curr().kind == TokenKind::Assign) {
                 dft = parse_expr();
+            }
+            if (!dft){
+                restore(sp);
+                dft = parse_type();
             }
             tpls.push_back({name, dft});
         }
@@ -1737,7 +1743,14 @@ std::vector<ASTNode*> Parser::parse_template_args() {
         TokenKind::Greater,
         TokenKind::Comma,
         [this]{
-            return parse_expr();
+            ASTNode* dft;
+            size_t sp = point();
+            dft = parse_expr();
+            if(!dft) {
+                restore(sp);
+                dft = parse_type();
+            }
+            return dft;
         },
         "template argument"
     ).value_or({});

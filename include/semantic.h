@@ -84,7 +84,6 @@ struct Scope {
     std::vector<std::unique_ptr<Scope>> children;
 
     svmap<Symbol> locals;
-    svmap<ASTNode*> tpls;
     // 函数，类，命名空间，成员变量的统一表，函数使用mangled name作为键
     std::unordered_map<std::string, Symbol, StringViewHash, StringViewEqual> members;
 
@@ -131,18 +130,9 @@ struct Scope {
         return it == locals.end() ? nullptr : &it->second;
     }
 
-    inline ASTNode* lookup_tpl(std::string_view name) {
-        auto it = tpls.find(name);
-        return it == tpls.end() ? nullptr : it->second;
-    }
-
     inline Symbol* lookup_member(const std::string& name) {
         auto it = members.find(name);
         return it == members.end() ? nullptr : &it->second;
-    }
-
-    inline void insert_tpl(std::string_view name, ASTNode* n) {
-        tpls[name] = n;
     }
 };
 
@@ -216,19 +206,6 @@ struct SymbolTable {
         }
         return nullptr;
     }
-
-    void insert_local_tpl(std::string_view name, ASTNode* n) {
-        if (current_) current_->insert_tpl(name, n);
-    }
-
-    ASTNode* lookup_local_tpl(std::string_view name) {
-        for (Scope* s = current_; s; s = s->parent) {
-            if (ASTNode* n = s->lookup_tpl(name)) {
-                return n;
-            }
-        }
-        return nullptr;
-    }
 };
 
 // 调用解析
@@ -258,6 +235,10 @@ class SemanticAnalyzer : public ASTVisitor {
     // 模板实例化缓存：键 = 函数完整限定名 + "(" + 具体参数类型编码 + ")"
     std::map<std::string, Func*> instantiated_templates_;
 
+    // 实例化用的自增序号（保证每次实例化有独立唯一作用域）与其名称存储
+    size_t instantiate_seq_ = 0;
+    std::vector<std::string> instantiated_names_;
+
     #define X(name,str) Type* type##name;
     TYPE
     #undef X
@@ -279,11 +260,6 @@ public:
         for (const auto& [name, sym] : src.locals) {
             if (dst.locals.find(name) == dst.locals.end()) {
                 dst.locals[name] = sym;
-            }
-        }
-        for (const auto& [name, node] : src.tpls) {
-            if (dst.tpls.find(name) == dst.tpls.end()) {
-                dst.tpls[name] = node;
             }
         }
         for (const auto& [name, sym] : src.members) {
@@ -314,6 +290,10 @@ public:
     // 作用域管理（配合 ASTVisitor）
     void scope_in(std::string) override;
     void scope_out() override;
+
+    // 模板声明无实参上下文：首轮只注册，跳过函数体/类成员检查
+    bool should_walk(const Func& f) const override { return f.templates.empty(); }
+    bool should_walk(const Class& c) const override { return c.templates.empty(); }
 
     void visit(CompUnit&) override;
     void visit(Import&) override;
@@ -410,41 +390,32 @@ private:
     void resolve_call(Expr* call, Expr::Call& c);
 
     // 模板实例化辅助
-    struct TemplateDeduction {
-        std::string param_name;
-        Type* type = nullptr;
-        Expr* expr = nullptr;
-        std::string deduced_from;
-        Location deduced_loc;
-        bool is_deduced() const { return type != nullptr || expr != nullptr; }
-    };
-
-    bool can_instantiate(
-        Symbol* sym,
+    // 无显式模板实参时，从调用实参的类型中推导各模板参数（写入 out_args，按模板参数顺序）
+    bool deduce_from_args(
+        Func* f,
         const std::vector<Expr*>& args,
-        std::vector<TemplateDeduction>& deductions);
+        std::vector<ASTNode*>& out_args);
 
-    bool deduce_template_params(
-        const Func* f,
-        const std::vector<Expr*>& args,
-        const std::vector<ASTNode*>& template_args,
-        std::vector<TemplateDeduction>& deductions);
+    // 克隆整个模板子树，把模板参数名字节点替换为实参 ASTNode，然后 walk 检查
+    Func* instantiate(Func* f, const std::vector<ASTNode*>& tpl_args);
 
-    Type* substitute_type(Type* t, const std::vector<TemplateDeduction>& deductions);
-    Expr* substitute_expr(Expr* e, const std::vector<TemplateDeduction>& deductions);
+    // 克隆辅助（深拷贝，新节点统一登记到 cu_）
+    Type* clone_type(Type* t);
+    Expr* clone_expr(Expr* e);
+    Stmt* clone_stmt(Stmt* s);
+    VarItem* clone_varitem(VarItem* vi);
+    VarList* clone_varlist(VarList* vl);
+    Func* clone_func(Func* f);
+    Scope* clone_scope(Scope* src);
 
-    bool can_use_as_type(ASTNode* node);
-    bool can_use_as_expr(ASTNode* node);
-    bool param_used_as_type(const std::string& param_name, const Func* f);
-    bool param_used_as_expr(const std::string& param_name, const Func* f);
-
-    bool check_instantiated_body(Stmt* body,
-                                 const std::vector<TemplateDeduction>& deductions);
-    bool check_instantiated_expr(Expr* expr,
-                                 const std::vector<TemplateDeduction>& deductions);
-
-    // 判断类型是否为模板参数占位符
-    bool is_template_param_type(Type* t, const Func* f = nullptr);
+    // 替换辅助：实参 ASTNode 目前统一是 Expr*（expr 语法覆盖 type 语法）
+    // arg_to_type：把实参 Expr 转成用于类型位置的 Type（新建节点）
+    Type* arg_to_type(Expr* e);
+    // subst_*：在原位遍历并替换（配合克隆出的专属子树使用）
+    void subst_type(Type*& t, const std::unordered_map<std::string, ASTNode*>& m);
+    void subst_expr(Expr*& e, const std::unordered_map<std::string, ASTNode*>& m);
+    void subst_stmt(Stmt* s, const std::unordered_map<std::string, ASTNode*>& m);
+    void subst_varlist(VarList* vl, const std::unordered_map<std::string, ASTNode*>& m);
 };
 
 } // namespace vo

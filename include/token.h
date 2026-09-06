@@ -10,11 +10,6 @@ namespace vo{
     X(Static, "static") \
     X(Pub, "pub") \
     X(Priv, "priv") \
-    X(Over, "over") \
-    X(Final, "final") \
-    X(Trait, "trait") \
-    X(Before, "before") \
-    X(After, "after") \
     X(Inline, "inline") \
     X(Own, "own") \
     X(Mut, "mut") \
@@ -100,7 +95,7 @@ namespace vo{
     X(Shr, ">>") \
     X(ColonColon, "::") \
     X(DoubleHyphen, "--") \
-    X(GenericStart, "-<")
+    X(GenericStart, "-<") \
 
 #define OPERATOR1C \
     X(ParenL, "(") \
