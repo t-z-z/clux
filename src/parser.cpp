@@ -1031,7 +1031,7 @@ bool Parser::is_postfix_op(TokenKind kind) {
         case TokenKind::BracketL:   // []
         case TokenKind::Dot:        // .
         case TokenKind::ColonColon: // ::
-        case TokenKind::GenericStart: // f-<T>(args)
+        case TokenKind::GenericStart: // f-[T](args)
         case TokenKind::Minus:      // -* -&
             return true;
         default:
@@ -1260,7 +1260,7 @@ Expr* Parser::parse_postfix(Expr* left) {
     Location loc = get_loc();
     
     switch (curr().kind) {
-        // 函数调用：foo-<bar>(baz)--{}
+        // 函数调用：foo-[bar](baz)--{}
         case TokenKind::GenericStart:
         case TokenKind::ParenL:
         case TokenKind::DoubleHyphen: {
@@ -1705,7 +1705,7 @@ std::vector<TemplateParam> Parser::parse_template_params() {
         return {};
     }
     walk();
-    if (curr().kind == TokenKind::Greater) {
+    if (curr().kind == TokenKind::BracketR) {
         walk();
         return {};
     }
@@ -1726,7 +1726,7 @@ std::vector<TemplateParam> Parser::parse_template_params() {
         }
         if (curr().kind == TokenKind::Comma) {
             walk();
-        } else if(curr().kind == TokenKind::Greater) {
+        } else if(curr().kind == TokenKind::BracketR) {
             walk();
             break;
         } else if (is_eof()) {
@@ -1740,7 +1740,7 @@ std::vector<TemplateParam> Parser::parse_template_params() {
 std::vector<ASTNode*> Parser::parse_template_args() {
     return parse_list<ASTNode*>(
         TokenKind::GenericStart,
-        TokenKind::Greater,
+        TokenKind::BracketR,
         TokenKind::Comma,
         [this]{
             ASTNode* dft;

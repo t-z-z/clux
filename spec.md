@@ -104,7 +104,7 @@ $(int int)int add   // 空函数
 申明语法格式：
 
 ```vo
-函数名 -<模板:默认值> (普通参数=默认值) 返回声明=默认值 { 函数体 }
+函数名 -[模板:默认值] (普通参数=默认值) 返回声明=默认值 { 函数体 }
 ```
 
 模板只允许传入类型或表达式，理论上一个参数可以既用作类型也用作表达式，
@@ -177,7 +177,7 @@ int baz = foo
 类型参数（模板）：
 
 ```vo
-sort-<LEN:len GET:get T>(T arr) {
+sort-[LEN:len GET:get T](T arr) {
     for int i=0;i<arr.LEN;i+=1 {
         for int j=i+1;j<arr.LEN;j+=1 {
             if(arr.GET(i)>arr.GET(j)) {
@@ -186,12 +186,12 @@ sort-<LEN:len GET:get T>(T arr) {
         }
     }
 }
-swap-<T>(T-& a,T-& b) {
+swap-[T](T-& a,T-& b) {
     T t=a
     a=b
     b=t
 }
-@vec-<T>{
+@vec-[T]{
     T[1145] arr
     int len=0
     get(int n)T r{
@@ -210,9 +210,9 @@ swap-<T>(T-& a,T-& b) {
     }
 }
 main(){
-    vec-<int> a
+    vec-[int] a
     a=vec(1,2,3,4,5)
-    sort-<len get>(a)
+    sort-[len get](a)
 }
 ```
 
@@ -245,7 +245,7 @@ with_lock(mutex) --critical_section() // 错误
 ```
 
 允许在圆括号中使用 type 来传入类型参数
-但是只有尖括号里的类型参数支持泛型模板。
+但是只有方括号里的类型参数支持泛型模板。
 
 当函数的参数申明只有一个类时，支持自动以函数的调用参数列表调用类的构造函数
 
@@ -432,7 +432,7 @@ int b=a
 可以返回引用类型，以同时支持读和写操作
 
 ```vo
-@Array-<T>{
+@Array-[T]{
     T[] data = []
     int len = 0
     trait op [](int index) T-& r{
@@ -447,10 +447,10 @@ int b=a
 
 ### 模板与泛型
 
-使用尖括号表示模板类型
+使用方括号表示模板类型
 
 ```vo
-@List-<T>{
+@List-[T]{
     pub:
     T[1000] data
     static new(int len){
@@ -546,7 +546,7 @@ main(){
 使用修饰来做接口，零成本抽象
 
 ```vo
-@arr-<LEN GET> {
+@arr-[LEN GET] {
     inline len()int r{
         r=LEN
     }
@@ -554,7 +554,7 @@ main(){
         r=GET
     }
 }
-@Array#arr-<a.len a[n]> {
+@Array#arr-[a.len a[n]] {
     int[42] a
 }
 ```
@@ -671,7 +671,7 @@ if($bool cond $void then)else($void else)
 if($bool cond $void then)
 while($bool cond $void body)
 for($void init $bool cond $void next $void body)
-for ($void item) in -<T>(T collection $void body) 
+for ($void item) in -[T](T collection $void body) 
     //collection 需要有[]运算符重载或get()方法与len()方法或len字段，或者支持被解读为数组
 break
 continue
@@ -692,7 +692,7 @@ wait (const bool-& cond) // 阻塞线程直到条件为真
 使用类定义实现复杂的行为
 
 ```vo
-@Task -<T>{
+@Task [-T]{
     int n
     #rc bool finished = false
     #rc $T work
@@ -712,7 +712,7 @@ main() {
     int n,b
     input(n)
     input(b)
-    Task-<int> t=Task-<int>{
+    Task-[int] t=Task-[int]{
         solve(n,m)
     }
     init(n m)

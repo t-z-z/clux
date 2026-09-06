@@ -32,9 +32,6 @@ private:
     std::deque<Token> dq_;
     size_t walk_pos_ = 0;
     StringPool& pool_;
-
-    int generic_nest_depth = 0;
-    Location pending_angle_r_loc;
     struct AliasDecl{
         std::string_view name;
         std::vector<Token> alias;
@@ -62,12 +59,6 @@ private:
     void scan_alias_decl();
 
     inline Token get_token() {
-        // 处理 >> 分裂产生的第二个 '>'
-        if (pending_angle_r_loc.lin > 0) {
-            Token res = Token(TokenKind::Greater, ">", pending_angle_r_loc);
-            pending_angle_r_loc.lin = 0;
-            return res;
-        }
         // 从 pending 队列中取 Token
         if (!pending_.empty()) {
             Token tok = std::move(pending_.front());
@@ -79,7 +70,6 @@ private:
             scan_alias_decl();
             return get_token();
         }
-        // 处理 alias 声明
         // 处理 alias 别名展开
         if (tok.is_word()) {
             const auto target = lookup_alias_expended(tok);
@@ -95,19 +85,6 @@ private:
             aliases_.push_back({});
         } else if (tok.kind == TokenKind::BraceR) {
             if (!aliases_.empty()) aliases_.pop_back();
-        }
-        // 泛型深度追踪 + >> 分裂
-        if (tok.kind == TokenKind::GenericStart) {
-            generic_nest_depth++;
-        } else if (generic_nest_depth > 0) {
-            if (tok.kind == TokenKind::Shr) {
-                generic_nest_depth = std::max(0, generic_nest_depth - 2);
-                pending_angle_r_loc = tok.loc;
-                pending_angle_r_loc.col++;
-                return Token(TokenKind::Greater, ">", tok.loc);
-            } else if (tok.kind == TokenKind::Greater) {
-                generic_nest_depth--;
-            }
         }
         
         return tok;
@@ -238,14 +215,14 @@ private:
     Expr* make_unary(Token op, Expr* operand, bool is_postfix);
     Expr* make_binary(Expr* left, Token op, Expr* right);
 
-    std::vector<TemplateParam> parse_template_params();     // -<T, U>
+    std::vector<TemplateParam> parse_template_params();     // -[T, U]
     std::vector<VarList*> parse_value_params();    // (int a)
 
     Type* parse_type();
     Expr* parse_array_length();
     Type* parse_primitive_type();
     Type* parse_func_type();     // $(int)int
-    Type* parse_generic_type();  // List-<T>
+    Type* parse_generic_type();  // List-[T]
 
     // 其他辅助函数
     std::vector<Type*> parse_type_list_in_paren();

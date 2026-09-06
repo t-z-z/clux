@@ -95,7 +95,7 @@ namespace vo{
     X(Shr, ">>") \
     X(ColonColon, "::") \
     X(DoubleHyphen, "--") \
-    X(GenericStart, "-<") \
+    X(GenericStart, "-[") \
 
 #define OPERATOR1C \
     X(ParenL, "(") \
