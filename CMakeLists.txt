@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.15)
 add_compile_options(/utf-8)
-project(volang CXX)
+project(clux CXX)
 
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
 
@@ -16,7 +16,7 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
-# 可执行文件输出到 bin/ 目录（bin/volc.exe）
+# 可执行文件输出到 bin/ 目录（bin/clux.exe）
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_SOURCE_DIR}/bin)
 # 多配置生成器（如 Visual Studio）会追加配置子目录，这里统一压平到 bin/
 foreach(_cfg DEBUG RELEASE RELWITHDEBINFO MINSIZEREL)
@@ -30,6 +30,6 @@ endif()
 
 file(GLOB SOURCES CONFIGURE_DEPENDS src/*.cpp)
 
-add_executable(volc ${SOURCES})
+add_executable(clux ${SOURCES})
 
-target_include_directories(volc PRIVATE include)
+target_include_directories(clux PRIVATE include)

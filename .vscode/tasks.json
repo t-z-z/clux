@@ -14,7 +14,7 @@
                 "-I${workspaceFolder}/include",
                 "${workspaceFolder}/src/*.cpp",
                 "-o",
-                "${workspaceFolder}/bin/volc.exe"
+                "${workspaceFolder}/bin/clux.exe"
             ],
             "options": {
                 "cwd": "${workspaceFolder}"
@@ -26,7 +26,7 @@
                 "kind": "build",
                 "isDefault": true
             },
-            "detail": "clang++ 生成 volc，输出到 bin/volc.exe"
+            "detail": "clang++ 生成 clux，输出到 bin/clux.exe"
         }
     ],
     "version": "2.0.0"

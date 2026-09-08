@@ -8,7 +8,7 @@
             "name": "Debug Voice Compiler",
             "type": "cppdbg",
             "request": "launch",
-            "program": "${workspaceFolder}/bin/volc.exe",
+            "program": "${workspaceFolder}/bin/clux.exe",
             "args": ["${workspaceFolder}/test.vo", "-o", "test.exe"],
             "stopAtEntry": false,
             "cwd": "${workspaceFolder}",
