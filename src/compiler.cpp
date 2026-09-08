@@ -5,7 +5,7 @@
 #include "parser.h"
 #include "semantic.h"
 
-namespace vo {
+namespace cx {
 
 bool compile(const std::string& source, const std::string& filename) {
     // 统一字符串池：生命周期覆盖整个编译过程，lexer 仅引用它
@@ -33,4 +33,4 @@ bool compile(const std::string& source, const std::string& filename) {
     return ok;
 }
 
-} // namespace vo
+} // namespace cx

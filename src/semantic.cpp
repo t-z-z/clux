@@ -7,7 +7,7 @@
 #include <sstream>
 #include <unordered_set>
 
-namespace vo {
+namespace cx {
 
 bool SemanticAnalyzer::is_numeric_type(Type* t) {
     if (!t || !t->is_primitive()) return false;
@@ -1479,4 +1479,4 @@ Func* SemanticAnalyzer::instantiate(Func* f, const std::vector<ASTNode*>& tpl_ar
     return c;
 }
 
-} // namespace vo
+} // namespace cx

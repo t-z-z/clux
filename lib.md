@@ -1,9 +1,9 @@
-# volang 标准库文档
+# clux 标准库文档
 
-## voio 标准输入输出
+## cxio 标准输入输出
 
-```vo
-import voio
+```cx
+import cxio
 
 const print(const string[] values)
 const println(const string[] values)
@@ -19,7 +19,7 @@ inputwp-<T>(const string-& prompt, T-& data) bool r
 
 派生栈帧能够在开启前计算将要拓展的栈帧结构，并会通过额外压栈的方式来补充栈空间，对于大结构可能产生较大性能开销，在栈不能满足时，会转向堆。
 
-```vo
+```cx
 main(){
     int a = 0
     type t = type(a)
@@ -31,8 +31,8 @@ main(){
 
 允许组合，迭代
 
-```vo
-import voinput
+```cx
+import cxinput
 @foo {
     int a,b
 }
@@ -56,7 +56,7 @@ main(){
 
 元类型包含所有能够被申明的类型，包括指针，函数指针，数组，但是不包含引用，因为引用不是类型。
 
-```vo
+```cx
 main() {
     mt::type a = mt::ptr(type._int)
     mt::type b = mt::arr(type._int)

@@ -1,9 +1,9 @@
-# volang语言规范文档
+# clux语言规范文档
 
 ## 一、基础信息
 
-语言名称：volang / vo
-源文件后缀名：.vo
+语言名称：clux / cx
+源文件后缀名：.cx
 内存管理默认为RAII
 
 特色：
@@ -15,7 +15,7 @@
 ## 二、词法
 
 注释：
-```vo
+```cx
 // 单行注释
 
 /*
@@ -49,7 +49,7 @@ let obj类型推导，例`let a=1`，a为int类型，但是没有`let a:int=1`�
 不赋初值不允许使用（包括数组）编译期检查，
 但是可以先声明后赋值
 
-```vo
+```cx
 int a
 int b = a       // 错误
 a = 0
@@ -71,7 +71,7 @@ int b = a       // 正确
 
 `null`为空指针，实际值为0，不可直接当做数字
 
-```vo
+```cx
 int b = a-*
 int-* c = a+4        // 下一个int的位置
 int-* d = null
@@ -79,7 +79,7 @@ int-* d = null
 
 ### 定长数组（切片）
 
-```vo
+```cx
 int[] a = [1 2 3 4 5] // 长度自动推导
 int[] b             // 无初值无法自动推导长度
 b = [1 2 3]         // 先声明后赋值
@@ -91,7 +91,7 @@ int l = b.len       // l=3
 
 ### 函数指针（或闭包类型）
 
-```vo
+```cx
 $(int)int a=foo     // 限制参数
 $int b=foo          // 不要参数
 $(int int)int add   // 空函数
@@ -103,14 +103,14 @@ $(int int)int add   // 空函数
 
 申明语法格式：
 
-```vo
+```cx
 函数名 -[模板:默认值] (普通参数=默认值) 返回声明=默认值 { 函数体 }
 ```
 
 模板只允许传入类型或表达式，理论上一个参数可以既用作类型也用作表达式，
 没有返回值应省略返回申明
 
-```vo
+```cx
 main() {
     do_something--{
         // 函数调用的代码块参数，可以写在圆括号后，若没有其他参数，可以不写圆括号
@@ -133,7 +133,7 @@ do_something ($void action1 $void action2) int res=0{
 
 组合申明（暂未实现）
 
-```vo
+```cx
 pub compose do($void work)while($bool cond) {
     flag start
     work()
@@ -154,7 +154,7 @@ main(){
 
 ### 如何解决语法歧义
 
-```vo
+```cx
 int foo = bar
 (42)
 int baz = foo
@@ -176,7 +176,7 @@ int baz = foo
 
 类型参数（模板）：
 
-```vo
+```cx
 sort-[LEN:len GET:get T](T arr) {
     for int i=0;i<arr.LEN;i+=1 {
         for int j=i+1;j<arr.LEN;j+=1 {
@@ -218,7 +218,7 @@ main(){
 
 参数申明和变量申明规则完全相同
 
-```vo
+```cx
 foo(const int-& bar) int r {}
 const int-& foo_bar = 0
 
@@ -228,7 +228,7 @@ int[] bar = [1,2,3]
 
 懒惰求值（用常量函数参数，发现是表达式后会自动优化为懒惰求值）：
 
-```vo
+```cx
 foo(const $bool condition const $int expensive_computation) int r=0{
     if(condition()) r=expensive_computation()
 }
@@ -236,7 +236,7 @@ foo(const $bool condition const $int expensive_computation) int r=0{
 
 尾随代码块：函数调用时可直接跟花括号，无需括号括起。
 
-```vo
+```cx
 with_lock(mutex)--{
     critical_section()
 }
@@ -249,7 +249,7 @@ with_lock(mutex) --critical_section() // 错误
 
 当函数的参数申明只有一个类时，支持自动以函数的调用参数列表调用类的构造函数
 
-```vo
+```cx
 @message {
     string[] a;
     INIT(string[] msg) {
@@ -276,7 +276,7 @@ main() {
 
 语法：`/ [捕获] (参数) 返回 { 函数体 }`
 
-```vo
+```cx
 $(int,int)int max = /(int a,b) int r {
     if (a > b) {
         r=a return
@@ -289,7 +289,7 @@ main(){
 }
 ```
 
-```vo
+```cx
 @foo {
     int cnt = 1
     inc($(int)void act){
@@ -311,7 +311,7 @@ main() {
 
 基本定义：
 
-```vo
+```cx
 @类名`模板` {
     成员申明
     方法申明
@@ -324,7 +324,7 @@ main() {
 
 示例：
 
-```vo
+```cx
 @Counter {
     int value = 0
 
@@ -345,7 +345,7 @@ main() {
 
 构造不会自动被调用，手动调用会返回一个对应类型
 
-```vo
+```cx
 @pointer {
     char-* p
     INIT(){
@@ -366,7 +366,7 @@ DROP 方法在对象被销毁前自动执行，支持修饰符。
 
 定义语法：DROP { 代码 }
 
-```vo
+```cx
 @CacheEntry {
     DROP {
         log("entry destroyed")
@@ -387,7 +387,7 @@ UNREF钩子在结束引用时触发
 
 示例：
 
-```vo
+```cx
 @BigInt {
     static const int MAXN=1000
     int[MAXN] nums
@@ -420,7 +420,7 @@ int b=a
 
 示例：
 
-```vo
+```cx
 @Vec2 {
     int x, y
     trait operator + (Vec2 other) Vec2 r {
@@ -431,7 +431,7 @@ int b=a
 
 可以返回引用类型，以同时支持读和写操作
 
-```vo
+```cx
 @Array-[T]{
     T[] data = []
     int len = 0
@@ -449,7 +449,7 @@ int b=a
 
 使用方括号表示模板类型
 
-```vo
+```cx
 @List-[T]{
     pub:
     T[1000] data
@@ -464,7 +464,7 @@ int b=a
 
 ### 枚举
 
-```vo
+```cx
 @Color {
     enum{
         Red
@@ -504,7 +504,7 @@ inline也可以修饰字段，将初始化表达式中的函数全部主动内�
 
 修饰注入是一种容器操作
 
-```vo
+```cx
 malloc @rc {
     malloc int cnt=1
     REF{
@@ -524,7 +524,7 @@ main(){
 
 也可以在申明类时直接注入，多个#号多个注入，相同属性会被合并与警告，同名的不同字段会报错
 
-```vo
+```cx
 #foo #bar @baz {
 }
 main(){
@@ -534,7 +534,7 @@ main(){
 
 可以用类来修饰类
 
-```vo
+```cx
 @foo{
     int a,b
 }
@@ -545,7 +545,7 @@ main(){
 
 使用修饰来做接口，零成本抽象
 
-```vo
+```cx
 @arr-[LEN GET] {
     inline len()int r{
         r=LEN
@@ -561,7 +561,7 @@ main(){
 
 还有
 
-```vo
+```cx
 @empty_access {
     ACCESS {}
 }
@@ -589,7 +589,7 @@ main(){
 | mut | 会修改对象 |
 | 不写 | 不会修改对象 |
 
-```vo
+```cx
 @Base {
     trait process() (string data)
     can_override() { print("Base") }
@@ -609,7 +609,7 @@ main(){
 
 命名空间是一种容器
 
-```vo
+```cx
 namespace math {
     add(int a, b) int r { r = a + b }
 }
@@ -622,7 +622,7 @@ add(1, 2)
 
 可以访问类型标识枚举，还可以访问字段和修饰符，type是一种类
 
-```vo
+```cx
 @bar{
     int q
 }
@@ -655,7 +655,7 @@ main(){
 
 基础模块：
 
-- voio : 输入输出
+- cxio : 输入输出
 - metatype : 元类型
 - concurrent : 并发
 - containers : 容器
@@ -666,7 +666,7 @@ main(){
 
 内置控制流（名称保留，不可覆盖）：
 
-```vo
+```cx
 if($bool cond $void then)else($void else)
 if($bool cond $void then)
 while($bool cond $void body)
@@ -684,14 +684,14 @@ toflag label // 不能跳出作用域
 
 并发原语：
 
-```vo
+```cx
 spawn { work } // 开新线程
 wait (const bool-& cond) // 阻塞线程直到条件为真
 ```
 
 使用类定义实现复杂的行为
 
-```vo
+```cx
 @Task [-T]{
     int n
     #rc bool finished = false
@@ -731,7 +731,7 @@ main() {
 
 ```asm`` ``` 会在被调用处内联插入汇编代码
 
-```vo
+```cx
 asm `
 mov ecx, 0
 for_start:
@@ -747,7 +747,7 @@ flag与toflag的本质也是asm标签跳转
 
 ```keep`` ``` 会将代码保留在翻译后的.ll文件中
 
-```vo
+```cx
 keep `
 ; LLVM IR 内联汇编
 define i32 @add(i32 %a, i32 %b) {
@@ -759,7 +759,7 @@ define i32 @add(i32 %a, i32 %b) {
 
 ## 十三、外部函数接口
 
-```vo
+```cx
 extern "opengl32" {
     glBegin(int mode){}
     glEnd(){}
@@ -769,15 +769,15 @@ extern "opengl32" {
 ## 十四、编译与执行
 
 实现路线：
-Volang 源代码 (.vo) -> LLVM IR(.ll) -> 可执行文件
+clux 源代码 (.cx) -> LLVM IR(.ll) -> 可执行文件
 
-volang到ll的翻译器使用c++编写
+clux到ll的翻译器使用c++编写
 
 工具链命令：
-`volc -t main.vo` 翻译
-`volc -b main.vo` 构建
-`volc -r main.vo` 运行
-`volc -c main.vo` 检查
+`cxlc -t main.cx` 翻译
+`cxlc -b main.cx` 构建
+`cxlc -r main.cx` 运行
+`cxlc -c main.cx` 检查
 加`-o file` 控制输出文件位置
 
 ## 十五、语法糖
@@ -786,7 +786,7 @@ volang到ll的翻译器使用c++编写
 
 用`modf:`取消修饰符
 
-```vo
+```cx
 @foo {
     pub:
     int a
@@ -800,7 +800,7 @@ volang到ll的翻译器使用c++编写
 `alias foo = bar:`语法糖，将下文作用域中的foo当做bar处理，
 仅限编译期的文本作用，同名别名会向前覆盖
 
-```vo
+```cx
 int a = 1
 namespace foo{
     alias a = b

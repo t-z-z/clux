@@ -11,7 +11,7 @@
 #include "string_view_map.h"
 #include "token.h"
 
-namespace vo{
+namespace cx{
 
 struct ASTNode;
 struct CompUnit;
@@ -948,4 +948,4 @@ struct ASTVisitor {
     }
 };
 
-}// namespace vo
+}// namespace cx

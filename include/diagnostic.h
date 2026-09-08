@@ -3,7 +3,7 @@
 #include <string>
 #include <vector>
 #include <optional>
-namespace vo{
+namespace cx{
 
 enum class DiagLevel{Error, Warning, Note, Help};
 
@@ -21,4 +21,4 @@ struct Diagnostic{
 
 void emit_diagnostic(const Diagnostic &diag);
 
-}// namespace vo
+}// namespace cx

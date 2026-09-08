@@ -2,7 +2,7 @@
 #include <iostream>
 #include <cstdio>
 
-namespace vo{
+namespace cx{
 
 // 当前用全局函数实现（后续替换为Consumer模式）
 void emit_diagnostic(const Diagnostic& diag) {
@@ -33,4 +33,4 @@ void emit_diagnostic(const Diagnostic& diag) {
     }
 }
 
-}// namespace vo
+}// namespace cx

@@ -4,7 +4,7 @@
 #include <string>
 #include <string_view>
 
-namespace vo {
+namespace cx {
     // 从外向内查找别名解开链式别名
 std::optional<std::vector<Token>> Parser::lookup_alias_expended(const Token& name) const {
     if (aliases_.empty() || !use_alias_) return std::nullopt;
@@ -1756,4 +1756,4 @@ std::vector<ASTNode*> Parser::parse_template_args() {
     ).value_or({});
 }
 
-} // namespace vo
+} // namespace cx

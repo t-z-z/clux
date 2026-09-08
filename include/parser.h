@@ -11,7 +11,7 @@
 #include "lexer.h"
 #include "diagnostic.h"
 
-namespace vo {
+namespace cx {
 
 class Parser {
 public:
@@ -243,4 +243,4 @@ private:
 
 };
 
-}// namespace vo
+}// namespace cx

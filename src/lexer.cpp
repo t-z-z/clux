@@ -8,7 +8,7 @@
 #include <stdexcept>
 #include <cstdint>
 
-namespace vo{
+namespace cx{
 
 void Lexer::skip_space() {
     while (!is_eof()) {
@@ -598,4 +598,4 @@ std::string_view Lexer::translate_escape_sequences(std::string_view input) {
     return pool_.insert(result);
 }
 
-}//namespace vo
+}//namespace cx

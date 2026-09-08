@@ -6,7 +6,7 @@
 #include <string>
 #include <string_view>
 
-namespace vo {
+namespace cx {
 
 class Lexer {
     public:
@@ -84,4 +84,4 @@ class Lexer {
 };
 
 
-}//namespace vo
+}//namespace cx

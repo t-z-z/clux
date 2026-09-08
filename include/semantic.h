@@ -14,7 +14,7 @@
 #include "diagnostic.h"
 #include "string_view_map.h"   // svmap, svset
 
-namespace vo {
+namespace cx {
 
 // 符号表与作用域
 
@@ -418,4 +418,4 @@ private:
     void subst_varlist(VarList* vl, const std::unordered_map<std::string, ASTNode*>& m);
 };
 
-} // namespace vo
+} // namespace cx
