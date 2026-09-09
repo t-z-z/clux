@@ -596,12 +596,9 @@ Stmt* Parser::parse_stmt() {
         advance();
         return result;
     }
-    // 块语句
     if (curr().kind == TokenKind::BraceL) {
         result = parse_block_stmt();
-    }else
-    // 控制流关键字
-    if (curr().kind == TokenKind::If) {
+    }else if (curr().kind == TokenKind::If) {
         result = parse_if_stmt();
     }else if (curr().kind == TokenKind::While) {
         result = parse_while_stmt();
@@ -1607,7 +1604,7 @@ Type* Parser::parse_func_type() {
         add_error("expected return type after $()");
     }
 
-    return cu_.add_node<Type>(loc, Type::Func{param_types, return_type});
+    return cu_.add_node<Type>(loc, Type::FuncPtr{param_types, return_type});
 }
 
 Type* Parser::parse_generic_type() {

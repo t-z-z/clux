@@ -233,9 +233,12 @@ struct Type : ASTNode {
         Expr* length;
     };
     struct StringLiteral {};
-    struct Func {
+    struct FuncPtr {
         std::vector<Type*> params;
         Type *return_type;
+    };
+    struct FuncRef {
+        Func* func;
     };
     struct Custom {
         std::string_view name;
@@ -252,7 +255,8 @@ struct Type : ASTNode {
         Pointer,
         Array,
         StringLiteral,
-        Func,
+        FuncPtr,
+        FuncRef,
         Custom,
         Reference,
         Inferred,
@@ -265,7 +269,8 @@ struct Type : ASTNode {
     BBB(pointer, Pointer, Type)
     BBB(array, Array, Type)
     BBB(string_literal, StringLiteral, Type)
-    BBB(func, Func, Type)
+    BBB(func_ptr, FuncPtr, Type)
+    BBB(func_ref, FuncRef, Type)
     BBB(custom, Custom, Type)
     BBB(reference, Reference, Type)
     BBB(inferred, Inferred, Type)
@@ -701,7 +706,8 @@ struct ASTVisitor {
     virtual void visit_type_pointer(Type::Pointer&) {}
     virtual void visit_type_array(Type::Array&) {}
     virtual void visit_type_string_literal(Type::StringLiteral&) {}
-    virtual void visit_type_func(Type::Func&) {}
+    virtual void visit_type_func_ptr(Type::FuncPtr&) {}
+    virtual void visit_type_func_ref(Type::FuncRef&) {}
     virtual void visit_type_custom(Type::Custom&) {}
     virtual void visit_type_reference(Type::Reference&) {}
     virtual void visit_type_inferred(Type::Inferred&) {}
@@ -925,10 +931,10 @@ struct ASTVisitor {
                 if (v.element) walk(*v.element);
                 if (v.length) walk(*v.length);
                 visit_type_array(v);
-            } else if constexpr (std::is_same_v<T, Type::Func>) {
+            } else if constexpr (std::is_same_v<T, Type::FuncPtr>) {
                 for (auto* p : v.params) if (p) walk(*p);
                 if (v.return_type) walk(*v.return_type);
-                visit_type_func(v);
+                visit_type_func_ptr(v);
             } else if constexpr (std::is_same_v<T, Type::Custom>) {
                 visit_type_custom(v);
             } else if constexpr (std::is_same_v<T, Type::Reference>) {
@@ -938,6 +944,7 @@ struct ASTVisitor {
             else if constexpr (std::is_same_v<T, Type::Inferred>) visit_type_inferred(v);
             else if constexpr (std::is_same_v<T, Type::Void>) visit_type_void(v);
             else if constexpr (std::is_same_v<T, Type::StringLiteral>) visit_type_string_literal(v);
+            else if constexpr (std::is_same_v<T, Type::FuncRef>) visit_type_func_ref(v);
         }, type.data);
         current_type = pre;
     }

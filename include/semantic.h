@@ -31,7 +31,7 @@ enum class SymbolKind {
 struct Symbol {
     SymbolKind kind = SymbolKind::Variable;
     ASTNode* node = nullptr;
-    Scope* scope = nullptr;         // 类/命名空间的符号表指针
+    Scope* scope = nullptr; // 类/命名空间的符号表指针，保证在collect时所有解析到的scope都会写入
 
     Symbol() = default;
     Symbol(SymbolKind k, ASTNode* n, Scope* s = nullptr)
@@ -55,6 +55,9 @@ struct Symbol {
         }
         if (auto* vi = dynamic_cast<VarItem*>(node)) {
             return vi->type;
+        }
+        if (auto* t = dynamic_cast<Type*>(node)) {
+            return t;
         }
         return nullptr;
     }
@@ -345,7 +348,8 @@ public:
     void visit_type_primitive(Type::Primitive&) override;
     void visit_type_pointer(Type::Pointer&) override;
     void visit_type_array(Type::Array&) override;
-    void visit_type_func(Type::Func&) override;
+    void visit_type_func_ptr(Type::FuncPtr&) override;
+    void visit_type_func_ref(Type::FuncRef&) override;
     void visit_type_custom(Type::Custom&) override;
     void visit_type_reference(Type::Reference&) override;
     void visit_type_inferred(Type::Inferred&) override;

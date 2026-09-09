@@ -1,10 +1,6 @@
 ﻿#include "../include/semantic.h"
 
-#include <algorithm>
-#include <cctype>
 #include <functional>
-#include <optional>
-#include <sstream>
 #include <unordered_set>
 
 namespace cx {
@@ -277,8 +273,8 @@ std::string SemanticAnalyzer::type_to_key(Type& t) {
         std::string elem_ir = arr->element ? type_to_key(*arr->element) : "i8";
         return "[" + elem_ir + "]";
     }
-    if (t.is_func()) {
-        auto* f = t.get_func();
+    if (t.is_func_ptr()) {
+        auto* f = t.get_func_ptr();
         std::string ret = f->return_type ? type_to_key(*f->return_type) : "void";
         std::string params;
         for (size_t i = 0; i < f->params.size(); ++i) {
@@ -350,16 +346,22 @@ void SemanticAnalyzer::visit_expr_identifier(Expr::Identifier& id) {
         return;
     }
 
-    Symbol* members = symbols_.lookup_member(std::string(id.name));
-    if (members) {
-        if (members->kind == SymbolKind::Variable) {
-            current_expr->type = members->get_type();
+    Symbol* member = symbols_.lookup_member(std::string(id.name));
+    if (member) {
+        current_expr->sym = member;
+        if (member->kind == SymbolKind::Variable) {
+            current_expr->type = member->get_type();
             current_expr->is_lvalue = true;
+        } else if (member->kind == SymbolKind::Function) {
+            if (Decl* d = member->get_decl()) 
+                current_expr->type = make_type(current_expr->loc,
+             Type::FuncRef{static_cast<Func*>(d)}
+            );
+            current_expr->is_lvalue = false;
         } else {
             current_expr->type = nullptr;
             current_expr->is_lvalue = false;
         }
-        current_expr->sym = members;
         return;
     }
 
@@ -532,6 +534,7 @@ void SemanticAnalyzer::visit_expr_unary(Expr::Unary& u) {
             current_expr->is_lvalue = false;
             break;
         }
+        // Mul在单元运算符中出现实际指-*情况，这是不规范的，但是先标记着之后再改，下面BitAnd同理
         case OpKind::Mul: {
             if (ot->is_pointer()) {
                 current_expr->type = ot->get_pointer()->pointee;
@@ -753,56 +756,49 @@ void SemanticAnalyzer::visit_expr_index(Expr::Index& idx) {
 
 void SemanticAnalyzer::visit_expr_member(Expr::Member& m) {
     if (!m.target) {
-        current_expr->type = nullptr;
-        return;
-    }
-
-    Symbol* target_sym = m.target->sym;
-    if (!target_sym) {
-        error(current_expr->loc, "cannot access member on unresolved expression");
+        current_expr->sym = nullptr;
         current_expr->type = nullptr;
         current_expr->is_lvalue = false;
         return;
     }
+    Scope* target_scope = nullptr;
 
-    Scope* target_scope = target_sym->scope;
-    if (!target_scope) {
-        Type* tt = target_sym->get_type();
-        if (tt && tt->is_pointer()) {
-            tt = tt->get_pointer()->pointee;
-        }
-        if (tt && tt->is_custom()) {
-            std::string cls_name = std::string(tt->get_custom()->name);
-            Symbol* cls_syms = symbols_.lookup_member(cls_name);
-            if (cls_syms) {
-                if ((cls_syms->kind == SymbolKind::Class || cls_syms->kind == SymbolKind::Namespace)
-                    && cls_syms->scope) {
-                    target_scope = cls_syms->scope;
+    if (m.target->sym) {
+        target_scope = m.target->sym->scope;
+    } else if (m.target->type) {
+        if (auto* cus = m.target->type->get_custom()) {
+            if (cus->resolved_decl) {
+                if (Cont* cont = dynamic_cast<Cont*>(cus->resolved_decl)) {
+                    target_scope = cont->scope;
                 }
             }
         }
-        if (!target_scope) {
-            error(current_expr->loc, "cannot access member on non-class/non-namespace type");
-            current_expr->type = nullptr;
-            current_expr->is_lvalue = false;
-            return;
-        }
     }
 
+    if (!target_scope) {
+        error(current_expr->loc, "cannot access member on non-class/non-namespace type");
+        current_expr->type = nullptr;
+        current_expr->is_lvalue = false;
+        return;
+    }
+    
     std::string field = std::string(m.member);
 
-    Symbol* members = SymbolTable::lookup_member_in(target_scope, field);
-    if (members) {
-        if (members->kind == SymbolKind::Variable && members->get_type()) {
-            current_expr->sym = members;
-            current_expr->type = members->get_type();
+    Symbol* member = SymbolTable::lookup_member_in(target_scope, field);
+    if (member) {
+        if (member->kind == SymbolKind::Variable && member->get_type()) {
+            current_expr->sym = member;
+            current_expr->type = member->get_type();
             current_expr->is_lvalue = true;
             return;
         }
-        if (members->kind == SymbolKind::Function) {
-            current_expr->sym = members;
-            current_expr->type = nullptr;
-            current_expr->is_lvalue = false;
+        if (member->kind == SymbolKind::Function) {
+            current_expr->sym = member;
+            if (Decl* d = member->get_decl()) 
+                current_expr->type = make_type(current_expr->loc,
+             Type::FuncRef{static_cast<Func*>(d)}
+            );
+            else current_expr->is_lvalue = false;
             return;
         }
     }
@@ -871,7 +867,7 @@ void SemanticAnalyzer::visit_expr_closure(Expr::Closure& clo) {
     }
 
     current_expr->type = make_type(current_expr->loc,
-        Type::Func{std::move(param_types), ret_type});
+        Type::FuncPtr{std::move(param_types), ret_type});
     current_expr->is_lvalue = false;
 }
 
@@ -1023,7 +1019,7 @@ void SemanticAnalyzer::visit_type_primitive(Type::Primitive& p) {
 // ast本来应该有指针指向的节点如果是nullptr，说明已经在parser报过错了，不要重复报错
 void SemanticAnalyzer::visit_type_pointer(Type::Pointer&) {}
 void SemanticAnalyzer::visit_type_array(Type::Array&) {}
-void SemanticAnalyzer::visit_type_func(Type::Func&) {}
+void SemanticAnalyzer::visit_type_func_ptr(Type::FuncPtr&) {}
 void SemanticAnalyzer::visit_type_reference(Type::Reference&) {}
 
 void SemanticAnalyzer::visit_type_string_literal(Type::StringLiteral&) {
@@ -1062,11 +1058,11 @@ Type* SemanticAnalyzer::clone_type(Type* t) {
     if (auto* a = t->get_array()) {
         return cu_.add_node<Type>(loc, Type::Array{clone_type(a->element), clone_expr(a->length)});
     }
-    if (auto* f = t->get_func()) {
+    if (auto* f = t->get_func_ptr()) {
         std::vector<Type*> params;
         params.reserve(f->params.size());
         for (auto* p : f->params) params.push_back(clone_type(p));
-        return cu_.add_node<Type>(loc, Type::Func{std::move(params), clone_type(f->return_type)});
+        return cu_.add_node<Type>(loc, Type::FuncPtr{std::move(params), clone_type(f->return_type)});
     }
     if (auto* c = t->get_custom()) {
         std::vector<ASTNode*> args;
@@ -1270,7 +1266,7 @@ void SemanticAnalyzer::subst_type(Type*& t, const std::unordered_map<std::string
         a->length = le;
         return;
     }
-    if (auto* f = t->get_func()) {
+    if (auto* f = t->get_func_ptr()) {
         for (auto& p : f->params) subst_type(p, m);
         subst_type(f->return_type, m);
         return;
