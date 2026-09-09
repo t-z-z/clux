@@ -774,10 +774,10 @@ clux 源代码 (.cx) -> LLVM IR(.ll) -> 可执行文件
 clux到ll的翻译器使用c++编写
 
 工具链命令：
-`cxlc -t main.cx` 翻译
-`cxlc -b main.cx` 构建
-`cxlc -r main.cx` 运行
-`cxlc -c main.cx` 检查
+`clux -t main.cx` 翻译
+`clux -b main.cx` 构建
+`clux -r main.cx` 运行
+`clux -c main.cx` 检查
 加`-o file` 控制输出文件位置
 
 ## 十五、语法糖

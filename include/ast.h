@@ -340,7 +340,8 @@ struct Expr : ASTNode {
     
     Variant data;
     Type* type = nullptr;
-    Symbol* sym = nullptr;   // 解析后的符号指针，用于成员查找和调用解析
+    Symbol* sym = nullptr;   // 解析后的符号指针
+    // 在semantic解析中保证type和sym总有一个是有指向的
     bool is_lvalue = false; // 是否可取地址
     
     Expr() = default;

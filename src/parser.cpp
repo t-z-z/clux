@@ -1715,7 +1715,7 @@ std::vector<TemplateParam> Parser::parse_template_params() {
             ASTNode* dft = nullptr;
             walk();
             size_t sp = point();
-            if (curr().kind == TokenKind::Assign) {
+            if (curr().kind == TokenKind::Colon) {
                 dft = parse_expr();
             }
             if (!dft){

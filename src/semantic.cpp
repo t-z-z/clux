@@ -595,7 +595,6 @@ void SemanticAnalyzer::visit_expr_call(Expr::Call& c) {
 
 void SemanticAnalyzer::resolve_call(Expr* call_expr, Expr::Call& c) {
     if (!c.callee) return;
-    c.callee->type;
     Symbol* callee_sym = c.callee->sym;
 
     if (auto* mem = c.callee->get_member()) {
