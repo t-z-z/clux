@@ -22,6 +22,7 @@ enum class SymbolKind {
     Function,
     Class,
     Namespace,
+    Enum,
     EnumVar,
 };
 
@@ -38,7 +39,7 @@ struct Symbol {
             case DeclKind::VarList:       kind = SymbolKind::Variable; break;
             case DeclKind::Func:          kind = SymbolKind::Function; break;
             case DeclKind::Class:         kind = SymbolKind::Class; break;
-            case DeclKind::Enum:          kind = SymbolKind::EnumVar; break;
+            case DeclKind::Enum:          kind = SymbolKind::Enum; break;
             case DeclKind::Namespace:     kind = SymbolKind::Namespace; break;
             case DeclKind::SpecialMethod: kind = SymbolKind::Function; break;
             case DeclKind::Operator:      kind = SymbolKind::Function; break;

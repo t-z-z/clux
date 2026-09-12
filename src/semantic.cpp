@@ -238,10 +238,27 @@ void SemanticAnalyzer::collect_decl(Decl* decl) {
 
         case DeclKind::Enum: {
             auto* e = static_cast<Enum*>(decl);
-            for (const Token& var : e->variants) {
-                Symbol var_sym(SymbolKind::EnumVar, e);
-                if (!symbols_.insert_member(std::string(var.val), std::move(var_sym))) {
-                    error(e->loc, "redefinition of enum variant '" + std::string(var.val) + "'");
+            std::string ename(e->name);
+            Scope* parent = symbols_.current_scope();
+            Symbol* existing = parent ? parent->lookup_member(ename) : nullptr;
+            if (existing) {
+                error(e->loc, "redefinition of enum '" + ename + "'");
+            }
+            Scope* enum_scope = parent ? parent->get_or_create_child(ename) : nullptr;
+            e->scope = enum_scope;
+            if (parent && !existing) {
+                Symbol sym(SymbolKind::Enum, e, enum_scope);
+                symbols_.insert_member(ename, std::move(sym));
+            }
+            int64_t next_value = 0;
+            for (EnumVariant* var : e->variants) {
+                if (!var) continue;
+                var->value = next_value++;
+                var->type = make_type(var->loc,
+                    Type::Custom{e->name, {}, e, enum_scope});
+                if (enum_scope) {
+                    Symbol var_sym(SymbolKind::EnumVar, var);
+                    enum_scope->insert_member(std::string(var->name), std::move(var_sym));
                 }
             }
             break;
@@ -401,7 +418,18 @@ void SemanticAnalyzer::visit_class(Class&) {}
 
 void SemanticAnalyzer::visit_namespace(Namespace&) {}
 void SemanticAnalyzer::visit_extern(Extern&) {}
-void SemanticAnalyzer::visit_enum(Enum&) {}
+void SemanticAnalyzer::visit_enum(Enum& e) {
+    std::unordered_map<std::string_view, bool> seen;
+    for (EnumVariant* v : e.variants) {
+        if (!v) continue;
+        if (!seen.emplace(v->name, true).second) {
+            error(v->loc, "redefinition of enum variant '" + std::string(v->name) + "'");
+        }
+    }
+    if (e.variants.empty()) {
+        warning(e.loc, "enum '" + std::string(e.name) + "' declares no variants");
+    }
+}
 void SemanticAnalyzer::visit_keep(Keep&) {}
 
 void SemanticAnalyzer::visit(Expr&) {}
@@ -436,6 +464,13 @@ void SemanticAnalyzer::visit_expr_identifier(Expr::Identifier& id) {
                     current_expr->type = make_type(current_expr->loc,
                         Type::FuncRef{static_cast<Func*>(d)}
                     );
+            }
+            current_expr->is_lvalue = false;
+        } else if (member->kind == SymbolKind::Enum) {
+            if (Enum* e = member->get<Enum>()) {
+                current_expr->type = make_type(current_expr->loc,
+                    Type::Custom{e->name, {}, e, e->scope}
+                );
             }
             current_expr->is_lvalue = false;
         } else {
@@ -893,7 +928,9 @@ void SemanticAnalyzer::visit_expr_member(Expr::Member& m) {
         }
     }
     if (!target_scope && m.target->sym &&
-        (m.target->sym->kind == SymbolKind::Class || m.target->sym->kind == SymbolKind::Namespace)) {
+        (m.target->sym->kind == SymbolKind::Class ||
+         m.target->sym->kind == SymbolKind::Namespace ||
+         m.target->sym->kind == SymbolKind::Enum)) {
         target_scope = m.target->sym->scope;
     }
 
@@ -922,6 +959,13 @@ void SemanticAnalyzer::visit_expr_member(Expr::Member& m) {
                         current_expr->loc,
                         Type::FuncRef{static_cast<Func*>(d)}
                     );
+            }
+            current_expr->is_lvalue = false;
+            return;
+        }
+        if (member->kind == SymbolKind::EnumVar) {
+            if (auto* ev = member->get<EnumVariant>()) {
+                current_expr->type = ev->type;
             }
             current_expr->is_lvalue = false;
             return;
@@ -1147,6 +1191,9 @@ void SemanticAnalyzer::visit_type_custom(Type::Custom& c) {
     if (Symbol* s = symbols_.lookup_member(name)) {
         if (Decl* d = s->get_decl()) {
             c.resolved_decl = d;
+            if (d->kind == DeclKind::Enum) {
+                c.resolved_scope = static_cast<Enum*>(d)->scope;
+            }
             // 如果有模板实参，实例化类并提取新符号表
             if (!c.args.empty() && d->kind == DeclKind::Class) {
                 auto* cls = static_cast<Class*>(d);

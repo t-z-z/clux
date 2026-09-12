@@ -28,6 +28,7 @@ struct VarList;
 struct Func;
 struct Operator;
 struct Enum;
+struct EnumVariant;
 struct Namespace;
 struct Extern;
 struct Class;
@@ -581,11 +582,23 @@ struct Keep : Decl {
         : Decl(loc, "", DeclKind::Keep, std::move(ml)), code(c) {}
 };
 
+struct EnumVariant : ASTNode {
+    std::string_view name;
+    int64_t value = 0;      // 语义阶段写入：编译期整数值
+    Type* type = nullptr;   // 语义阶段写入：所属枚举类型
+    EnumVariant() = default;
+    EnumVariant(const Location& loc, std::string_view n)
+        : ASTNode(loc), name(n) {}
+};
+
 struct Enum : Decl {
-    std::vector<Token> variants;
+    Scope* scope = nullptr;   // 枚举自身的成员作用域
+    std::vector<EnumVariant*> variants;
     Enum() = default;
-    Enum(const Location&loc, std::vector<Token> var, ModfList ml):
-        Decl(loc, "", DeclKind::Enum, std::move(ml)), variants(std::move(var)) {}
+    Enum(const Location& loc, std::string_view name, ModfList ml,
+         std::vector<EnumVariant*> vs)
+        : Decl(loc, name, DeclKind::Enum, std::move(ml)),
+          variants(std::move(vs)) {}
 };
 
 struct ASTVisitor {
@@ -794,7 +807,7 @@ struct ASTVisitor {
         visit_special_method(sm);
         scope_out();
     }
-    void walk_children(Enum&) {}
+    void walk_children(Enum& e) { visit_enum(e); }
     void walk_children(Keep&) {}
     void walk_children(Expr& expr) {
         Expr* pre = current_expr;

@@ -500,24 +500,28 @@ Extern* Parser::parse_extern_decl(ModfList &ml, Location &loc) {
 Enum* Parser::parse_enum_decl(ModfList& ml, Location& loc) {
     if (curr().kind != TokenKind::Enum) return nullptr;
     advance();
-    if (curr().kind == TokenKind::BraceL) {
+    if (!curr().is_ident()) {
+        add_error("expected enum name after 'enum'");
+        return cu_.add_node<Enum>();
+    }
+    std::string_view name = curr().get_val();
+    advance();
+    std::vector<EnumVariant*> variants;
+    if (curr().kind != TokenKind::BraceL) {
+        add_error("expected '{' after enum name");
+        return cu_.add_node<Enum>(loc, name, std::move(ml), std::move(variants));
+    }
+    advance();
+    while (curr().is_ident()) {
+        variants.push_back(cu_.add_node<EnumVariant>(get_loc(), curr().get_val()));
         advance();
-        std::vector<Token> vars;
-        while(curr().is_ident()) {
-            vars.push_back(curr());
-        }
-        if (curr().kind == TokenKind::BraceR) {
-            advance();
-        } else {
-            add_error("expected terminating '}");
-        }
-        return cu_.add_node<Enum>(loc, std::move(vars), std::move(ml));
     }
-    if (curr().is_ident()) {
-        return cu_.add_node<Enum>(loc, std::vector<Token>{curr()}, std::move(ml));
+    if (curr().kind == TokenKind::BraceR) {
+        advance();
+    } else {
+        add_error("expected terminating '}'");
     }
-    add_error("expected variant of enum");
-    return cu_.add_node<Enum>();
+    return cu_.add_node<Enum>(loc, name, std::move(ml), std::move(variants));
 }
 
 Keep* Parser::parse_keep_decl(ModfList& ml, Location& loc) {
