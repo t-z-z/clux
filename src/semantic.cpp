@@ -341,7 +341,7 @@ void SemanticAnalyzer::visit(CompUnit& cu) {
 }
 void SemanticAnalyzer::visit(Decl&) {}
 void SemanticAnalyzer::visit(Import&) {}
-void SemanticAnalyzer::visit_func(Func& f) {}
+void SemanticAnalyzer::visit_func(Func&) {}
 
 void SemanticAnalyzer::visit_special_method(SpecialMethod&) {}
 
@@ -366,7 +366,7 @@ void SemanticAnalyzer::visit_var_list(VarList& vl) {
     }
 }
 
-void SemanticAnalyzer::visit_class(Class& c) {}
+void SemanticAnalyzer::visit_class(Class&) {}
 
 void SemanticAnalyzer::visit_namespace(Namespace&) {}
 void SemanticAnalyzer::visit_extern(Extern&) {}
@@ -635,61 +635,124 @@ void SemanticAnalyzer::visit_expr_call(Expr::Call& c) {
 }
 
 void SemanticAnalyzer::resolve_call(Expr* call_expr, Expr::Call& c) {
-    if (!c.callee) return;
-    Symbol* callee_sym = c.callee->sym;
+    if (!c.callee) {
+        error(call_expr->loc, "call expression has no callee");
+        call_expr->type = typeVoid;
+        call_expr->is_lvalue = false;
+        return;
+    }
 
+    // 路径 1：callee 的类型是函数指针 $(...) → 按类型调用
+    // 覆盖：函数指针变量、闭包字面量、返回函数指针的表达式
+    if (c.callee->type && c.callee->type->is_func_ptr()) {
+        auto* fp = c.callee->type->get_func_ptr();
+
+        if (fp->params.size() != c.args.size()) {
+            error(call_expr->loc,
+                  "function pointer expects " + std::to_string(fp->params.size()) +
+                  " argument(s), got " + std::to_string(c.args.size()));
+        }
+        for (size_t i = 0; i < c.args.size() && i < fp->params.size(); ++i) {
+            Type* at = c.args[i] ? c.args[i]->type : nullptr;
+            Type* pt = fp->params[i];
+            if (at && pt && !is_same_type(at, pt) && !can_convert_to(at, pt)) {
+                warning(c.args[i]->loc, "argument type mismatch in call");
+            }
+        }
+
+        call_expr->type = fp->return_type ? fp->return_type : typeVoid;
+        call_expr->is_lvalue = false;
+
+        CallResolution resol;
+        resol.call = call_expr;
+        call_resolutions_.push_back(std::move(resol));
+        return;
+    }
+
+    // 路径 2：命名调用 → 从 callee->sym 取名字，构造 callkey 后查表
+    Symbol* callee_sym = c.callee->sym;
     if (!callee_sym) {
         error(call_expr->loc, "invalid callee expression");
+        call_expr->type = typeVoid;
+        call_expr->is_lvalue = false;
         return;
     }
 
     Decl* callee_decl = callee_sym->get_decl();
-    if (!callee_decl) {
+    if (!callee_decl || callee_decl->name.empty()) {
+        error(call_expr->loc, "callee has no resolvable name");
+        call_expr->type = typeVoid;
+        call_expr->is_lvalue = false;
         return;
     }
-    Func* func = nullptr;
-    Symbol* sym = nullptr;
-    if (callee_sym->kind == SymbolKind::Class && callee_sym->scope) {
-        // 类名构造，寻找初始化函数
+    std::string name(callee_decl->name);
+
+    // 2a：类构造，在类自己的 scope 里查 INIT_...
+    if (callee_sym->kind == SymbolKind::Class) {
         Scope* cls_scope = callee_sym->scope;
+        if (!cls_scope) {
+            error(call_expr->loc, "class '" + name + "' has no scope");
+            call_expr->type = typeVoid;
+            call_expr->is_lvalue = false;
+            return;
+        }
+
         std::string key = build_callkey("INIT", c.args);
-        Symbol* init_methods = SymbolTable::lookup_member_in(cls_scope, "INIT");
-        if (init_methods && init_methods->kind == SymbolKind::Function) {
-            sym = init_methods;
-            if (Decl* d = init_methods->get_decl()) {
-                if (d->kind == DeclKind::Func) {
-                    func = static_cast<Func*>(d);
-                }
-            }
+        Symbol* init_sym = SymbolTable::lookup_member_in(cls_scope, key);
+        if (!init_sym || init_sym->kind != SymbolKind::Function) {
+            error(call_expr->loc,
+                  "no matching constructor for class '" + name + "'");
+            call_expr->type = typeVoid;
+            call_expr->is_lvalue = false;
+            return;
         }
-    } else if (callee_sym->kind == SymbolKind::Function) {
-        // 模板函数按普通名注册，找到即实例化
-        std::string func_name = std::string(callee_decl->name);
-        Symbol* resolved_sym = symbols_.lookup_member_in(callee_sym->scope, func_name);
-        if (resolved_sym && resolved_sym->kind == SymbolKind::Function) {
-            sym = resolved_sym;
-            if (Decl* d = resolved_sym->get_decl()) {
-                if (d->kind == DeclKind::Func) {
-                    func = static_cast<Func*>(d);
-                }
-            }
-            // 标记尚未完成的实例化代码
-        } else {
-            // 非模板按键查找
-            std::string key = build_callkey(func_name, c.args);
-            resolved_sym = symbols_.lookup_member(key);
-            if (resolved_sym && resolved_sym->kind == SymbolKind::Function) {
-                if (Decl* d = resolved_sym->get_decl()) {
-                    if (d->kind == DeclKind::Func) {
-                        func = static_cast<Func*>(d);
-                    }
-                }
-            } else {
-                // 失败报错
-                error(call_expr->loc, "no matching overload for call to '" + func_name + "'");
-            }
+
+        call_expr->sym = init_sym;
+        call_expr->type = make_type(call_expr->loc,
+            Type::Custom{callee_decl->name, {}, callee_decl});
+        call_expr->is_lvalue = false;
+
+        CallResolution resol;
+        resol.call = call_expr;
+        if (Decl* d = init_sym->get_decl()) {
+            if (d->kind == DeclKind::Func)
+                resol.resolved_func = static_cast<Func*>(d);
         }
+        call_resolutions_.push_back(std::move(resol));
+        return;
     }
+
+    // 2b：普通函数 / 操作符，用 mangled key 在当前作用域链里查
+    std::string key = build_callkey(name, c.args);
+    Symbol* f_sym = symbols_.lookup_member(key);
+    if (!f_sym || f_sym->kind != SymbolKind::Function) {
+        error(call_expr->loc,
+              "no matching overload for call to '" + name + "'");
+        call_expr->type = typeVoid;
+        call_expr->is_lvalue = false;
+        return;
+    }
+
+    Func* func = nullptr;
+    if (Decl* d = f_sym->get_decl()) {
+        if (d->kind == DeclKind::Func || d->kind == DeclKind::Operator)
+            func = static_cast<Func*>(d);
+    }
+
+    Type* ret = typeVoid;
+    if (func && !func->returns.empty() &&
+        func->returns[0] && func->returns[0]->type) {
+        ret = func->returns[0]->type;
+    }
+
+    call_expr->sym = f_sym;
+    call_expr->type = ret;
+    call_expr->is_lvalue = false;
+
+    CallResolution resol;
+    resol.call = call_expr;
+    resol.resolved_func = func;
+    call_resolutions_.push_back(std::move(resol));
 }
 
 const CallResolution* SemanticAnalyzer::find_call(Expr* e) const {
@@ -732,10 +795,7 @@ void SemanticAnalyzer::visit_expr_member(Expr::Member& m) {
         return;
     }
     Scope* target_scope = nullptr;
-
-    if (m.target->sym) {
-        target_scope = m.target->sym->scope;
-    } else if (m.target->type) {
+    if (m.target->type) {
         if (auto* cus = m.target->type->get_custom()) {
             // 如果有实例化后的符号表，优先使用
             if (cus->resolved_scope) {
@@ -746,6 +806,10 @@ void SemanticAnalyzer::visit_expr_member(Expr::Member& m) {
                 }
             }
         }
+    } else if (m.target->sym &&
+    (m.target->sym->kind == SymbolKind::Class || m.target->sym->kind == SymbolKind::Namespace)) {
+        // sym不一定是类，也可能是其他声明，不优先
+        target_scope = m.target->sym->scope;
     }
 
     if (!target_scope) {
@@ -934,7 +998,7 @@ void SemanticAnalyzer::visit_stmt_for_in(Stmt::ForIn& for_in_stmt) {
     }
 }
 
-void SemanticAnalyzer::visit_stmt_return(Stmt::Return& return_stmt) {
+void SemanticAnalyzer::visit_stmt_return(Stmt::Return&) {
     if (!current_func) {
         error(current_stmt->loc, "return statement outside of function");
         return;

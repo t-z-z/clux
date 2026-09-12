@@ -252,6 +252,19 @@ add(int a, int b) int r {
 }
 ```
 
+### 枚举申明
+
+枚举是一种非容器声明，编译时被分析成数字。
+
+```cx
+enum Color {
+    Red Blue Green
+}
+main() {
+    color = color::Red
+}
+```
+
 ### 命名与重载
 
 同一作用域下：
@@ -337,16 +350,7 @@ pointer p = pointer()
 }
 ```
 
-### 枚举
 
-枚举是一种非容器声明，编译时被分析成数字。
-
-```cx
-@Color {
-    enum { Red Blue Green }
-    enum Black
-}
-```
 
 ### 操作符重载
 

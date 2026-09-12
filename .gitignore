@@ -16,10 +16,10 @@ test_output/
 *.log
 ~*
 *.cx
-AGENTS.md
 tests/
 *.rlib
 *.md
 !spec.md
 !lib.md
 !README.md
+.cache/

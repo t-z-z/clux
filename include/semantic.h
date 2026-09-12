@@ -5,10 +5,6 @@
 #include <string_view>
 #include <vector>
 #include <unordered_map>
-#include <unordered_set>
-#include <optional>
-#include <variant>
-#include <map>
 
 #include "ast.h"
 #include "diagnostic.h"
@@ -215,6 +211,7 @@ struct SymbolTable {
 struct CallResolution {
     Expr* call = nullptr;
     Func* resolved_func = nullptr;
+    Type* type = nullptr;
     std::string message;
 };
 

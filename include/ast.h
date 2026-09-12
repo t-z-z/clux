@@ -304,8 +304,8 @@ inline bool is_binary(OpKind op) {
     return op >= OpKind::Plus && op <= OpKind::Shr;
 }
 inline bool is_unary(OpKind op) {
-    return op >= OpKind::Not && op <= OpKind::BitNot
-        || op >= OpKind::Plus && op <= OpKind::Minus;
+    return (op >= OpKind::Not && op <= OpKind::BitNot)
+        || (op >= OpKind::Plus && op <= OpKind::Minus);
 }
 inline bool is_assign(OpKind op) {
     return op >= OpKind::Assign && op <= OpKind::ShrAssign;
