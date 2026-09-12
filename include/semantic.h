@@ -229,13 +229,6 @@ class SemanticAnalyzer : public ASTVisitor {
     // 调用解析结果
     std::vector<CallResolution> call_resolutions_;
 
-    // 模板实例化缓存：键 = 函数完整限定名 + "(" + 具体参数类型编码 + ")"
-    std::map<std::string, Func*> instantiated_templates_;
-
-    // 实例化用的自增序号（保证每次实例化有独立唯一作用域）与其名称存储
-    size_t instantiate_seq_ = 0;
-    std::vector<std::string> instantiated_names_;
-
     #define X(name,str) Type* type##name;
     TYPE
     #undef X
@@ -287,10 +280,6 @@ public:
     // 作用域管理（配合 ASTVisitor）
     void scope_in(std::string) override;
     void scope_out() override;
-
-    // 模板声明无实参上下文：首轮只注册，跳过函数体/类成员检查
-    bool should_walk(const Func& f) const override { return f.templates.empty(); }
-    bool should_walk(const Class& c) const override { return c.templates.empty(); }
 
     void visit(CompUnit&) override;
     void visit(Import&) override;
@@ -381,21 +370,17 @@ private:
     void register_func(Func& f);
     void register_special(SpecialMethod& sm);
 
+    // 命名规则检查
+    void check_naming_rules(Decl* decl);
+
     // 辅助：获取当前作用域的完整路径字符串（用 "::" 连接）
     std::string get_current_full_path() const;
 
-// 调用解析
+    // 调用解析
     void resolve_call(Expr* call, Expr::Call& c);
 
-    // 模板实例化辅助
-    // 无显式模板实参时，从调用实参的类型中推导各模板参数（写入 out_args，按模板参数顺序）
-    bool deduce_from_args(
-        Func* f,
-        const std::vector<Expr*>& args,
-        std::vector<ASTNode*>& out_args);
-
-    // 克隆整个模板子树，把模板参数名字节点替换为实参 ASTNode，然后 walk 检查
-    Func* instantiate(Func* f, const std::vector<ASTNode*>& tpl_args);
+    // 类实例化：从类提取新符号表，在其中查找成员
+    Class* instantiate_class(Class* cls, const std::vector<ASTNode*>& tpl_args);
 
     // 克隆辅助（深拷贝，新节点统一登记到 cu_）
     Type* clone_type(Type* t);

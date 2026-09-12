@@ -95,7 +95,6 @@ namespace cx{
     X(Shr, ">>") \
     X(ColonColon, "::") \
     X(DoubleHyphen, "--") \
-    X(GenericStart, "-[") \
 
 #define OPERATOR1C \
     X(ParenL, "(") \

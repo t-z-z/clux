@@ -1,6 +1,5 @@
 #include "../include/diagnostic.h"
 #include <iostream>
-#include <cstdio>
 
 namespace cx{
 

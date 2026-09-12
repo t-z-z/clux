@@ -213,9 +213,9 @@ private:
     Expr* parse_func_literal();
     Expr* parse_literal();
     Expr* make_unary(Token op, Expr* operand, bool is_postfix);
+    Expr* make_binary(Expr* left, Token op, Token op2);
     Expr* make_binary(Expr* left, Token op, Expr* right);
 
-    std::vector<TemplateParam> parse_template_params();     // -[T, U]
     std::vector<VarList*> parse_value_params();    // (int a)
 
     Type* parse_type();
@@ -226,7 +226,6 @@ private:
 
     // 其他辅助函数
     std::vector<Type*> parse_type_list_in_paren();
-    std::vector<ASTNode*> parse_template_args();
     std::string_view parse_code();
     // 以下均可逆
     ModfList parse_modfs();

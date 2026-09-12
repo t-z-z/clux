@@ -32,17 +32,13 @@ std::optional<std::vector<Token>> Parser::lookup_alias_expended(const Token& nam
 void Parser::scan_alias_decl() {
     if (!use_alias_) return;
     Token name_tok = get_token();
-    if (!name_tok.is_word()) {
-        add_error("expected word after alias");
-        return;
-    }
     Token assign = lexer_.next_token();
     if (assign.kind != TokenKind::Assign) {
         add_error("expected '=' after alias name");
         return;
     }
     std::vector<Token> target;
-    while (true) {
+    for(;;) {
         Token t = get_token();
         if (t.kind == TokenKind::Colon || t.kind == TokenKind::Eof) break;
         target.push_back(t);
@@ -197,7 +193,7 @@ Modification* Parser::parse_modification() {
     }
     std::string_view name = curr().get_val();
     walk();
-    std::vector<ASTNode*> args = parse_template_args();
+    std::vector<ASTNode*> args; // No template args without generics
 
     return cu_.add_node<Modification>(loc, name, args);
 }
@@ -205,12 +201,10 @@ Modification* Parser::parse_modification() {
 // 函数的识别：名称后接参数括号
 Func* Parser::parse_func_decl(ModfList &ml, Location &loc) {
     if (!curr().is_ident()) return nullptr;
-    if (peek().kind != TokenKind::GenericStart
-        && peek().kind != TokenKind::ParenL
+    if (peek().kind != TokenKind::ParenL
         && peek().kind != TokenKind::BraceL) return nullptr;
     std::string_view name = curr().get_val();
     walk();
-    std::vector<TemplateParam> tpls = parse_template_params();
     if (curr().kind != TokenKind::ParenL) return nullptr;
     std::vector<VarList*> params = parse_value_params();
     admit();
@@ -232,7 +226,6 @@ Func* Parser::parse_func_decl(ModfList &ml, Location &loc) {
     return cu_.add_node<Func>(
             loc, std::move(name),
             std::move(ml),
-            std::move(tpls),
             std::move(params),
             std::move(returns),
             body
@@ -290,12 +283,11 @@ Class* Parser::parse_class_decl(ModfList &ml, Location &loc) {
         name = curr().get_val();
         advance();
     }
-    std::vector<TemplateParam> tpls = parse_template_params();
     ModfList nml = parse_modfs();
     ml.merge(nml);
     std::vector<Decl*> members = parse_members();
     Class* raw = cu_.add_node<Class>(
-        loc, std::move(name), std::move(ml), std::move(members), std::move(tpls)
+        loc, std::move(name), std::move(ml), std::move(members)
     );
     return raw;
 }
@@ -404,7 +396,6 @@ Operator* Parser::parse_operator_overload(ModfList &ml, Location &loc) {
             add_error("expected operator after \"operator\"");
         }
     }
-    std::vector<TemplateParam> tpls = parse_template_params();
     if (curr().kind != TokenKind::ParenL) return cu_.add_node<Operator>();
     std::vector<VarList*> params = parse_value_params();
     admit();
@@ -427,7 +418,6 @@ Operator* Parser::parse_operator_overload(ModfList &ml, Location &loc) {
             loc, kind,
             name,
             std::move(ml),
-            std::move(tpls),
             std::move(params),
             std::move(returns),
             body
@@ -1028,7 +1018,6 @@ bool Parser::is_postfix_op(TokenKind kind) {
         case TokenKind::BracketL:   // []
         case TokenKind::Dot:        // .
         case TokenKind::ColonColon: // ::
-        case TokenKind::GenericStart: // f-[T](args)
         case TokenKind::Minus:      // -* -&
             return true;
         default:
@@ -1197,8 +1186,8 @@ Expr* Parser::parse_prefix() {
     if (curr().kind == TokenKind::BraceL) {
         return parse_block_expr();
     }
-    // 函数字面量：/ (参数) 返回类型 { 函数体 }（除法是中缀，前缀位置出现 '/' 即闭包）
-    if (curr().kind == TokenKind::Div) {
+    // 函数字面量：\ [捕获] (参数) 返回类型 { 函数体 }（除法是中缀，前缀位置出现 '\' 即闭包）
+    if (curr().kind == TokenKind::Backslash) {
         return parse_func_literal();
     }
     // 前缀操作符
@@ -1257,11 +1246,9 @@ Expr* Parser::parse_postfix(Expr* left) {
     Location loc = get_loc();
     
     switch (curr().kind) {
-        // 函数调用：foo-[bar](baz)--{}
-        case TokenKind::GenericStart:
+        // 函数调用：foo(bar)--{}
         case TokenKind::ParenL:
         case TokenKind::DoubleHyphen: {
-            std::vector<ASTNode*> tpl_args = parse_template_args();
             std::vector<Expr*> args = parse_list<Expr*>(
                 TokenKind::ParenL,
                 TokenKind::ParenR,
@@ -1280,7 +1267,7 @@ Expr* Parser::parse_postfix(Expr* left) {
             }
             return cu_.add_node<Expr>(
                 loc,
-                Expr::Call{left, tpl_args, args}
+                Expr::Call{left, std::move(args)}
             );
         }
         // 索引: []
@@ -1613,11 +1600,6 @@ Type* Parser::parse_generic_type() {
     std::string_view name = curr().get_val();
     walk();
 
-    if (curr().kind == TokenKind::GenericStart) {
-        std::vector<ASTNode*> args = parse_template_args();
-        return cu_.add_node<Type>(loc, Type::Custom{name, std::move(args)});
-    }
-
     return cu_.add_node<Type>(loc, Type::Custom{name, {}});
 }
 
@@ -1694,63 +1676,6 @@ std::string_view Parser::parse_code() {
     std::string_view code = lexer_.get_source_range(start,end);
     use_alias_ = true;
     return code;
-}
-
-std::vector<TemplateParam> Parser::parse_template_params() {
-    std::vector<TemplateParam> tpls;
-    if (curr().kind != TokenKind::GenericStart) {
-        return {};
-    }
-    walk();
-    if (curr().kind == TokenKind::BracketR) {
-        walk();
-        return {};
-    }
-    for (;;) {
-        if (curr().is_ident()) {
-            std::string_view name = curr().get_val();
-            ASTNode* dft = nullptr;
-            walk();
-            size_t sp = point();
-            if (curr().kind == TokenKind::Colon) {
-                dft = parse_expr();
-            }
-            if (!dft){
-                restore(sp);
-                dft = parse_type();
-            }
-            tpls.push_back({name, dft});
-        }
-        if (curr().kind == TokenKind::Comma) {
-            walk();
-        } else if(curr().kind == TokenKind::BracketR) {
-            walk();
-            break;
-        } else if (is_eof()) {
-            add_error("unterminated template parameter list");
-            break;
-        }
-    }
-    return tpls;
-}
-
-std::vector<ASTNode*> Parser::parse_template_args() {
-    return parse_list<ASTNode*>(
-        TokenKind::GenericStart,
-        TokenKind::BracketR,
-        TokenKind::Comma,
-        [this]{
-            ASTNode* dft;
-            size_t sp = point();
-            dft = parse_expr();
-            if(!dft) {
-                restore(sp);
-                dft = parse_type();
-            }
-            return dft;
-        },
-        "template argument"
-    ).value_or({});
 }
 
 } // namespace cx

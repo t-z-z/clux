@@ -1,9 +1,9 @@
-#include "compiler.h"
+#include "../include/compiler.h"
 
-#include "string_pool.h"
-#include "lexer.h"
-#include "parser.h"
-#include "semantic.h"
+#include "../include/string_pool.h"
+#include "../include/lexer.h"
+#include "../include/parser.h"
+#include "../include/semantic.h"
 
 namespace cx {
 

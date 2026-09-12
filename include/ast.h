@@ -33,7 +33,6 @@ struct Extern;
 struct Class;
 struct SpecialMethod;
 struct Keep;
-struct TemplateParam;
 struct ASTVisitor;
 struct Symbol;  // 前向声明，定义在 semantic.h
 struct Scope;   // 前向声明，定义在 semantic.h
@@ -244,6 +243,7 @@ struct Type : ASTNode {
         std::string_view name;
         std::vector<ASTNode*> args;        // 语义分析后填充
         Decl* resolved_decl = nullptr;  // 实际申明的位置
+        Scope* resolved_scope = nullptr; // 实例化后的符号表
     };
     struct Reference {
         Type* target;
@@ -327,7 +327,7 @@ struct Expr : ASTNode {
     struct Binary       { Expr* left; OpKind op; Expr* right; };
     struct Unary        { OpKind op; Expr* operand; bool is_postfix = false; };
     struct Assign       { Expr* target; OpKind op; Expr* value; };
-    struct Call         { Expr* callee; std::vector<ASTNode*> templates; std::vector<Expr*> args; };
+    struct Call         { Expr* callee; std::vector<Expr*> args; };
     struct Ternary      { Expr* cond; Expr* then_expr; Expr* else_expr; };
     struct Index        { Expr* target; Expr* index; };
     struct Member       { Expr* target; std::string_view member; };
@@ -369,7 +369,7 @@ struct Expr : ASTNode {
             return Type(loc,Type::Custom{i->name, std::vector<ASTNode*>(), nullptr});
         } else if (Call* c = get_call()) {
             if (Identifier* i = c->callee->get_identifier()) {
-                return Type(loc,Type::Custom{i->name, c->templates, nullptr});
+                return Type(loc,Type::Custom{i->name, std::vector<ASTNode*>(), nullptr});
             }
         } else if (PrimitiveType* p = get_primitive_type()) {
             if (p->type){
@@ -479,15 +479,7 @@ struct VarList : Decl {
         type(t), vars(std::move(v)) {}
 };
 
-struct TemplateParam {
-    std::string_view name;
-    ASTNode* dft = nullptr;
-    TemplateParam() = default;
-    TemplateParam(std::string_view n, ASTNode* a) : name(n),dft(a) {}
-};
-
 struct Func : Decl {
-    std::vector<TemplateParam> templates; // 泛型-<T>
     std::vector<VarList*> params;   // 圆括号(int a, $bool cond)
     std::vector<VarList*> returns;  // 返回值声明
     Stmt* body = nullptr;           // 函数体
@@ -495,13 +487,11 @@ struct Func : Decl {
     Func(const Location& loc,
         std::string_view name,
         ModfList ml,
-        std::vector<TemplateParam> t,
         std::vector<VarList*> p,
         std::vector<VarList*> r,
         Stmt* b
         )
         : Decl(loc, name, DeclKind::Func, std::move(ml)),
-        templates(std::move(t)),
         params(std::move(p)),
         returns(std::move(r)),
         body(b) {}
@@ -522,13 +512,12 @@ struct Operator : Func {
         OpKind a,
         std::string_view op_name,
         ModfList ml,
-        std::vector<TemplateParam> t,
         std::vector<VarList*> p,
         std::vector<VarList*> r,
         Stmt* b
     ) : 
         Func(loc, op_name, std::move(ml),
-        std::move(t), std::move(p), std::move(r), b), op(a) {
+        std::move(p), std::move(r), b), op(a) {
             kind = DeclKind::Operator;
         }
 };
@@ -552,15 +541,12 @@ struct Extern : Cont {
 };
 
 struct Class : Cont {
-    std::vector<TemplateParam> templates;
     Class(const Location &loc,
         std::string_view name,
         ModfList ml,
-        std::vector<Decl*> m,
-        std::vector<TemplateParam> tpls = {}
+        std::vector<Decl*> m
     ):
-        Cont(loc, name, DeclKind::Class, std::move(ml), std::move(m)),
-        templates(std::move(tpls)) {}
+        Cont(loc, name, DeclKind::Class, std::move(ml), std::move(m)) {}
     virtual ~Class() = default;
 };
 

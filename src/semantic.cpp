@@ -1,8 +1,5 @@
 ﻿#include "../include/semantic.h"
 
-#include <functional>
-#include <unordered_set>
-
 namespace cx {
 
 bool SemanticAnalyzer::is_numeric_type(Type* t) {
@@ -137,7 +134,9 @@ void SemanticAnalyzer::collect_decl(Decl* decl) {
             auto* vl = static_cast<VarList*>(decl);
             for (auto* var : vl->vars) {
                 Symbol sym(SymbolKind::Variable, var);
-                symbols_.insert_member(std::string(var->name), std::move(sym));
+                if (!symbols_.insert_member(std::string(var->name), std::move(sym))) {
+                    error(vl->loc, "duplicate declaration of variable '" + std::string(var->name) + "'");
+                }
             }
             break;
         }
@@ -150,7 +149,11 @@ void SemanticAnalyzer::collect_decl(Decl* decl) {
 
         case DeclKind::Class: {
             auto* cls = static_cast<Class*>(decl);
-            symbols_.insert_and_push(std::string(cls->name), Symbol(SymbolKind::Class, cls));
+            if (symbols_.lookup_member(std::string(cls->name))) {
+                error(cls->loc, "redefinition of class '" + std::string(cls->name) + "'");
+            } else {
+                symbols_.insert_and_push(std::string(cls->name), Symbol(SymbolKind::Class, cls));
+            }
             for (Decl* member : cls->members) {
                 collect_decl(member);
             }
@@ -160,7 +163,11 @@ void SemanticAnalyzer::collect_decl(Decl* decl) {
 
         case DeclKind::Namespace: {
             auto* ns = static_cast<Namespace*>(decl);
-            symbols_.insert_and_push(std::string(ns->name), Symbol(SymbolKind::Namespace, ns));
+            if (symbols_.lookup_member(std::string(ns->name))) {
+                error(ns->loc, "redefinition of namespace '" + std::string(ns->name) + "'");
+            } else {
+                symbols_.insert_and_push(std::string(ns->name), Symbol(SymbolKind::Namespace, ns));
+            }
             for (Decl* member : ns->members) {
                 collect_decl(member);
             }
@@ -181,7 +188,9 @@ void SemanticAnalyzer::collect_decl(Decl* decl) {
             auto* e = static_cast<Enum*>(decl);
             for (const Token& var : e->variants) {
                 Symbol var_sym(SymbolKind::EnumVar, e);
-                symbols_.insert_member(std::string(var.val), std::move(var_sym));
+                if (!symbols_.insert_member(std::string(var.val), std::move(var_sym))) {
+                    error(e->loc, "redefinition of enum variant '" + std::string(var.val) + "'");
+                }
             }
             break;
         }
@@ -193,14 +202,15 @@ void SemanticAnalyzer::collect_decl(Decl* decl) {
         default:
             break;
     }
+
+    check_naming_rules(decl);
 }
 
 void SemanticAnalyzer::register_func(Func& f) {
     std::string name = std::string(f.name);
 
-    if (!f.templates.empty()) {
-        Symbol sym(SymbolKind::Function, &f);
-        symbols_.insert_member(name, std::move(sym));
+    if (symbols_.lookup_member(name)) {
+        error(f.loc, "duplicate declaration of function '" + name + "'");
         return;
     }
 
@@ -233,6 +243,28 @@ void SemanticAnalyzer::register_special(SpecialMethod& sm) {
 
     Symbol sym(SymbolKind::Function, &sm);
     symbols_.insert_member(internal_name, std::move(sym));
+}
+
+void SemanticAnalyzer::check_naming_rules(Decl* decl) {
+    if (!decl || decl->name.empty()) return;
+    std::string name = std::string(decl->name);
+
+    // 仅在当前作用域检查
+    Scope* sc = symbols_.current_scope();
+    if (!sc) return;
+    Symbol* existing = sc->lookup_member(name);
+    if (!existing) return;
+
+    bool is_container = decl->kind == DeclKind::Class || decl->kind == DeclKind::Namespace;
+    bool existing_is_container = existing->kind == SymbolKind::Class || existing->kind == SymbolKind::Namespace;
+
+    if (is_container || existing_is_container) {
+        if (is_container != existing_is_container) {
+            error(decl->loc, "cannot declare '" + name + "' as both a container and non-container in the same scope");
+        } else if (is_container && existing_is_container) {
+            error(decl->loc, "container '" + name + "' redeclared in the same scope");
+        }
+    }
 }
 
 std::string SemanticAnalyzer::type_to_key(Type& t) {
@@ -314,6 +346,21 @@ void SemanticAnalyzer::visit_func(Func& f) {}
 void SemanticAnalyzer::visit_special_method(SpecialMethod&) {}
 
 void SemanticAnalyzer::visit_var_list(VarList& vl) {
+    // 动态长度数组检查：运行时长度必须显式声明存储方式
+    if (vl.type && vl.type->is_array()) {
+        auto* arr = vl.type->get_array();
+        if (arr->length) {
+            // 检查长度是否为编译期常量（字面量或标识符引用常量）
+            bool is_const_length = arr->length->is_literal();
+            if (!is_const_length) {
+                bool has_alloca = vl.modfs.has(ModfKind::Alloca);
+                bool has_malloc = vl.modfs.has(ModfKind::Malloc);
+                if (!has_alloca && !has_malloc) {
+                    warning(vl.loc, "array with runtime length must use 'alloca' or 'malloc' modifier");
+                }
+            }
+        }
+    }
     for (VarItem* var : vl.vars) {
         symbols_.insert_local(var->name, Symbol(SymbolKind::Variable, var));
     }
@@ -690,7 +737,10 @@ void SemanticAnalyzer::visit_expr_member(Expr::Member& m) {
         target_scope = m.target->sym->scope;
     } else if (m.target->type) {
         if (auto* cus = m.target->type->get_custom()) {
-            if (cus->resolved_decl) {
+            // 如果有实例化后的符号表，优先使用
+            if (cus->resolved_scope) {
+                target_scope = cus->resolved_scope;
+            } else if (cus->resolved_decl) {
                 if (Cont* cont = dynamic_cast<Cont*>(cus->resolved_decl)) {
                     target_scope = cont->scope;
                 }
@@ -946,6 +996,7 @@ void SemanticAnalyzer::visit_type_primitive(Type::Primitive& p) {
 void SemanticAnalyzer::visit_type_pointer(Type::Pointer&) {}
 void SemanticAnalyzer::visit_type_array(Type::Array&) {}
 void SemanticAnalyzer::visit_type_func_ptr(Type::FuncPtr&) {}
+void SemanticAnalyzer::visit_type_func_ref(Type::FuncRef&) {}
 void SemanticAnalyzer::visit_type_reference(Type::Reference&) {}
 
 void SemanticAnalyzer::visit_type_string_literal(Type::StringLiteral&) {
@@ -960,12 +1011,33 @@ void SemanticAnalyzer::visit_type_custom(Type::Custom& c) {
     if (Symbol* s = symbols_.lookup_member(name)) {
         if (Decl* d = s->get_decl()) {
             c.resolved_decl = d;
+            // 如果有模板实参，实例化类并提取新符号表
+            if (!c.args.empty() && d->kind == DeclKind::Class) {
+                auto* cls = static_cast<Class*>(d);
+                Class* inst = instantiate_class(cls, c.args);
+                if (inst) {
+                    c.resolved_scope = inst->scope;
+                }
+            }
         } else {
             error(current_type->loc, "unknown type '" + name + "'");
         }
     } else {
         error(current_type->loc, "unknown type '" + name + "'");
     }
+}
+
+Class* SemanticAnalyzer::instantiate_class(Class* cls, const std::vector<ASTNode*>& tpl_args) {
+    (void)tpl_args; // Unused after removing generics
+    if (!cls) return cls;
+
+    // 创建一个代理 Class 指向新 scope
+    Class* inst = cu_.add_node<Class>(
+        cls->loc, cls->name, cls->modfs,
+        std::vector<Decl*>()
+    );
+    inst->scope = clone_scope(cls->scope);
+    return inst;
 }
 
 void SemanticAnalyzer::visit_type_inferred(Type::Inferred&) {}
@@ -1018,16 +1090,10 @@ Expr* SemanticAnalyzer::clone_expr(Expr* e) {
         return cu_.add_node<Expr>(loc, Expr::Assign{clone_expr(v->target), v->op, clone_expr(v->value)});
     }
     if (auto* v = e->get_call()) {
-        std::vector<ASTNode*> tpls;
-        tpls.reserve(v->templates.size());
-        for (auto* a : v->templates) {
-            if (Expr* te = dynamic_cast<Expr*>(a)) tpls.push_back(clone_expr(te));
-            else tpls.push_back(a);
-        }
         std::vector<Expr*> args;
         args.reserve(v->args.size());
         for (auto* a : v->args) args.push_back(clone_expr(a));
-        return cu_.add_node<Expr>(loc, Expr::Call{clone_expr(v->callee), std::move(tpls), std::move(args)});
+        return cu_.add_node<Expr>(loc, Expr::Call{clone_expr(v->callee), std::move(args)});
     }
     if (auto* v = e->get_ternary()) {
         return cu_.add_node<Expr>(loc, Expr::Ternary{
@@ -1121,7 +1187,7 @@ Func* SemanticAnalyzer::clone_func(Func* f) {
     std::vector<VarList*> returns;
     returns.reserve(f->returns.size());
     for (auto* r : f->returns) returns.push_back(clone_varlist(r));
-    return cu_.add_node<Func>(f->loc, f->name, f->modfs, f->templates,
+    return cu_.add_node<Func>(f->loc, f->name, f->modfs,
         std::move(params), std::move(returns), clone_stmt(f->body));
 }
 
@@ -1149,13 +1215,7 @@ Type* SemanticAnalyzer::arg_to_type(Expr* e) {
     }
     if (auto* call = e->get_call()) {
         if (auto* id = call->callee ? call->callee->get_identifier() : nullptr) {
-            std::vector<ASTNode*> args;
-            args.reserve(call->templates.size());
-            for (auto* a : call->templates) {
-                if (Expr* te = dynamic_cast<Expr*>(a)) args.push_back(clone_expr(te));
-                else args.push_back(a);
-            }
-            return cu_.add_node<Type>(e->loc, Type::Custom{id->name, std::move(args), nullptr});
+            return cu_.add_node<Type>(e->loc, Type::Custom{id->name, {}, nullptr});
         }
     }
     return nullptr;
@@ -1217,13 +1277,6 @@ void SemanticAnalyzer::subst_expr(Expr*& e, const std::unordered_map<std::string
     if (auto* v = e->get_assign()) { subst_expr(v->target, m); subst_expr(v->value, m); return; }
     if (auto* v = e->get_call()) {
         subst_expr(v->callee, m);
-        for (size_t i = 0; i < v->templates.size(); ++i) {
-            if (Expr* te = dynamic_cast<Expr*>(v->templates[i])) {
-                Expr* ne = te;
-                subst_expr(ne, m);
-                v->templates[i] = ne;
-            }
-        }
         for (auto& a : v->args) subst_expr(a, m);
         return;
     }
@@ -1286,118 +1339,6 @@ void SemanticAnalyzer::subst_stmt(Stmt* s, const std::unordered_map<std::string,
     if (auto* v = s->get_var_decl()) { subst_varlist(v->vars, m); return; }
     if (auto* v = s->get_spawn()) { subst_stmt(v->body, m); return; }
     if (auto* v = s->get_wait()) { subst_expr(v->condition, m); return; }
-}
-
-// 无显式模板实参时，从调用实参类型反推各模板参数
-bool SemanticAnalyzer::deduce_from_args(
-    Func* f,
-    const std::vector<Expr*>& args,
-    std::vector<ASTNode*>& out_args) {
-
-    out_args.assign(f->templates.size(), nullptr);
-    if (f->templates.empty()) return true;
-
-    std::unordered_map<std::string, Type*> found;
-    std::unordered_set<std::string> names;
-    for (const auto& tp : f->templates) names.insert(std::string(tp.name));
-
-    std::function<bool(Type*, Type*)> match = [&](Type* pt, Type* at) -> bool {
-        if (!pt || !at) return false;
-        if (pt->is_custom()) {
-            auto* c = pt->get_custom();
-            auto it = names.find(std::string(c->name));
-            if (it != names.end()) {
-                if (found.find(*it) == found.end()) found[*it] = at;
-                return true;
-            }
-            return false;
-        }
-        if (pt->is_pointer() && at->is_pointer()) {
-            return match(pt->get_pointer()->pointee, at->get_pointer()->pointee);
-        }
-        if (pt->is_reference() && at->is_reference()) {
-            return match(pt->get_reference()->target, at->get_reference()->target);
-        }
-        if (pt->is_array() && at->is_array()) {
-            return match(pt->get_array()->element, at->get_array()->element);
-        }
-        return false;
-    };
-
-    size_t ai = 0;
-    for (auto* vl : f->params) {
-        if (!vl) continue;
-        for (size_t k = 0; k < vl->vars.size(); ++k, ++ai) {
-            const Expr* arg = (ai < args.size()) ? args[ai] : nullptr;
-            if (arg && arg->type) match(vl->type, arg->type);
-        }
-    }
-
-    size_t idx = 0;
-    for (const auto& tp : f->templates) {
-        auto it = found.find(std::string(tp.name));
-        if (it != found.end()) {
-            out_args[idx] = clone_type(it->second);
-        }
-        ++idx;
-    }
-    for (auto* a : out_args) {
-        if (a) return true;
-    }
-    return false;
-}
-
-// 克隆整个模板子树，替换模板参数名节点为实参节点，再 walk 检查
-Func* SemanticAnalyzer::instantiate(Func* f, const std::vector<ASTNode*>& tpl_args) {
-    if (!f) return nullptr;
-
-    // 缓存：同一模板 + 同类型实参只实例化一次
-    std::string key = std::to_string(reinterpret_cast<std::uintptr_t>(f)) + "(";
-    for (auto* a : tpl_args) {
-        if (!a) { key += "_"; continue; }
-        if (Expr* e = dynamic_cast<Expr*>(a)) {
-            if (auto* pt = e->get_primitive_type()) {
-                key += pt->type ? type_to_key(*pt->type) : "?";
-            } else if (auto* id = e->get_identifier()) {
-                key += std::string(id->name);
-            } else {
-                key += "e";
-            }
-        } else {
-            key += "?";
-        }
-    }
-    key += ")";
-    auto cached = instantiated_templates_.find(key);
-    if (cached != instantiated_templates_.end()) return cached->second;
-
-    // 建立 模板参数名 -> 实参节点 的映射（缺实参时回落到默认值）
-    std::unordered_map<std::string, ASTNode*> sub;
-    for (size_t i = 0; i < f->templates.size(); ++i) {
-        const auto& tp = f->templates[i];
-        if (i < tpl_args.size() && tpl_args[i]) {
-            sub[std::string(tp.name)] = tpl_args[i];
-        } else if (tp.dft) {
-            sub[std::string(tp.name)] = tp.dft;
-        } else {
-            return nullptr;
-        }
-    }
-
-    Func* c = clone_func(f);
-    c->templates.clear();
-    for (auto* p : c->params) subst_varlist(p, sub);
-    for (auto* r : c->returns) subst_varlist(r, sub);
-    subst_stmt(c->body, sub);
-
-    // 每次实例化使用独立唯一作用域名，避免复用同一符号表导致相互污染
-    std::string nm = std::string(f->name) + "#" + std::to_string(++instantiate_seq_);
-    instantiated_names_.push_back(nm);
-    c->name = instantiated_names_.back();
-
-    walk(*c);
-    instantiated_templates_[key] = c;
-    return c;
 }
 
 } // namespace cx
