@@ -255,10 +255,10 @@ VarList* Parser::parse_var_decl(ModfList &ml, Location &loc) {
                     add_error("expected expression");
                     continue;
                 }
-            }else if(type->is_inferred()) {
+            } else if(type->is_inferred()) {
                 add_error("can not infer type");
             }
-            vars.push_back(cu_.add_node<VarItem>(get_loc(), name, init));
+            vars.push_back(cu_.add_node<VarItem>(get_loc(), name, init, type));
         } else if (vars.empty()) {
             return nullptr;
         } else {

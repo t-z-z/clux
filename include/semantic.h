@@ -1,5 +1,6 @@
 #pragma once
 
+#include <deque>
 #include <memory>
 #include <string>
 #include <string_view>
@@ -46,9 +47,6 @@ struct Symbol {
     }
     Type* get_type() {
         if (!node) return nullptr;
-        if (auto* vl = dynamic_cast<VarList*>(node)) {
-            return vl->type;
-        }
         if (auto* vi = dynamic_cast<VarItem*>(node)) {
             return vi->type;
         }
@@ -82,7 +80,8 @@ struct Scope {
     Scope* parent = nullptr;
     std::vector<std::unique_ptr<Scope>> children;
 
-    svmap<Symbol> locals;
+    // 键为自有字符串，避免拷贝/合并时引用他处存储导致悬垂
+    std::unordered_map<std::string, Symbol, StringViewHash, StringViewEqual> locals;
     // 函数，类，命名空间，成员变量的统一表，函数使用mangled name作为键
     std::unordered_map<std::string, Symbol, StringViewHash, StringViewEqual> members;
 
@@ -106,16 +105,9 @@ struct Scope {
     }
 
     inline bool insert_local(std::string_view name, Symbol sym) {
-        auto it = locals.find(name);
-        if (it != locals.end()) {
-            if (it->second.kind == SymbolKind::Variable && sym.kind == SymbolKind::Variable) {
-                it->second = std::move(sym);
-                return true;
-            }
-            return false;
-        }
-        locals[name] = std::move(sym);
-        return true;
+        auto [it, inserted] = locals.emplace(std::string(name), std::move(sym));
+        (void)it;
+        return inserted;
     }
 
     inline Symbol* insert_member(const std::string& name, Symbol sym) {
@@ -225,6 +217,9 @@ class SemanticAnalyzer : public ASTVisitor {
 
     // 调用解析结果
     std::vector<CallResolution> call_resolutions_;
+
+    // 语义分析期生成的整数字面量文本存储（deque 保证元素地址稳定）
+    std::deque<std::string> literal_pool_;
 
     #define X(name,str) Type* type##name;
     TYPE
@@ -345,6 +340,7 @@ private:
 
     // 类型工具
     Type* make_type(const Location& loc, Type::Variant v);
+    Expr* make_int_literal(const Location& loc, size_t value);
     std::string build_callkey(const std::string& name, const std::vector<VarList*>& params);
     std::string build_callkey(const std::string& name, const std::vector<Expr*>& args);
     
@@ -366,9 +362,6 @@ private:
     void collect_decl(Decl* decl);
     void register_func(Func& f);
     void register_special(SpecialMethod& sm);
-
-    // 命名规则检查
-    void check_naming_rules(Decl* decl);
 
     // 辅助：获取当前作用域的完整路径字符串（用 "::" 连接）
     std::string get_current_full_path() const;

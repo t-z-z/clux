@@ -459,14 +459,16 @@ struct Cont : Decl { // container 容器，用于包含申明
         return true;
     }
 };
-// VarItem 是类型无关的单个变量申明
+// VarItem 是单个变量申明
 struct VarItem : ASTNode {
     std::string_view name;
     Expr *init;
-    Type* type = nullptr;  // 语义分析后解析的类型
+    Type* type = nullptr;
     VarItem() = default;
     VarItem(const Location& loc, std::string_view n, Expr* i):
         ASTNode(loc), name(n), init(i) {}
+    VarItem(const Location& loc, std::string_view n, Expr* i, Type* t):
+        ASTNode(loc), name(n), init(i), type(t) {}
 };
 // VarList 是同一种类型的多个变量申明
 struct VarList : Decl {
@@ -595,6 +597,10 @@ struct ASTVisitor {
     Class* current_class;
     Type* current_type;
     Stmt* current_stmt;
+    // 当前嵌套循环深度，供需要循环上下文的派生 pass 使用
+    int loop_depth_ = 0;
+    // 正在遍历调用表达式的被调用者，供标识符解析区分函数名与普通变量
+    bool in_callee_ = false;
     void walk(CompUnit& cu) {
         visit(cu);
         for (auto* d : cu.top_decls) {
@@ -807,7 +813,10 @@ struct ASTVisitor {
                 if (v.value) walk(*v.value);
                 visit_expr_assign(v);
             } else if constexpr (std::is_same_v<T, Expr::Call>) {
+                bool pre_callee = in_callee_;
+                in_callee_ = true;
                 if (v.callee) walk(*v.callee);
+                in_callee_ = pre_callee;
                 for (auto* a : v.args) if (a) walk(*a);
                 visit_expr_call(v);
             } else if constexpr (std::is_same_v<T, Expr::Ternary>) {
@@ -850,46 +859,46 @@ struct ASTVisitor {
         std::visit([this](auto& v) {
             using T = std::decay_t<decltype(v)>;
             if constexpr (std::is_same_v<T, Stmt::Block>) {
+                scope_in("block");
                 for (auto* s : v.stmts) if (s) walk(*s);
                 visit_stmt_block(v);
+                scope_out();
             } else if constexpr (std::is_same_v<T, Stmt::ExprStmt>) {
                 if (v.expr) walk(*v.expr);
                 visit_stmt_expr(v);
             } else if constexpr (std::is_same_v<T, Stmt::If>) {
-                scope_in("if");
                 if (v.condition) walk(*v.condition);
                 if (v.then_branch) walk(*v.then_branch);
                 if (v.else_branch) walk(*v.else_branch);
                 visit_stmt_if(v);
-                scope_out();
             } else if constexpr (std::is_same_v<T, Stmt::While>) {
-                scope_in("while");
+                ++loop_depth_;
                 if (v.condition) walk(*v.condition);
                 if (v.body) walk(*v.body);
                 visit_stmt_while(v);
-                scope_out();
+                --loop_depth_;
             } else if constexpr (std::is_same_v<T, Stmt::For>) {
                 scope_in("for");
+                ++loop_depth_;
                 if (v.init) walk(*v.init);
                 if (v.condition) walk(*v.condition);
                 if (v.next) walk(*v.next);
                 if (v.body) walk(*v.body);
                 visit_stmt_for(v);
+                --loop_depth_;
                 scope_out();
             } else if constexpr (std::is_same_v<T, Stmt::ForIn>) {
-                scope_in("forin");
+                ++loop_depth_;
                 if (v.collection) walk(*v.collection);
                 if (v.body) walk(*v.body);
                 visit_stmt_for_in(v);
-                scope_out();
+                --loop_depth_;
             } else if constexpr (std::is_same_v<T, Stmt::VarDecl>) {
                 if (v.vars) walk(*v.vars);
                 visit_stmt_var_decl(v);
             } else if constexpr (std::is_same_v<T, Stmt::Spawn>) {
-                scope_in("spawn");
                 if (v.body) walk(*v.body);
                 visit_stmt_spawn(v);
-                scope_out();
             } else if constexpr (std::is_same_v<T, Stmt::Wait>) {
                 if (v.condition) walk(*v.condition);
                 visit_stmt_wait(v);

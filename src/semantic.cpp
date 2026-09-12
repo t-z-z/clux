@@ -2,6 +2,30 @@
 
 namespace cx {
 
+// 浮点类型提升级：float16 < float < double
+static int float_rank(PrimitiveTypeKind k) {
+    switch (k) {
+        case PrimitiveTypeKind::Double: return 2;
+        case PrimitiveTypeKind::Float:  return 1;
+        default:                        return 0;
+    }
+}
+
+// 整数类型提升级：int8 < short < int < long < int128
+static int integer_rank(PrimitiveTypeKind k) {
+    switch (k) {
+        case PrimitiveTypeKind::Int128:
+        case PrimitiveTypeKind::UInt128: return 4;
+        case PrimitiveTypeKind::Long:
+        case PrimitiveTypeKind::ULong:   return 3;
+        case PrimitiveTypeKind::Int:
+        case PrimitiveTypeKind::UInt:    return 2;
+        case PrimitiveTypeKind::Short:
+        case PrimitiveTypeKind::UShort:  return 1;
+        default:                         return 0;
+    }
+}
+
 bool SemanticAnalyzer::is_numeric_type(Type* t) {
     if (!t || !t->is_primitive()) return false;
     auto k = t->get_primitive()->kind;
@@ -63,7 +87,12 @@ bool SemanticAnalyzer::is_integer_promotable(Type* t) {
 }
 
 bool SemanticAnalyzer::is_void_type(Type* t) {
-    return t && t->is_void();
+    if (!t) return false;
+    if (t->is_void()) return true;
+    // 解析器把源码中的 void 生成为 Primitive{Void}
+    if (auto* p = t->get_primitive())
+        return p->kind == PrimitiveTypeKind::Void;
+    return false;
 }
 
 void SemanticAnalyzer::error(const Location& loc, const std::string& msg) {
@@ -83,6 +112,12 @@ Type* SemanticAnalyzer::make_type(const Location& loc, Type::Variant v) {
     return cu_.add_node<Type>(loc, std::move(v));
 }
 
+Expr* SemanticAnalyzer::make_int_literal(const Location& loc, size_t value) {
+    literal_pool_.push_back(std::to_string(value));
+    return cu_.add_node<Expr>(loc,
+        Expr::Literal{LiteralKind::Int, literal_pool_.back()});
+}
+
 bool SemanticAnalyzer::analyze() {
     diagnostics_.clear();
     call_resolutions_.clear();
@@ -95,13 +130,16 @@ bool SemanticAnalyzer::analyze() {
 std::string SemanticAnalyzer::build_callkey(const std::string& name,
     const std::vector<VarList*>& params) {
     std::string key = name + "_";
-    for (const auto* param : params) {
-        if (!param || !param->type || param->type->is_inferred()) {
-            key += "_";
-        } else if (param->type->is_custom()) {
-            key += type_to_key(*param->type);
-        } else {
-            key += type_to_key(*param->type);
+    for (const VarList* vl : params) {
+        if (!vl) continue;
+        for (const VarItem* item : vl->vars) {
+            if (!item || !item->type || item->type->is_inferred()) {
+                key += "_";
+            } else if (item->type->is_custom()) {
+                key += type_to_key(*item->type);
+            } else {
+                key += type_to_key(*item->type);
+            }
         }
     }
     return key;
@@ -149,10 +187,17 @@ void SemanticAnalyzer::collect_decl(Decl* decl) {
 
         case DeclKind::Class: {
             auto* cls = static_cast<Class*>(decl);
-            if (symbols_.lookup_member(std::string(cls->name))) {
-                error(cls->loc, "redefinition of class '" + std::string(cls->name) + "'");
+            std::string name(cls->name);
+            Symbol* existing = symbols_.current_scope()
+                ? symbols_.current_scope()->lookup_member(name) : nullptr;
+            if (existing) {
+                if (existing->kind == SymbolKind::Class || existing->kind == SymbolKind::Namespace)
+                    error(cls->loc, "redefinition of class '" + name + "'");
+                else
+                    error(cls->loc, "cannot declare class '" + name + "' with same name as non-container");
+                symbols_.push_scope(name);
             } else {
-                symbols_.insert_and_push(std::string(cls->name), Symbol(SymbolKind::Class, cls));
+                symbols_.insert_and_push(name, Symbol(SymbolKind::Class, cls));
             }
             for (Decl* member : cls->members) {
                 collect_decl(member);
@@ -163,10 +208,17 @@ void SemanticAnalyzer::collect_decl(Decl* decl) {
 
         case DeclKind::Namespace: {
             auto* ns = static_cast<Namespace*>(decl);
-            if (symbols_.lookup_member(std::string(ns->name))) {
-                error(ns->loc, "redefinition of namespace '" + std::string(ns->name) + "'");
+            std::string name(ns->name);
+            Symbol* existing = symbols_.current_scope()
+                ? symbols_.current_scope()->lookup_member(name) : nullptr;
+            if (existing) {
+                if (existing->kind == SymbolKind::Class || existing->kind == SymbolKind::Namespace)
+                    error(ns->loc, "redefinition of namespace '" + name + "'");
+                else
+                    error(ns->loc, "cannot declare namespace '" + name + "' with same name as non-container");
+                symbols_.push_scope(name);
             } else {
-                symbols_.insert_and_push(std::string(ns->name), Symbol(SymbolKind::Namespace, ns));
+                symbols_.insert_and_push(name, Symbol(SymbolKind::Namespace, ns));
             }
             for (Decl* member : ns->members) {
                 collect_decl(member);
@@ -203,19 +255,19 @@ void SemanticAnalyzer::collect_decl(Decl* decl) {
             break;
     }
 
-    check_naming_rules(decl);
 }
 
 void SemanticAnalyzer::register_func(Func& f) {
     std::string name = std::string(f.name);
+    Scope* scope = symbols_.current_scope();
 
-    if (symbols_.lookup_member(name)) {
+    if (scope && scope->lookup_member(name)) {
         error(f.loc, "duplicate declaration of function '" + name + "'");
         return;
     }
 
     std::string key = build_callkey(name, f.params);
-    if (symbols_.lookup_member(key)) {
+    if (scope && scope->lookup_member(key)) {
         error(f.loc, "duplicate declaration of function '" + name + "'");
         return;
     }
@@ -234,37 +286,14 @@ void SemanticAnalyzer::register_special(SpecialMethod& sm) {
         default: error(sm.loc, "unknown special method"); return;
     }
 
-    std::string key = sm.conv ? build_callkey(internal_name, {sm.conv}) : internal_name;
-
-    if (symbols_.lookup_member(internal_name)) {
+    Scope* scope = symbols_.current_scope();
+    if (scope && scope->lookup_member(internal_name)) {
         error(sm.loc, "duplicate special method '" + internal_name + "'");
         return;
     }
 
     Symbol sym(SymbolKind::Function, &sm);
     symbols_.insert_member(internal_name, std::move(sym));
-}
-
-void SemanticAnalyzer::check_naming_rules(Decl* decl) {
-    if (!decl || decl->name.empty()) return;
-    std::string name = std::string(decl->name);
-
-    // 仅在当前作用域检查
-    Scope* sc = symbols_.current_scope();
-    if (!sc) return;
-    Symbol* existing = sc->lookup_member(name);
-    if (!existing) return;
-
-    bool is_container = decl->kind == DeclKind::Class || decl->kind == DeclKind::Namespace;
-    bool existing_is_container = existing->kind == SymbolKind::Class || existing->kind == SymbolKind::Namespace;
-
-    if (is_container || existing_is_container) {
-        if (is_container != existing_is_container) {
-            error(decl->loc, "cannot declare '" + name + "' as both a container and non-container in the same scope");
-        } else if (is_container && existing_is_container) {
-            error(decl->loc, "container '" + name + "' redeclared in the same scope");
-        }
-    }
 }
 
 std::string SemanticAnalyzer::type_to_key(Type& t) {
@@ -362,7 +391,9 @@ void SemanticAnalyzer::visit_var_list(VarList& vl) {
         }
     }
     for (VarItem* var : vl.vars) {
-        symbols_.insert_local(var->name, Symbol(SymbolKind::Variable, var));
+        if (!symbols_.insert_local(var->name, Symbol(SymbolKind::Variable, var))) {
+            error(var->loc, "duplicate variable '" + std::string(var->name) + "'");
+        }
     }
 }
 
@@ -400,15 +431,26 @@ void SemanticAnalyzer::visit_expr_identifier(Expr::Identifier& id) {
             current_expr->type = member->get_type();
             current_expr->is_lvalue = true;
         } else if (member->kind == SymbolKind::Function) {
-            if (Decl* d = member->get_decl()) 
-                current_expr->type = make_type(current_expr->loc,
-             Type::FuncRef{static_cast<Func*>(d)}
-            );
+            if (Decl* d = member->get_decl()) {
+                if (d->kind == DeclKind::Func || d->kind == DeclKind::Operator)
+                    current_expr->type = make_type(current_expr->loc,
+                        Type::FuncRef{static_cast<Func*>(d)}
+                    );
+            }
             current_expr->is_lvalue = false;
         } else {
             current_expr->type = nullptr;
             current_expr->is_lvalue = false;
         }
+        return;
+    }
+
+    // 作为调用被调用者：函数只以 mangled key 存表，此处无法解析，
+    // 交给 resolve_call 用标识符名反查，避免误报未定义标识符
+    if (in_callee_) {
+        current_expr->sym = nullptr;
+        current_expr->type = nullptr;
+        current_expr->is_lvalue = false;
         return;
     }
 
@@ -444,17 +486,38 @@ Symbol* SemanticAnalyzer::find_operator_overload(OpKind op, Type& type) {
 bool SemanticAnalyzer::can_convert_to(Type* src, Type* dst) {
     if (!src || !dst) return false;
     if (is_same_type(src, dst)) return true;
-    
+
+    // 数值类型之间可隐式转换
+    if (is_numeric_type(src) && is_numeric_type(dst)) return true;
+
+    // bool 与整数互转
+    if (is_bool_type(src) && is_integer_type(dst)) return true;
+    if (is_integer_type(src) && is_bool_type(dst)) return true;
+
+    // 任意指针 → void*
+    if (src->is_pointer() && dst->is_pointer() &&
+        is_void_type(dst->get_pointer()->pointee)) {
+        return true;
+    }
+
+    // 类的 conversion 特殊方法
     if (auto* c = src->get_custom()) {
-        if(c->resolved_decl && c->resolved_decl->kind == DeclKind::Class) {
+        if (c->resolved_decl && c->resolved_decl->kind == DeclKind::Class) {
             Class& cls = static_cast<Class&>(*c->resolved_decl);
-            Symbol* cands = cls.scope->lookup_member("conversion");
-            if (cands) {
-                return true;
+            if (cls.scope) {
+                Symbol* cands = cls.scope->lookup_member("conversion");
+                if (cands) {
+                    if (auto* sm = cands->get<SpecialMethod>()) {
+                        if (sm->conv && sm->conv->type) {
+                            return is_same_type(sm->conv->type, dst);
+                        }
+                    }
+                    return true;
+                }
             }
         }
     }
-    
+
     return false;
 }
 
@@ -464,7 +527,13 @@ void SemanticAnalyzer::visit_expr_binary(Expr::Binary& b) {
     if (!lt || !rt) return;
     
     if (Symbol* s = find_operator_overload(b.op, *lt, *rt)) {
-        current_expr->type = s->get<Operator>()->returns[0]->type;
+        Type* overload_ret = typeVoid;
+        if (auto* op = s->get<Operator>()) {
+            if (!op->returns.empty() && op->returns[0] && op->returns[0]->type)
+                overload_ret = op->returns[0]->type;
+        }
+        current_expr->type = overload_ret;
+        current_expr->sym = s;
         current_expr->is_lvalue = false;
         return;
     }
@@ -477,13 +546,17 @@ void SemanticAnalyzer::visit_expr_binary(Expr::Binary& b) {
         case OpKind::Mod: {
             if (is_numeric_type(lt) && is_numeric_type(rt)) {
                 if (is_float_type(lt) || is_float_type(rt)) {
-                    auto lk = lt->get_primitive()->kind;
-                    auto rk = rt->get_primitive()->kind;
-                    int lp = lk == PrimitiveTypeKind::Double ? 2 : (lk == PrimitiveTypeKind::Float ? 1 : 0);
-                    int rp = rk == PrimitiveTypeKind::Double ? 2 : (rk == PrimitiveTypeKind::Float ? 1 : 0);
-                    current_expr->type = lp >= rp ? lt : rt;
+                    if (is_float_type(lt) && is_float_type(rt)) {
+                        current_expr->type =
+                            float_rank(lt->get_primitive()->kind) >=
+                            float_rank(rt->get_primitive()->kind) ? lt : rt;
+                    } else {
+                        current_expr->type = is_float_type(lt) ? lt : rt;
+                    }
                 } else {
-                    current_expr->type = lt;
+                    current_expr->type =
+                        integer_rank(lt->get_primitive()->kind) >=
+                        integer_rank(rt->get_primitive()->kind) ? lt : rt;
                 }
             } else if (b.op == OpKind::Plus && (lt->is_string_literal() || rt->is_string_literal())) {
                 current_expr->type = typeString;
@@ -537,7 +610,7 @@ void SemanticAnalyzer::visit_expr_unary(Expr::Unary& u) {
 
     if (Symbol* s = find_operator_overload(u.op, *ot)) {
         if (auto* op = s->get<Operator>()) {
-            if (!op->returns.empty() && op->returns[0]->type) {
+            if (!op->returns.empty() && op->returns[0] && op->returns[0]->type) {
                 current_expr->type = op->returns[0]->type;
             } else {
                 current_expr->type = typeVoid;
@@ -635,10 +708,18 @@ void SemanticAnalyzer::visit_expr_call(Expr::Call& c) {
 }
 
 void SemanticAnalyzer::resolve_call(Expr* call_expr, Expr::Call& c) {
-    if (!c.callee) {
-        error(call_expr->loc, "call expression has no callee");
+    auto fail = [&](const std::string& msg) {
+        error(call_expr->loc, msg);
         call_expr->type = typeVoid;
         call_expr->is_lvalue = false;
+        CallResolution resol;
+        resol.call = call_expr;
+        resol.type = typeVoid;
+        call_resolutions_.push_back(std::move(resol));
+    };
+
+    if (!c.callee) {
+        fail("call expression has no callee");
         return;
     }
 
@@ -660,62 +741,64 @@ void SemanticAnalyzer::resolve_call(Expr* call_expr, Expr::Call& c) {
             }
         }
 
+        call_expr->sym = c.callee->sym;
         call_expr->type = fp->return_type ? fp->return_type : typeVoid;
         call_expr->is_lvalue = false;
 
         CallResolution resol;
         resol.call = call_expr;
+        resol.type = call_expr->type;
         call_resolutions_.push_back(std::move(resol));
         return;
     }
 
-    // 路径 2：命名调用 → 从 callee->sym 取名字，构造 callkey 后查表
+    // 路径 2：命名调用 → 解析被调用者名字，构造 callkey 后查表
+    std::string name;
     Symbol* callee_sym = c.callee->sym;
-    if (!callee_sym) {
-        error(call_expr->loc, "invalid callee expression");
-        call_expr->type = typeVoid;
-        call_expr->is_lvalue = false;
+    if (callee_sym) {
+        if (Decl* d = callee_sym->get_decl()) {
+            name = std::string(d->name);
+        }
+    }
+    if (name.empty()) {
+        if (auto* id = c.callee->get_identifier()) {
+            name = std::string(id->name);
+        } else if (auto* m = c.callee->get_member()) {
+            name = std::string(m->member);
+        }
+    }
+    if (name.empty()) {
+        fail("invalid callee expression");
         return;
     }
-
-    Decl* callee_decl = callee_sym->get_decl();
-    if (!callee_decl || callee_decl->name.empty()) {
-        error(call_expr->loc, "callee has no resolvable name");
-        call_expr->type = typeVoid;
-        call_expr->is_lvalue = false;
-        return;
-    }
-    std::string name(callee_decl->name);
 
     // 2a：类构造，在类自己的 scope 里查 INIT_...
-    if (callee_sym->kind == SymbolKind::Class) {
+    if (callee_sym && callee_sym->kind == SymbolKind::Class) {
         Scope* cls_scope = callee_sym->scope;
+        Decl* cls_decl = callee_sym->get_decl();
         if (!cls_scope) {
-            error(call_expr->loc, "class '" + name + "' has no scope");
-            call_expr->type = typeVoid;
-            call_expr->is_lvalue = false;
+            fail("class '" + name + "' has no scope");
             return;
         }
 
         std::string key = build_callkey("INIT", c.args);
         Symbol* init_sym = SymbolTable::lookup_member_in(cls_scope, key);
         if (!init_sym || init_sym->kind != SymbolKind::Function) {
-            error(call_expr->loc,
-                  "no matching constructor for class '" + name + "'");
-            call_expr->type = typeVoid;
-            call_expr->is_lvalue = false;
+            fail("no matching constructor for class '" + name + "'");
             return;
         }
 
         call_expr->sym = init_sym;
         call_expr->type = make_type(call_expr->loc,
-            Type::Custom{callee_decl->name, {}, callee_decl});
+            Type::Custom{cls_decl ? cls_decl->name : std::string_view(),
+                         {}, cls_decl});
         call_expr->is_lvalue = false;
 
         CallResolution resol;
         resol.call = call_expr;
+        resol.type = call_expr->type;
         if (Decl* d = init_sym->get_decl()) {
-            if (d->kind == DeclKind::Func)
+            if (d->kind == DeclKind::Func || d->kind == DeclKind::Operator)
                 resol.resolved_func = static_cast<Func*>(d);
         }
         call_resolutions_.push_back(std::move(resol));
@@ -726,10 +809,7 @@ void SemanticAnalyzer::resolve_call(Expr* call_expr, Expr::Call& c) {
     std::string key = build_callkey(name, c.args);
     Symbol* f_sym = symbols_.lookup_member(key);
     if (!f_sym || f_sym->kind != SymbolKind::Function) {
-        error(call_expr->loc,
-              "no matching overload for call to '" + name + "'");
-        call_expr->type = typeVoid;
-        call_expr->is_lvalue = false;
+        fail("no matching overload for call to '" + name + "'");
         return;
     }
 
@@ -738,10 +818,14 @@ void SemanticAnalyzer::resolve_call(Expr* call_expr, Expr::Call& c) {
         if (d->kind == DeclKind::Func || d->kind == DeclKind::Operator)
             func = static_cast<Func*>(d);
     }
+    if (!func) {
+        fail("callee '" + name + "' is not a function");
+        return;
+    }
 
     Type* ret = typeVoid;
-    if (func && !func->returns.empty() &&
-        func->returns[0] && func->returns[0]->type) {
+    if (!func->returns.empty() && func->returns[0] &&
+        func->returns[0]->type) {
         ret = func->returns[0]->type;
     }
 
@@ -752,6 +836,7 @@ void SemanticAnalyzer::resolve_call(Expr* call_expr, Expr::Call& c) {
     CallResolution resol;
     resol.call = call_expr;
     resol.resolved_func = func;
+    resol.type = ret;
     call_resolutions_.push_back(std::move(resol));
 }
 
@@ -795,9 +880,9 @@ void SemanticAnalyzer::visit_expr_member(Expr::Member& m) {
         return;
     }
     Scope* target_scope = nullptr;
+    // 优先从表达式类型（Custom）解析目标作用域，sym 仅作兜底
     if (m.target->type) {
         if (auto* cus = m.target->type->get_custom()) {
-            // 如果有实例化后的符号表，优先使用
             if (cus->resolved_scope) {
                 target_scope = cus->resolved_scope;
             } else if (cus->resolved_decl) {
@@ -806,9 +891,9 @@ void SemanticAnalyzer::visit_expr_member(Expr::Member& m) {
                 }
             }
         }
-    } else if (m.target->sym &&
-    (m.target->sym->kind == SymbolKind::Class || m.target->sym->kind == SymbolKind::Namespace)) {
-        // sym不一定是类，也可能是其他声明，不优先
+    }
+    if (!target_scope && m.target->sym &&
+        (m.target->sym->kind == SymbolKind::Class || m.target->sym->kind == SymbolKind::Namespace)) {
         target_scope = m.target->sym->scope;
     }
 
@@ -831,12 +916,14 @@ void SemanticAnalyzer::visit_expr_member(Expr::Member& m) {
             return;
         }
         if (member->kind == SymbolKind::Function) {
-            if (Decl* d = member->get_decl()) 
-                current_expr->type = make_type(
-               current_expr->loc,
-                 Type::FuncRef{static_cast<Func*>(d)}
-                );
-            else current_expr->is_lvalue = false;
+            if (Decl* d = member->get_decl()) {
+                if (d->kind == DeclKind::Func || d->kind == DeclKind::Operator)
+                    current_expr->type = make_type(
+                        current_expr->loc,
+                        Type::FuncRef{static_cast<Func*>(d)}
+                    );
+            }
+            current_expr->is_lvalue = false;
             return;
         }
         current_expr->is_lvalue = false;
@@ -889,7 +976,8 @@ void SemanticAnalyzer::visit_expr_array(Expr::Array& arr) {
     }
 
     current_expr->type = make_type(current_expr->loc,
-        Type::Array{elem_type ? elem_type : typeInt, nullptr});
+        Type::Array{elem_type ? elem_type : typeInt,
+                    make_int_literal(current_expr->loc, arr.members.size())});
     current_expr->is_lvalue = false;
 }
 
@@ -902,7 +990,7 @@ void SemanticAnalyzer::visit_expr_closure(Expr::Closure& clo) {
     }
 
     Type* ret_type = nullptr;
-    if (!clo.returns.empty() && clo.returns[0]->type) {
+    if (!clo.returns.empty() && clo.returns[0] && clo.returns[0]->type) {
         ret_type = clo.returns[0]->type;
     }
 
@@ -1006,27 +1094,13 @@ void SemanticAnalyzer::visit_stmt_return(Stmt::Return&) {
 }
 
 void SemanticAnalyzer::visit_stmt_break(Stmt::Break&) {
-    bool in_loop = false;
-    for (Scope* s = symbols_.current_scope(); s; s = s->parent) {
-        if (s->name == "while" || s->name == "for" || s->name == "forin") {
-            in_loop = true;
-            break;
-        }
-    }
-    if (!in_loop) {
+    if (loop_depth_ == 0) {
         error(current_stmt->loc, "break statement not inside a loop");
     }
 }
 
 void SemanticAnalyzer::visit_stmt_continue(Stmt::Continue&) {
-    bool in_loop = false;
-    for (Scope* s = symbols_.current_scope(); s; s = s->parent) {
-        if (s->name == "while" || s->name == "for" || s->name == "forin") {
-            in_loop = true;
-            break;
-        }
-    }
-    if (!in_loop) {
+    if (loop_depth_ == 0) {
         error(current_stmt->loc, "continue statement not inside a loop");
     }
 }
@@ -1051,11 +1125,9 @@ void SemanticAnalyzer::visit_stmt_wait(Stmt::Wait& wait_stmt) {
 }
 
 void SemanticAnalyzer::visit(Type&) {}
-void SemanticAnalyzer::visit_type_primitive(Type::Primitive& p) {
-    if (p.kind == PrimitiveTypeKind::Void) {
-        error(current_type->loc, "cannot create void type");
-    }
-}
+// void 是合法返回类型/指针 pointee：解析器将 void 生成 Primitive{Void}，
+// 无法从节点本身判断上下文，故不在此处拒绝
+void SemanticAnalyzer::visit_type_primitive(Type::Primitive&) {}
 // ast本来应该有指针指向的节点如果是nullptr，说明已经在parser报过错了，不要重复报错
 void SemanticAnalyzer::visit_type_pointer(Type::Pointer&) {}
 void SemanticAnalyzer::visit_type_array(Type::Array&) {}
