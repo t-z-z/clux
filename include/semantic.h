@@ -214,13 +214,7 @@ struct SymbolTable {
 // 调用解析
 struct CallResolution {
     Expr* call = nullptr;
-    std::string callee_name;
-    std::string resolved_name;
-    Decl* resolved_decl = nullptr;
-    std::vector<Type*> return_types;  // 所有返回类型
-    bool is_constructor = false;
-    bool resolved = false;
-    bool ambiguous = false;
+    Func* resolved_func = nullptr;
     std::string message;
 };
 

@@ -96,7 +96,7 @@ bool SemanticAnalyzer::analyze() {
 }
 
 std::string SemanticAnalyzer::build_callkey(const std::string& name,
-    const std::vector<VarList*>& params/*, const std::vector<TemplateParam>& templates = {}*/) {
+    const std::vector<VarList*>& params) {
     std::string key = name + "_";
     for (const auto* param : params) {
         if (!param || !param->type || param->type->is_inferred()) {
@@ -414,11 +414,8 @@ bool SemanticAnalyzer::can_convert_to(Type* src, Type* dst) {
 void SemanticAnalyzer::visit_expr_binary(Expr::Binary& b) {
     Type* lt = b.left ? b.left->type : nullptr;
     Type* rt = b.right ? b.right->type : nullptr;
-    if (!lt || !rt) {
-        current_expr->type = nullptr;
-        return;
-    }
-
+    if (!lt || !rt) return;
+    
     if (Symbol* s = find_operator_overload(b.op, *lt, *rt)) {
         current_expr->type = s->get<Operator>()->returns[0]->type;
         current_expr->is_lvalue = false;
@@ -489,10 +486,7 @@ void SemanticAnalyzer::visit_expr_binary(Expr::Binary& b) {
 void SemanticAnalyzer::visit_expr_unary(Expr::Unary& u) {
     Type* ot = u.operand ? u.operand->type : nullptr;
 
-    if (!ot) {
-        current_expr->type = nullptr;
-        return;
-    }
+    if (!ot) return;
 
     if (Symbol* s = find_operator_overload(u.op, *ot)) {
         if (auto* op = s->get<Operator>()) {
@@ -565,10 +559,7 @@ void SemanticAnalyzer::visit_expr_unary(Expr::Unary& u) {
 }
 
 void SemanticAnalyzer::visit_expr_assign(Expr::Assign& a) {
-    if (!a.target || !a.value) {
-        current_expr->type = nullptr;
-        return;
-    }
+    if (!a.target || !a.value) return;
 
     if (!a.target->is_lvalue) {
         error(current_expr->loc, "assignment target is not a modifiable lvalue");
@@ -600,126 +591,58 @@ void SemanticAnalyzer::resolve_call(Expr* call_expr, Expr::Call& c) {
     if (!c.callee) return;
     Symbol* callee_sym = c.callee->sym;
 
-    if (auto* mem = c.callee->get_member()) {
-        Symbol* target_sym = mem->target->sym;
-        if (target_sym) {
-            Scope* target_scope = target_sym->scope;
-            if (target_scope) {
-                std::string method = std::string(mem->member);
-                Symbol* method_sym = SymbolTable::lookup_member_in(target_scope, method);
-                if (method_sym && method_sym->kind == SymbolKind::Function) {
-                    callee_sym = method_sym;
-                }
-            }
-        }
-    }
-
     if (!callee_sym) {
         error(call_expr->loc, "invalid callee expression");
         return;
     }
 
+    Decl* callee_decl = callee_sym->get_decl();
+    if (!callee_decl) {
+        return;
+    }
+    Func* func = nullptr;
+    Symbol* sym = nullptr;
     if (callee_sym->kind == SymbolKind::Class && callee_sym->scope) {
-        std::string class_name = std::string(static_cast<Decl*>(callee_sym->node)->name);
+        // 类名构造，寻找初始化函数
         Scope* cls_scope = callee_sym->scope;
-        
+        std::string key = build_callkey("INIT", c.args);
         Symbol* init_methods = SymbolTable::lookup_member_in(cls_scope, "INIT");
-        if (init_methods) {
-            if (init_methods->kind == SymbolKind::Function) {
-                callee_sym = init_methods;
+        if (init_methods && init_methods->kind == SymbolKind::Function) {
+            sym = init_methods;
+            if (Decl* d = init_methods->get_decl()) {
+                if (d->kind == DeclKind::Func) {
+                    func = static_cast<Func*>(d);
+                }
             }
-        } else {
-            if (!c.args.empty()) {
-                error(call_expr->loc, "class '" + class_name + "' has no INIT method but called with arguments");
-                return;
-            }
-            CallResolution resolution;
-            resolution.call = call_expr;
-            resolution.callee_name = class_name;
-            resolution.resolved_decl = static_cast<Decl*>(callee_sym->node);
-            resolution.is_constructor = true;
-            resolution.resolved = true;
-            resolution.return_types.push_back(typeVoid);
-            
-            current_expr->type = typeVoid;
-            call_expr->sym = callee_sym;
-            current_expr->is_lvalue = false;
-            call_resolutions_.push_back(std::move(resolution));
-            return;
         }
-    }
-
-    std::string func_name = std::string(static_cast<Decl*>(callee_sym->node)->name);
-    Symbol* resolved_sym = symbols_.lookup_member(func_name);
-    CallResolution resolution;
-    resolution.call = call_expr;
-    resolution.callee_name = func_name;
-
-    // 模板函数按普通名注册，找到即实例化
-    auto* target_f = (resolved_sym && resolved_sym->kind == SymbolKind::Function)
-        ? dynamic_cast<Func*>(static_cast<Decl*>(resolved_sym->node)) : nullptr;
-    if (target_f && !target_f->templates.empty()) {
-        std::vector<ASTNode*> tpl_args;
-        if (c.templates.empty()) {
-            if (!deduce_from_args(target_f, c.args, tpl_args)) {
-                error(call_expr->loc, "cannot deduce template parameters for '" + func_name + "'");
-                resolution.ambiguous = true;
-            } else if (Func* inst = instantiate(target_f, tpl_args)) {
-                resolution.resolved_name = func_name;
-                resolution.resolved = true;
-                resolution.resolved_decl = inst;
-                for (auto* ret : inst->returns) {
-                    if (ret && ret->type) {
-                        resolution.return_types.push_back(ret->type);
+    } else if (callee_sym->kind == SymbolKind::Function) {
+        // 模板函数按普通名注册，找到即实例化
+        std::string func_name = std::string(callee_decl->name);
+        Symbol* resolved_sym = symbols_.lookup_member_in(callee_sym->scope, func_name);
+        if (resolved_sym && resolved_sym->kind == SymbolKind::Function) {
+            sym = resolved_sym;
+            if (Decl* d = resolved_sym->get_decl()) {
+                if (d->kind == DeclKind::Func) {
+                    func = static_cast<Func*>(d);
+                }
+            }
+            // 标记尚未完成的实例化代码
+        } else {
+            // 非模板按键查找
+            std::string key = build_callkey(func_name, c.args);
+            resolved_sym = symbols_.lookup_member(key);
+            if (resolved_sym && resolved_sym->kind == SymbolKind::Function) {
+                if (Decl* d = resolved_sym->get_decl()) {
+                    if (d->kind == DeclKind::Func) {
+                        func = static_cast<Func*>(d);
                     }
                 }
-                current_expr->type = resolution.return_types.empty() ? typeVoid : resolution.return_types[0];
             } else {
-                error(call_expr->loc, "template instantiation failed for '" + func_name + "'");
-                resolution.ambiguous = true;
-            }
-        } else {
-            tpl_args.assign(c.templates.begin(), c.templates.end());
-            if (Func* inst = instantiate(target_f, tpl_args)) {
-                resolution.resolved_name = func_name;
-                resolution.resolved = true;
-                resolution.resolved_decl = inst;
-                for (auto* ret : inst->returns) {
-                    if (ret && ret->type) {
-                        resolution.return_types.push_back(ret->type);
-                    }
-                }
-                current_expr->type = resolution.return_types.empty() ? typeVoid : resolution.return_types[0];
-            } else {
-                error(call_expr->loc, "template instantiation failed for '" + func_name + "'");
-                resolution.ambiguous = true;
+                // 失败报错
+                error(call_expr->loc, "no matching overload for call to '" + func_name + "'");
             }
         }
-    } else if (resolved_sym && resolved_sym->kind == SymbolKind::Function) {
-        resolution.resolved_name = std::string(static_cast<Decl*>(resolved_sym->node)->name);
-        resolution.resolved_decl = static_cast<Decl*>(resolved_sym->node);
-        resolution.resolved = true;
-
-        if (auto* f = dynamic_cast<Func*>(static_cast<Decl*>(resolved_sym->node))) {
-            for (auto* ret : f->returns) {
-                if (ret && ret->type) {
-                    resolution.return_types.push_back(ret->type);
-                }
-            }
-        }
-
-        if (!resolution.return_types.empty()) {
-            current_expr->type = resolution.return_types[0];
-        } else {
-            current_expr->type = typeVoid;
-        }
-    } else {
-        error(call_expr->loc, "no matching overload for call to '" + func_name + "'");
-        resolution.ambiguous = true;
     }
-
-    current_expr->is_lvalue = false;
-    call_resolutions_.push_back(std::move(resolution));
 }
 
 const CallResolution* SemanticAnalyzer::find_call(Expr* e) const {
@@ -786,21 +709,24 @@ void SemanticAnalyzer::visit_expr_member(Expr::Member& m) {
 
     Symbol* member = SymbolTable::lookup_member_in(target_scope, field);
     if (member) {
+        current_expr->sym = member;
+
         if (member->kind == SymbolKind::Variable && member->get_type()) {
-            current_expr->sym = member;
             current_expr->type = member->get_type();
             current_expr->is_lvalue = true;
             return;
         }
         if (member->kind == SymbolKind::Function) {
-            current_expr->sym = member;
             if (Decl* d = member->get_decl()) 
-                current_expr->type = make_type(current_expr->loc,
-             Type::FuncRef{static_cast<Func*>(d)}
-            );
+                current_expr->type = make_type(
+               current_expr->loc,
+                 Type::FuncRef{static_cast<Func*>(d)}
+                );
             else current_expr->is_lvalue = false;
             return;
         }
+        current_expr->is_lvalue = false;
+        return;
     }
 
     error(current_expr->loc, "no member '" + field + "' in scope");
