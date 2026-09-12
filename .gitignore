@@ -19,3 +19,7 @@ test_output/
 AGENTS.md
 tests/
 *.rlib
+*.md
+!spec.md
+!lib.md
+!README.md

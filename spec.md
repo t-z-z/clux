@@ -1,331 +1,296 @@
-# clux语言规范文档
+# clux 语言规范
 
 ## 一、基础信息
 
 语言名称：clux / cx
-源文件后缀名：.cx
-内存管理默认为RAII
+源文件后缀：`.cx`
+内存管理：RAII
+编译流程：`.cx` → LLVM IR (`.ll`) → 可执行文件
 
 特色：
+- 不需要逗号，分号，换行
+- 修饰注入的OOP方式
+- 函数以变量作返回值
 
-- 无需分号与逗号
-- 直接返回变量
-- 使用修饰而非继承的OOP
+## 二、编程模型
 
-## 二、词法
+一个 clux 程序从内到外由这几层概念构成：
+
+```
+表达式与类型 → 语句 → 函数 → 声明 → 容器 → 修饰
+```
+
+- **表达式与类型**：程序处理的数据，以及描述数据的方式。两者共享同一套语法结构。
+- **语句**：控制执行流程。
+- **函数**：一组语句的集合，可以被调用。
+- **声明**：向当前作用域引入新名字。
+- **容器**：持有名字的盒子。类与命名空间是两种容器。
+- **修饰**：附加到声明或容器上的标签，改变其语义。
+
+这是从"最小单元"到"组织方式"的嵌套。读到后面章节时，前面章节的概念已经介绍完毕，不会出现前向依赖。
+
+## 三、词法
 
 注释：
+
 ```cx
 // 单行注释
 
 /*
-
 多行注释
 */
 ```
 
-语句和元素自动分隔，使用`;`来强制分隔语句，使用`,`来强制分隔元素
+分隔符：
 
-## 三、类型系统
+语句和元素自动分隔。
 
-（所有typename和obj都是代称）
+- `;` 强制分隔语句
+- `,` 强制分隔元素
 
-### 类型
+## 四、表达式与类型
 
-基本类型：
-`int（四字节）, short（二字节）, long（八字节）, float（四字节）, double（八字节）, char, bool（一字节）`
+表达式与类型共享同一套语法结构。一个结构出现在什么位置，由上下文决定它是表达式还是类型。
 
-其他内置类型：
-`int128, float16, ushort, uint, ulong, uint128, uchar`
+### 字面量
 
-let obj类型推导，例`let a=1`，a为int类型，但是没有`let a:int=1`，请写`int a=1`
-
-内置类型都可以使用typename()来做类型转换。
-
-### 变量声明
-
-`int x = 10` 固定类型，不可改变，
-
-不赋初值不允许使用（包括数组）编译期检查，
-但是可以先声明后赋值
+字面量直接产生值。
 
 ```cx
-int a
-int b = a       // 错误
-a = 0
-int b = a       // 正确
+42
+"hello"
+true
 ```
 
-### 指针
+### 基本类型
 
-使用`typename-*`表示`typename`类型的指针，
-使用`typename-&`表示`typename`类型的引用，
-使用`typename-**`表示多重指针，
+`int`（四字节）、`short`（二字节）、`long`（八字节）、`float`（四字节）、`double`（八字节）、`char`、`bool`（一字节）。
 
-使用`obj-&`获取地址，
-使用`obj-&`解引用指针，（减号加*和&）。
+其他内置类型：`int128`、`float16`、`ushort`、`uint`、`ulong`、`uint128`、`uchar`。
 
-指针不可运算，但可以与数字类型隐式相互转化，会被编译器警告。
-类指针的成员访问不会自动解引用。
+内置类型都可以使用 `typename()` 做类型转换。
 
-`null`为空指针，实际值为0，不可直接当做数字
+### 标识符与路径
+
+标识符引用一个名字。路径用 `::` 连接多个名字，逐级进入容器。
+
+```cx
+a
+foo::bar
+Foo-<int>::baz
+```
+
+`Foo-<int>` 中的 `-<int>` 是泛型实参，附着在路径段 `Foo` 上，在第九章介绍。
+
+### 一元运算
+
+```cx
+-a          // 取负
+!a          // 逻辑非
+~a          // 按位取非
+a-*         // 解引用
+a-&         // 取地址
+```
+
+指针可以与数字类型隐式相互转化，会被编译器警告。`null` 为空指针，实际值为 0，不可直接当做数字。类指针的成员访问不会自动解引用。
 
 ```cx
 int b = a-*
-int-* c = a+4        // 下一个int的位置
+int-* c = a+4        // 下一个 int 的位置
 int-* d = null
 ```
 
-### 定长数组（切片）
+### 二元运算
 
 ```cx
-int[] a = [1 2 3 4 5] // 长度自动推导
-int[] b             // 无初值无法自动推导长度
-b = [1 2 3]         // 先声明后赋值
-int x = b[0]        // x=1
-int l = b.len       // l=3
+a + b
+a == b
+a && b
 ```
 
-数组是一种构造方式，其申明后得到的是一个包含长度的指针。
-
-### 函数指针（或闭包类型）
+### 调用与索引
 
 ```cx
-$(int)int a=foo     // 限制参数
-$int b=foo          // 不要参数
-$(int int)int add   // 空函数
+foo(1, 2)
+arr[0]
 ```
 
-## 四、函数
+调用需要一个函数作为被调用者，函数在第六章介绍。
 
-### 申明与调用
+### 指针与引用类型
 
-申明语法格式：
+用 `typename-*` 表示指针类型，`typename-&` 表示引用类型，`typename-**` 表示多重指针。
 
 ```cx
-函数名 -[模板:默认值] (普通参数=默认值) 返回声明=默认值 { 函数体 }
+int-* p
+int-& r = a
+int-** pp
 ```
 
-模板只允许传入类型或表达式，理论上一个参数可以既用作类型也用作表达式，
-没有返回值应省略返回申明
+指针类型与一元运算的 `-*`、`-&` 是同一个 token 在不同位置的角色。
+
+### 数组类型
+
+用 `T[]` 表示 T 的数组，用 `T[N]` 表示长度为 N 的 T 数组。
 
 ```cx
-main() {
-    do_something--{
-        // 函数调用的代码块参数，可以写在圆括号后，若没有其他参数，可以不写圆括号
-        int sum=0
-        for(int i=1;i<=9;i+=1){
-            sum+=i
-        }
-    }--{
-        // 没有参数时，至少写一个空的括号
-        foo()
-    }
-}
-
-do_something ($void action1 $void action2) int res=0{
-    action1()action2()
-}
+int[] a = [1 2 3 4 5]   // 长度由初始化推导
+int[42] buf              // 长度为 42
+Foo-<int>[] data         // Foo-<int> 的数组
+T[] arr                  // T 的数组
 ```
 
-不能在函数中申明函数，也不能在函数外部调用函数，main函数会在程序开始时被自动调用。
-
-组合申明（暂未实现）
+数组长度是类型的一部分。长度可以是编译期常量，也可以是运行期值。
 
 ```cx
-pub compose do($void work)while($bool cond) {
-    flag start
-    work()
-    if cond() toflag start
-}
-main(){
-    do--{
-        1+1
-    }--while(
-        1+1==2
-    )
-}
+int[5] a = [1 2 3 4 5]  // 长度编译期已知
+int n = 10
+alloca int[n] b         // 长度运行期已知
 ```
 
-申明形式：`compose 函数名``()函数名``()...`
-
-注意：dowhile不是内置控制流，这里只作为演示使用，实际不能用while申明函数。
-
-### 如何解决语法歧义
+**动态声明长度的数组必需由储存修饰符修饰**。长度是编译期常量时，默认栈分配；长度是运行期值时，必须显式声明存储方式：
 
 ```cx
-int foo = bar
-(42)
-int baz = foo
-{
-    1+1
-}
+int n = 10
+alloca int[n] b          // 栈上的动态长度数组
+malloc int[n] c          // 堆上的动态长度数组
 ```
 
-我们确实不能直接知道这是函数调用还是变量和表达式，
-这是代码块参数还是变量和作用域，
+数组的值在内存中是一段连续存储。`b.len` 取长度。长度是编译期常量时，`b.len` 是编译期常量；长度是运行期值时，`b.len` 读取存储的长度值。
 
-但是在语义分析时我们掌握了他们的类型，就能够把误判的节点修改到正确的位置，即反悔贪心。
-
-比如将`bar(1+1)`识别为函数调用，在语法解析器识别到bar的类型是变量而不是函数时，会将`(1+1)`移到语句层并修改bar的语义。每执行一次反悔，产生一次警告。
-
-当确实不能确定时，直接报错。
-
-### 参数
-
-类型参数（模板）：
+### 函数指针类型
 
 ```cx
-sort-[LEN:len GET:get T](T arr) {
-    for int i=0;i<arr.LEN;i+=1 {
-        for int j=i+1;j<arr.LEN;j+=1 {
-            if(arr.GET(i)>arr.GET(j)) {
-                swap(arr.GET(i),arr.GET(j))
-            }
-        }
-    }
-}
-swap-[T](T-& a,T-& b) {
-    T t=a
-    a=b
-    b=t
-}
-@vec-[T]{
-    T[1145] arr
-    int len=0
-    get(int n)T r{
-        if n<len{
-            r=arr[n]
-        }
-    }
-    vec(T[] a){
-        for(int i=0
-            i<a.len&&i<1145
-            i+=1
-        ) {
-            arr[i]=a[i]
-        }
-        len=a.len
-    }
-}
-main(){
-    vec-[int] a
-    a=vec(1,2,3,4,5)
-    sort-[len get](a)
+$(int)int f        // 参数为 int，返回 int
+$int g             // 无参数，返回 int
+```
+
+### 类型转换
+
+使用 `typename()` 做类型转换。
+
+```cx
+int a = 1
+long b = long(a)
+```
+
+类可以定义 `conversion` 特殊方法，不支持自动链式转换。
+
+## 五、语句
+
+语句控制执行流程。语句不产生值。
+
+```cx
+if cond { ... } else { ... }
+while cond { ... }
+for int i = 0; i < n; i += 1 { ... }
+for item in collection { ... }
+break
+continue
+return
+flag label
+toflag label
+```
+
+## 六、函数
+
+函数是一组语句的集合，可以被调用。函数不是容器，不直接支持泛型参数。
+
+```cx
+add(int a, int b) int r {
+    r = a + b
 }
 ```
 
-参数申明和变量申明规则完全相同
+函数的返回声明 `int r` 声明了一个返回变量 `r`。函数末尾会隐式返回 `r` 的值，不需要写 `return r`。也可以显式 `return` 提前返回。
 
-```cx
-foo(const int-& bar) int r {}
-const int-& foo_bar = 0
+参数与变量声明规则相同。
 
-foo(int[] bar) int r {}
-int[] bar = [1,2,3]
-```
+### 尾随代码块
 
-懒惰求值（用常量函数参数，发现是表达式后会自动优化为懒惰求值）：
-
-```cx
-foo(const $bool condition const $int expensive_computation) int r=0{
-    if(condition()) r=expensive_computation()
-}
-```
-
-尾随代码块：函数调用时可直接跟花括号，无需括号括起。
+函数调用时可以直接跟花括号，作为尾随代码块参数：
 
 ```cx
 with_lock(mutex)--{
     critical_section()
 }
-// 不可以不加花括号
-with_lock(mutex) --critical_section() // 错误
 ```
-
-允许在圆括号中使用 type 来传入类型参数
-但是只有方括号里的类型参数支持泛型模板。
-
-当函数的参数申明只有一个类时，支持自动以函数的调用参数列表调用类的构造函数
-
-```cx
-@message {
-    string[] a;
-    INIT(string[] msg) {
-        a=msg;
-    }
-}
-print(message s) {
-    for int i=0;i<s.a.len;i+=1 {
-        print(s.a[i])
-    }
-}
-main() {
-    print("foo""bar")
-}
-```
-
-### 功能
-
-函数重载：支持参数类型不同，仅返回值与模板参数不同不能重载。
-
-函数指针：`$type(add) f = add; int result = f(1, 2)`
 
 ### 函数字面量
 
-语法：`/ [捕获] (参数) 返回 { 函数体 }`
-
 ```cx
-$(int,int)int max = /(int a,b) int r {
-    if (a > b) {
-        r=a return
-    }
-    r=b
-}
-let foo = {bar()}   // 特例：/[]``()void的语法糖
-main(){
-    baz(foo)
+$(int,int)int max = \(int a, int b) int r {
+    if a > b { r = a return }
+    r = b
 }
 ```
 
+## 七、声明
+
+声明是引入名字的语法单元。一组声明构成一个作用域。
+
+### 变量声明
+
+变量声明引入一个值量。不赋初值不允许使用（编译期检查），但可以先声明后赋值。
+
 ```cx
-@foo {
-    int cnt = 1
-    inc($(int)void act){
-        act(cnt)
-    }
-}
-main() {
-    foo bar
-    bar.inc(/(const int& i){
-        cnt += i
-    })
-    // self自动捕获
+int a = 10
+int b
+b = 0
+```
+
+`let` 推导变量类型：
+
+```cx
+let a = 1        // a 为 int
+```
+
+### 函数声明
+
+函数声明引入一个调用量。函数不是容器，不直接支持泛型参数。
+
+```cx
+add(int a, int b) int r {
+    r = a + b
 }
 ```
 
-## 五、类
+### 命名与重载
 
-或可称为结构体，类在语法结构上是一种容器，用于承载申明。
+同一作用域下：
 
-容器是一种声明。
+1. 容器不得重名
+2. 非容器声明不得与容器重名
+3. 声明之间不得完全一致
 
-同一作用域下的容器不得重名，非容器声明不得与容器重名，声明之间不得完全一致。
-
-基本定义：
+规则 3 即是**重载**：两条声明只要结构不完全一致，即可在同一作用域共存。
 
 ```cx
-@类名`模板` {
-    成员申明
-    方法申明
-}
+add(int a, int b) int r { r = a + b }
+add(double a, double b) double r { r = a + b }
 ```
 
-### 方法中的 self
+泛型附着于容器，不附着于函数。因此**泛型函数重载问题不存在**。
 
-在类的方法内部，可以使用`self`关键字显式访问当前实例的成员。当成员名与局部变量或参数名冲突时，必须使用`self`消除歧义。在无冲突的情况下，可以直接使用成员名，编译器自动将其解析为`self.成员名`。
+## 八、容器
 
-示例：
+容器是持有名字的盒子。容器有两种：命名空间和类。容器是唯一可以承载泛型参数的声明。
+
+### 命名空间
+
+命名空间只引入名字集合。
+
+```cx
+namespace math {
+    add(int a, int b) int r { r = a + b }
+}
+
+math::add(1, 2)
+```
+
+### 类
+
+类是一种容器，其声明一种类型。类可以包含变量声明、函数声明、特殊方法、嵌套容器。
 
 ```cx
 @Counter {
@@ -333,426 +298,278 @@ main() {
 
     increment() {
         value = value + 1
-        // 等价于 self.value = self.value + 1
-    }
-
-    set_value (int value) {
-        self.value = value       // 必须使用 self 区分参数和成员
     }
 }
 ```
 
-### 类的特殊方法
+类的方法内部可以使用 `self` 显式访问当前实例的成员。无冲突时直接使用成员名，编译器自动解析为 `self.成员名`。
 
-#### 构造方法
+```cx
+@Counter {
+    int value = 0
 
-构造不会自动被调用，手动调用会返回一个对应类型
+    set_value(int value) {
+        self.value = value
+    }
+}
+```
+
+### 特殊方法
+
+特殊方法是类容器中的声明，用于定义构造、销毁、引用、访问、类型转换行为。
+
+- `INIT`：构造方法，手动调用返回一个对应类型的值
+- `DROP`：对象销毁前自动执行
+- `REF` / `UNREF`：被引用 / 结束引用时触发
+- `ACCESS`：被获取值时触发
+- `conversion`：被当其他类型读取时触发
 
 ```cx
 @pointer {
     char-* p
-    INIT(){
-        p=null
-    }
-    INIT(char c){
-        p=c-&
-    }
+    INIT() { p = null }
+    INIT(char c) { p = c-& }
 }
-main(){
-    pointer p=pointer()
-}
+
+pointer p = pointer()
 ```
-
-#### 钩子
-
-DROP 方法在对象被销毁前自动执行，支持修饰符。
-
-定义语法：DROP { 代码 }
 
 ```cx
 @CacheEntry {
-    DROP {
-        log("entry destroyed")
-    }
-}
-```
-
-REF钩子在被引用时触发
-
-ACCESS钩子在被获取值时触发
-
-UNREF钩子在结束引用时触发
-
-#### 类型转换方法
-
-类型名加代码定义当改类被当做其他类型读取时会发生什么，
-不支持自动链式转换，不可被外部作为函数调用
-
-示例：
-
-```cx
-@BigInt {
-    static const int MAXN=1000
-    int[MAXN] nums
-    pub:
-    int len
-    INIT(int a){
-        int i=0
-        while a {
-            nums[i]=a%10
-            a/=10
-            i+=1
-        }
-        len=i
-    }
-    conversion int r=0{
-        int result = 0
-        for int i=0;i<len;i+=1 { result = result * 10 + d }
-        r=result
-    }
-}
-Bigint a=123
-int b=a
-```
-
-### 操作符重载
-
-可重载的操作符为操作符优先级表中除了`.` `::` `,` `-&` `=` 的操作符。
-
-可以使用方法修饰符修饰操作符重载。
-
-示例：
-
-```cx
-@Vec2 {
-    int x, y
-    trait operator + (Vec2 other) Vec2 r {
-        r=Vec2(x + other.x, y + other.y)
-    }
-}
-```
-
-可以返回引用类型，以同时支持读和写操作
-
-```cx
-@Array-[T]{
-    T[] data = []
-    int len = 0
-    trait op [](int index) T-& r{
-        r=data[index]-&
-    }
-}
-```
-
-`==` 默认为完全相等，`!=`默认为非完全相等，当比较符（`<` `>` `<=` `>=`）中存在至少一个时，会自动推导到其余的比较符，也可以主动重载。当重载`==`号后，`!=`的默认含义也会对应改变。
-
-二元运算符存在时，会自动推导其对应的赋值运算符，对应的赋值运算符存在时，会自动推导二元运算符，也可以主动重载。
-
-### 模板与泛型
-
-使用方括号表示模板类型
-
-```cx
-@List-[T]{
-    pub:
-    T[1000] data
-    static new(int len){
-        for(int i=0; i < len; i+=1){
-            data[i] = 0
-        }
-        return
-    }
+    DROP { log("destroyed") }
 }
 ```
 
 ### 枚举
 
+枚举是一种非容器声明，编译时被分析成数字。
+
 ```cx
 @Color {
-    enum{
-        Red
-        Blue
-        Green
-    }
+    enum { Red Blue Green }
     enum Black
-    double a
-    INIT(double al){
-        a=al
-    }
-}
-main() {
-    Color c = Color(1.0).Red
 }
 ```
 
-枚举是一种申明，编译时会分析成数字。
+### 操作符重载
 
-## 六、修饰
+类中可以重载操作符。可重载的操作符为优先级表中除 `.` `::` `,` `-&` `=` 之外的操作符。
+
+```cx
+@Vec2 {
+    int x, y
+    trait operator + (Vec2 other) Vec2 r {
+        r = Vec2(x + other.x, y + other.y)
+    }
+}
+```
+
+可以返回引用类型，以同时支持读和写操作：
+
+```cx
+@Array-<T> {
+    T[100] data
+    int len = 0
+    trait op [](int index) T-& r {
+        r = data[index]-&
+    }
+}
+```
+
+## 九、泛型
+
+### 容器承载泛型
+
+容器是唯一可以承载泛型参数的声明。类容器和命名空间容器都可以有泛型参数。
+
+```cx
+@Pair-<T, U> {
+    T first
+    U second
+}
+
+namespace algo-<T> {
+    swap(T-& a, T-& b) { ... }
+}
+```
+
+### 实例化
+
+实例化点必须显式给出全部泛型实参，**不推导**。
+
+```cx
+Pair-<int, string> p
+algo-<int>::swap(x, y)
+```
+
+实例化时，模板参数被替换为实参，得到一个独立的名字集合。实例化结果是一个容器，不是一个值。
+
+### 泛型与函数
+
+函数不直接支持泛型参数。需要泛型函数时，把函数放进泛型容器。
+
+```cx
+// 错误：函数不能有模板参数
+foo-<T>(T x) { }
+
+// 正确：泛型交给容器
+@Wrapper-<T> {
+    foo(T x) { }
+}
+
+Wrapper-<int>::foo
+```
+
+## 十、修饰
+
+### 什么是修饰
+
+修饰是附加到声明或容器上的标签，改变其语义或存储方式。修饰在**声明点结算**：写 `#M @D` 时，`M` 必须完整可解析，不依赖被修饰者。
 
 ### 字段修饰符
 
 | 关键字 | 含义 |
-| ----- | ---- |
+| --- | --- |
 | static | 静态 |
 | const | 常量 |
 | inline | 内联 |
 | readonly | 外部只读 |
-| own | 唯一所有权内存管理 |
+| own | 唯一所有权 |
 | malloc | 堆分配 |
 | alloca | 栈分配 |
 
-inline也可以修饰字段，将初始化表达式中的函数全部主动内联
-
-### 修饰注入
-
-修饰注入是一种容器操作
-
-```cx
-malloc @rc {
-    malloc int cnt=1
-    REF{
-        cnt+=1
-    }
-    UNREF{
-        cnt-=1
-        if cnt<=0 {
-            self.delete()
-        }
-    }
-}
-main(){
-    #rc int a=0
-}
-```
-
-也可以在申明类时直接注入，多个#号多个注入，相同属性会被合并与警告，同名的不同字段会报错
-
-```cx
-#foo #bar @baz {
-}
-main(){
-    #a#b int c=0
-}
-```
-
-可以用类来修饰类
-
-```cx
-@foo{
-    int a,b
-}
-#foo @bar{
-    bool c
-}
-```
-
-使用修饰来做接口，零成本抽象
-
-```cx
-@arr-[LEN GET] {
-    inline len()int r{
-        r=LEN
-    }
-    inline get(int n)int r{
-        r=GET
-    }
-}
-@Array#arr-[a.len a[n]] {
-    int[42] a
-}
-```
-
-还有
-
-```cx
-@empty_access {
-    ACCESS {}
-}
-@foo #empty_access {
-    after ACCESS{
-        bar()
-    }
-}
-```
-
 ### 方法修饰符
 
-访问控制：
+访问控制：`pub` 公开，`priv` 私有（默认私有）。
 
-| 关键字 | 含义 |
-| ------ | ---- |
-| pub | 公开成员（public） |
-| priv | 私有成员（private） |
-| 不写 | 私有成员 |
-
-修改性控制
-
-| 关键字 | 含义 |
-| ------ | ---- |
-| mut | 会修改对象 |
-| 不写 | 不会修改对象 |
+修改性控制：`mut` 会修改对象，不写则不会修改对象。
 
 ```cx
 @Base {
     trait process() (string data)
-    can_override() { print("Base") }
     mut before setup() { print("Base setup") }
-    mut after cleanup() { print("Base cleanup") }
 }
 
-#Base @Child{
+#Base @Child {
     process(string data) { print("Implemented") }
     over can_override() { print("Child") }
-    mut before setup() { print("Child setup") }
-    mut after cleanup() { print("Child cleanup") }
 }
 ```
 
-## 七、命名空间
+### 修饰注入
 
-命名空间是一种容器
+修饰注入是一种容器操作，将修饰符注入到声明上。
 
 ```cx
-namespace math {
-    add(int a, b) int r { r = a + b }
+malloc @rc {
+    REF { cnt += 1 }
+    UNREF { cnt -= 1 }
 }
-math::add(1, 2)
-namespace math:
-add(1, 2)
+
+#rc int a = 0
 ```
 
-## 八、编译期反射
-
-可以访问类型标识枚举，还可以访问字段和修饰符，type是一种类
+也可以在声明类时直接注入：
 
 ```cx
-@bar{
-    int q
-}
-@foo#bar{
-    type a = type._foo
-}
-main(){
-    type x = type._int
-    type y = type._foo._a    // y = type
-    type z = type._foo[0]    // z = type
-    type w = type(a)    // w = type
-    int i = sizeof(type._foo)    // i = type enum掩码占用字节数 + 4
-    int j = sizeof(type._foo 0)  // j = z
-    int k = offset(type._foo 1)  // k = type enum掩码占用字节数
-    int l = sizeof(x)       // l = 4
-}
+#foo #bar @baz { }
 ```
 
-如果代码中存在type，将会生成的type枚举，否则生成。
+### 修饰与泛型的方向性
 
-如果代码中存在sizeof(变量)，将会生成运行时存在的sizeof函数，offset同理。
+修饰在**声明点结算**：`#M @D` 中 `M` 必须完整可解析。因此修饰**不能依赖被修饰者的信息**。
 
-## 九、导入系统与标准库
+容器泛型在**路径点结算**：`Name-<T>` 中 `T` 在实例化时给定。因此泛型**可以依赖使用者的信息**。
 
-导入std库
-`import std`
+两者方向相反，不可互相替代。
 
-禁用默认导入：`no import std`
-默认自动导入 std
+## 十一、控制流
 
-基础模块：
-
-- cxio : 输入输出
-- metatype : 元类型
-- concurrent : 并发
-- containers : 容器
-
-见 `lib.md`
-
-## 十、控制流
-
-内置控制流（名称保留，不可覆盖）：
+内置控制流名称保留，不可覆盖：
 
 ```cx
 if($bool cond $void then)else($void else)
 if($bool cond $void then)
 while($bool cond $void body)
 for($void init $bool cond $void next $void body)
-for ($void item) in -[T](T collection $void body) 
-    //collection 需要有[]运算符重载或get()方法与len()方法或len字段，或者支持被解读为数组
+for($void item) in (T collection $void body)
 break
 continue
 return
-flag label // 同一作用域内不能重复label
-toflag label // 不能跳出作用域
+flag label
+toflag label
 ```
 
-## 十一、并发与异步
+`flag` 与 `toflag` 的本质是 asm 标签跳转。
 
-并发原语：
+## 十二、并发与异步
 
-```cx
-spawn { work } // 开新线程
-wait (const bool-& cond) // 阻塞线程直到条件为真
-```
-
-使用类定义实现复杂的行为
+`spawn` 开一个新线程执行代码块：
 
 ```cx
-@Task [-T]{
-    int n
-    #rc bool finished = false
-    #rc $T work
-    Task ($T w){
-        work = w
-    }
-    mut pub start() {
-        $T w = work
-        spawn {
-            w()
-            finished = true
-        }
-    }
+spawn {
+    work()
 }
+```
+
+`wait` 阻塞当前线程，直到条件为真：
+
+```cx
+wait (const bool-& cond)
+```
+
+更复杂的并发行为可以封装成类。
+
+## 十三、编译期反射
+
+`type` 是一种类，可以访问类型标识、字段、修饰符。
+
+```cx
+@foo #bar { type a = type._foo }
 
 main() {
-    int n,b
-    input(n)
-    input(b)
-    Task-[int] t=Task-[int]{
-        solve(n,m)
-    }
-    init(n m)
-    Task.start()
-    do_otherthings()
+    type x = type._int
+    int i = sizeof(type._foo)
+    int j = offset(type._foo 1)
 }
 ```
 
-并发标准库会提供类。
+`sizeof(变量)` 会生成运行时的 `sizeof` 函数，`offset` 同理。
 
-## 十二、内联汇编与保留代码
+## 十四、导入系统与标准库
 
-使用 inline 修饰，使函数在汇编层面内联在调用处
+```cx
+import std
+no import std
+```
 
-`inline foo(int bar) int`
+默认自动导入 std。基础模块：
 
-```asm`` ``` 会在被调用处内联插入汇编代码
+- `cxio`：输入输出
+- `metatype`：元类型
+- `concurrent`：并发
+- `containers`：容器
+
+## 十五、内联汇编与保留代码
+
+`inline` 修饰使函数在汇编层面内联在调用处：
+
+```cx
+inline foo(int bar) int
+```
+
+``asm `...` `` 在被调用处内联插入汇编代码：
 
 ```cx
 asm `
 mov ecx, 0
-for_start:
-    cmp ecx, 20
-    jge for_end
-    add ecx, 2
-    jmp for_start
-for_end:
 `
 ```
 
-flag与toflag的本质也是asm标签跳转
-
-```keep`` ``` 会将代码保留在翻译后的.ll文件中
+``keep `...` `` 会将代码保留在翻译后的 `.ll` 文件中：
 
 ```cx
 keep `
-; LLVM IR 内联汇编
 define i32 @add(i32 %a, i32 %b) {
     %1 = add i32 %a, %b
     ret i32 %1
@@ -760,78 +577,68 @@ define i32 @add(i32 %a, i32 %b) {
 `
 ```
 
-## 十三、外部函数接口
+## 十六、外部函数接口
 
 ```cx
 extern "opengl32" {
-    glBegin(int mode){}
-    glEnd(){}
+    glBegin(int mode) {}
+    glEnd() {}
 }
 ```
 
-## 十四、编译与执行
-
-实现路线：
-clux 源代码 (.cx) -> LLVM IR(.ll) -> 可执行文件
-
-clux到ll的翻译器使用c++编写
+## 十七、编译与执行
 
 工具链命令：
-`clux -t main.cx` 翻译
-`clux -b main.cx` 构建
-`clux -r main.cx` 运行
-`clux -c main.cx` 检查
-加`-o file` 控制输出文件位置
 
-## 十五、语法糖
+```
+clux -t main.cx    // 翻译
+clux -b main.cx    // 构建
+clux -r main.cx    // 运行
+clux -c main.cx    // 检查
+clux -o file       // 输出位置
+```
 
-`modf modifier:`声明在此之后，同一层级的声明都是modifier修饰符
+## 十八、语法糖
 
-用`modf:`取消修饰符
+`modf modifier:` 声明此后的同级声明都是 modifier 修饰：
 
 ```cx
 @foo {
     pub:
     int a
     modf static const:
-    int b=1
+    int b = 1
     modf:
     int c
 }
 ```
 
-`alias foo = bar:`语法糖，将下文作用域中的foo当做bar处理，
-仅限编译期的文本作用，同名别名会向前覆盖
+`alias foo = bar:` 将下文作用域中的 `foo` 当 `bar` 处理，仅编译期文本作用：
 
 ```cx
-int a = 1
-namespace foo{
+namespace foo {
     alias a = b
-    int a = 123     // b = 123
-    @aaa {          // 还是aaa
-        int a       // int b
-    }
+    int a = 123     // 实际 int b = 123
 }
-int c = a           // c = 1
 ```
 
-## 十六、操作符优先级表
+## 十九、操作符优先级表
 
-| 优先级 | 运算符 | 优先结合 | 说明 |
-| ------ | ------ | ------ | ---- |
-| 17 | `()` `[]` `.` `::` | 左 | 函数调用、索引、成员访问、命名空间 |
-| 16 | `-&` `-*` | 左 | 取地址、解引用 |
-| 15 | `+` `-` `!` `~` | 右 | 正负号、逻辑非、按位取非 |
-| 14 | `*` `/` `%` | 左 | 乘法、除法、取模 |
-| 13 | `+` `-` | 左 | 加法、减法 |
-| 12 | `<<` `>>` | 左 | 左移、右移 |
-| 11 | `<` `>` `<=` `>=` | 左 | 关系比较 |
-| 10 | `==` `!=` | 左 | 相等性比较 |
-| 9 | `&` | 左 | 按位与 |
-| 8 | `^` | 左 | 按位异或 |
-| 7 | `\|` | 左 | 按位或 |
-| 6 | `&&` | 左 | 逻辑与（短路） |
-| 5 | `\|\|` | 左 | 逻辑或（短路） |
-| 4 | `?:` | 右 | 条件运算符 |
-| 3 | `=` `+=` `-=` `*=` `/=` `%=` | 右 | 赋值与复合赋值 |
-| 2 | `&=` `\|=` `^=` `<<=` `>>=` | 右 | 位运算复合赋值 |
+| 优先级 | 运算符 | 结合 |
+| --- | --- | --- |
+| 17 | `()` `[]` `.` `::` | 左 |
+| 16 | `-&` `-*` | 左 |
+| 15 | `+` `-` `!` `~` | 右 |
+| 14 | `*` `/` `%` | 左 |
+| 13 | `+` `-` | 左 |
+| 12 | `<<` `>>` | 左 |
+| 11 | `<` `>` `<=` `>=` | 左 |
+| 10 | `==` `!=` | 左 |
+| 9 | `&` | 左 |
+| 8 | `^` | 左 |
+| 7 | `\|` | 左 |
+| 6 | `&&` | 左 |
+| 5 | `\|\|` | 左 |
+| 4 | `?:` | 右 |
+| 3 | `=` `+=` `-=` `*=` `/=` `%=` | 右 |
+| 2 | `&=` `\|=` `^=` `<<=` `>>=` | 右 |
