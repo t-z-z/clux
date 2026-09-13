@@ -10,7 +10,7 @@
 
 #include "ast.h"
 #include "diagnostic.h"
-#include "string_view_map.h"   // svmap, svset
+#include "string_view_map.h"
 
 namespace cx {
 

@@ -9,11 +9,9 @@ import cxio
 ### 输出
 
 ```cx
-const print(const string[] values)
-const println(const string[] values)
+const print(const char[][] values)
+const println(const char[][] values)
 ```
-
-`values` 是字符串切片，可以包含任意数量的字符串。
 
 ```cx
 print("hello" "world")
@@ -22,25 +20,15 @@ println("done")
 
 ### 输入
 
-输入需要读取不同类型的值，因此由泛型容器承载。
-
 ```cx
-namespace input-<T> {
-    read(T-& data) bool r
-    read_with_prompt(const string-& prompt, T-& data) bool r
-}
+read-<T>(char[] s) bool r
 ```
 
-`input-<T>::read` 从标准输入读取一个 `T` 类型值到 `data`，返回是否成功。
-
-`input-<T>::read_with_prompt` 先输出提示再读取。
+`read` 从标准输入读取一串字符，以空符（空格换行等）为分隔标准
 
 ```cx
-int n
-input-<int>::read(n-&)
-
-string s
-input-<string>::read_with_prompt("Enter name: ", s-&)
+char[] s
+read(s)
 ```
 
 ## metatype 元类型

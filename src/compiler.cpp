@@ -1,5 +1,4 @@
 #include "../include/compiler.h"
-
 #include "../include/string_pool.h"
 #include "../include/lexer.h"
 #include "../include/parser.h"
