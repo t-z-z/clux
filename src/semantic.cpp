@@ -1,6 +1,10 @@
 ﻿#include "../include/semantic.h"
 #include "ast.h"
 
+#include <unordered_set>
+#include <unordered_map>
+#include <functional>
+
 namespace cx {
 
 // 类型名节点（Identifier / 限定名 Member 链）的完整名字
@@ -153,8 +157,12 @@ bool SemanticAnalyzer::analyze() {
     diagnostics_.clear();
     call_resolutions_.clear();
     has_error_ = false;
+    bodies_.clear();
     collect();
     walk(cu_);
+    // 跳转与初始化检查需要完整函数体，放在遍历之后进行
+    check_jumps();
+    check_initialization();
     return !has_error_;
 }
 
@@ -188,19 +196,24 @@ std::string SemanticAnalyzer::build_callkey(const std::string& name,
 }
 
 void SemanticAnalyzer::collect() {
+    // 顶层声明默认公开
     for (Decl* decl : cu_.top_decls) {
-        collect_decl(decl);
+        collect_decl(decl, Access::Public);
     }
 }
 
-void SemanticAnalyzer::collect_decl(Decl* decl) {
+void SemanticAnalyzer::collect_decl(Decl* decl, Access default_access) {
     if (!decl) return;
+
+    // 声明点结算修饰符：priv 覆盖 readonly 覆盖 pub，否则用所在容器的默认级别
+    Access acc = decl_access(decl->modfs, default_access);
 
     switch (decl->kind) {
         case DeclKind::VarList: {
             auto* vl = static_cast<VarList*>(decl);
             for (auto* var : vl->vars) {
                 Symbol sym(SymbolKind::Variable, var);
+                sym.access = acc;
                 if (!symbols_.insert_member(std::string(var->name), std::move(sym))) {
                     error(vl->loc, "duplicate declaration of variable '" + std::string(var->name) + "'");
                 }
@@ -210,7 +223,7 @@ void SemanticAnalyzer::collect_decl(Decl* decl) {
 
         case DeclKind::Func:
         case DeclKind::Operator: {
-            register_func(*static_cast<Func*>(decl));
+            register_func(*static_cast<Func*>(decl), acc);
             break;
         }
 
@@ -226,10 +239,15 @@ void SemanticAnalyzer::collect_decl(Decl* decl) {
                     error(cls->loc, "cannot declare class '" + name + "' with same name as non-container");
                 symbols_.push_scope(name);
             } else {
-                symbols_.insert_and_push(name, Symbol(SymbolKind::Class, cls));
+                Symbol* sym = symbols_.insert_and_push(name, Symbol(SymbolKind::Class, cls));
+                if (sym) {
+                    sym->access = acc;
+                    sym->node = cls;
+                }
             }
+            // 类默认私有
             for (Decl* member : cls->members) {
-                collect_decl(member);
+                collect_decl(member, Access::Private);
             }
             symbols_.pop_scope();
             break;
@@ -247,10 +265,15 @@ void SemanticAnalyzer::collect_decl(Decl* decl) {
                     error(ns->loc, "cannot declare namespace '" + name + "' with same name as non-container");
                 symbols_.push_scope(name);
             } else {
-                symbols_.insert_and_push(name, Symbol(SymbolKind::Namespace, ns));
+                Symbol* sym = symbols_.insert_and_push(name, Symbol(SymbolKind::Namespace, ns));
+                if (sym) {
+                    sym->access = acc;
+                    sym->node = ns;
+                }
             }
+            // 命名空间默认公开
             for (Decl* member : ns->members) {
-                collect_decl(member);
+                collect_decl(member, Access::Public);
             }
             symbols_.pop_scope();
             break;
@@ -260,7 +283,7 @@ void SemanticAnalyzer::collect_decl(Decl* decl) {
             auto* ext = static_cast<Extern*>(decl);
             ext->scope = symbols_.current_scope();
             for (Decl* member : ext->members) {
-                collect_decl(member);
+                collect_decl(member, default_access);
             }
             break;
         }
@@ -277,6 +300,7 @@ void SemanticAnalyzer::collect_decl(Decl* decl) {
             e->scope = enum_scope;
             if (parent && !existing) {
                 Symbol sym(SymbolKind::Enum, e, enum_scope);
+                sym.access = acc;
                 symbols_.insert_member(ename, std::move(sym));
             }
             int64_t next_value = 0;
@@ -293,7 +317,7 @@ void SemanticAnalyzer::collect_decl(Decl* decl) {
         }
 
         case DeclKind::SpecialMethod: {
-            register_special(*static_cast<SpecialMethod*>(decl));
+            register_special(*static_cast<SpecialMethod*>(decl), acc);
             break;
         }
         default:
@@ -302,9 +326,10 @@ void SemanticAnalyzer::collect_decl(Decl* decl) {
 
 }
 
-void SemanticAnalyzer::register_func(Func& f) {
+void SemanticAnalyzer::register_func(Func& f, Access default_access) {
     std::string name = std::string(f.name);
     Scope* scope = symbols_.current_scope();
+    Access acc = decl_access(f.modfs, default_access);
 
     if (scope && scope->lookup_member(name)) {
         error(f.loc, "duplicate declaration of function '" + name + "'");
@@ -317,10 +342,11 @@ void SemanticAnalyzer::register_func(Func& f) {
         return;
     }
     Symbol sym(SymbolKind::Function, &f);
+    sym.access = acc;
     symbols_.insert_member(key, std::move(sym));
 }
 
-void SemanticAnalyzer::register_special(SpecialMethod& sm) {
+void SemanticAnalyzer::register_special(SpecialMethod& sm, Access default_access) {
     std::string internal_name;
     switch (sm.kind) {
         case SpecialMethod::Kind::Drop:       internal_name = "DROP";       break;
@@ -340,6 +366,7 @@ void SemanticAnalyzer::register_special(SpecialMethod& sm) {
     }
 
     Symbol sym(SymbolKind::Function, &sm);
+    sym.access = decl_access(sm.modfs, default_access);
     symbols_.insert_member(internal_name, std::move(sym));
 }
 
@@ -417,7 +444,9 @@ void SemanticAnalyzer::visit(CompUnit& cu) {
 }
 void SemanticAnalyzer::visit(Decl&) {}
 void SemanticAnalyzer::visit(Import&) {}
-void SemanticAnalyzer::visit_func(Func&) {}
+void SemanticAnalyzer::visit_func(Func& f) {
+    if (f.body) bodies_.push_back({f.body, f.params, f.returns});
+}
 
 void SemanticAnalyzer::visit_special_method(SpecialMethod&) {}
 
@@ -440,6 +469,8 @@ void SemanticAnalyzer::visit_var_list(VarList& vl) {
     for (VarItem* var : vl.vars) {
         if (!symbols_.insert_local(var->name, Symbol(SymbolKind::Variable, var))) {
             error(var->loc, "duplicate variable '" + std::string(var->name) + "'");
+        } else {
+            var_symbols_[var] = symbols_.current_->lookup_local(var->name);
         }
     }
 }
@@ -501,6 +532,7 @@ void SemanticAnalyzer::visit_expr_identifier(Expr::Identifier& id) {
     Symbol* member = symbols_.lookup_member(std::string(id.name));
     if (member) {
         current_expr->sym = member;
+        check_access(member, current_expr->loc);
         if (member->kind == SymbolKind::Variable) {
             current_expr->type = member->get_type();
             current_expr->is_lvalue = true;
@@ -593,6 +625,71 @@ bool SemanticAnalyzer::can_convert_to(Expr* src, Expr* dst) {
         }
     }
 
+    return false;
+}
+
+
+// 访问控制：priv 覆盖 readonly 覆盖 pub
+Access SemanticAnalyzer::decl_access(const ModfList& modfs, Access fallback) {
+    Access acc = fallback;
+    if (modfs.has(ModfKind::Pub)) acc = Access::Public;
+    if (modfs.has(ModfKind::Readonly)) acc = Access::Readonly;
+    if (modfs.has(ModfKind::Priv)) acc = Access::Private;
+    return acc;
+}
+
+// 判断作用域 s 是否位于 root -> ... -> current 的路径上
+bool SemanticAnalyzer::is_scope_on_path(Scope* s) const {
+    if (!s) return false;
+    for (Scope* cur = symbols_.current_scope(); cur; cur = cur->parent) {
+        if (cur == s) return true;
+    }
+    return false;
+}
+
+static std::string sym_display_name(Symbol* sym) {
+    if (!sym) return "";
+    if (auto* vi = dynamic_cast<VarItem*>(sym->node)) return std::string(vi->name);
+    if (Decl* d = sym->get_decl()) return std::string(d->name);
+    return "";
+}
+
+// 读访问控制：离开声明作用域后 priv 不可读，readonly 仍可读
+void SemanticAnalyzer::check_access(Symbol* sym, const Location& loc) {
+    if (!sym || sym->access == Access::Public) return;
+    if (is_scope_on_path(sym->decl_scope)) return;
+    if (sym->access == Access::Private) {
+        error(loc, "cannot access private member '" + sym_display_name(sym) + "'");
+    }
+}
+
+// 写访问控制：离开声明作用域后 priv / readonly 均不可写
+void SemanticAnalyzer::check_write_access(Symbol* sym, const Location& loc) {
+    if (!sym || sym->access == Access::Public) return;
+    if (is_scope_on_path(sym->decl_scope)) return;
+    if (sym->access == Access::Private) {
+        error(loc, "cannot assign to private member '" + sym_display_name(sym) + "'");
+    } else if (sym->access == Access::Readonly) {
+        error(loc, "cannot assign to readonly member '" + sym_display_name(sym) + "'");
+    }
+}
+
+// conversion 判定：判断 src 能否转换为 dst，复用 can_convert_to 的转换规则
+bool SemanticAnalyzer::has_conversion(Expr* src, Expr* dst) {
+    return can_convert_to(src, dst);
+}
+
+// = 赋值、() 传参、cast 转换三种情形共用的转换判定入口
+bool SemanticAnalyzer::check_conversion(Expr* src, Expr* dst, const std::string& context,
+                                        const Location& loc, bool explicit_cast) {
+    if (!src || !dst) return false;
+    if (is_same_type(src, dst)) return true;
+    if (has_conversion(src, dst)) return true;
+    if (explicit_cast) {
+        warning(loc, "explicit cast between incompatible types in " + context);
+        return true;
+    }
+    warning(loc, "implicit conversion in " + context);
     return false;
 }
 
@@ -760,14 +857,16 @@ void SemanticAnalyzer::visit_expr_assign(Expr::Assign& a) {
         error(current_expr->loc, "assignment target is not a modifiable lvalue");
     }
 
+    // 写访问控制：离开作用域后 priv / readonly 均不可写
+    if (a.target->sym) {
+        check_write_access(a.target->sym, current_expr->loc);
+    }
+
     Expr* lt = a.target->type;
     Expr* rt = a.value->type;
 
-    if (lt && rt && !is_same_type(lt, rt)) {
-        if (!can_convert_to(rt, lt)) {
-            warning(current_expr->loc, "implicit conversion in assignment");
-        }
-    }
+    // 赋值统一走 = 的转换判定
+    check_conversion(rt, lt, "assignment", current_expr->loc);
 
     current_expr->type = lt;
     current_expr->is_lvalue = false;
@@ -863,6 +962,8 @@ void SemanticAnalyzer::resolve_call(Expr* call_expr, Expr::Call& c) {
             return;
         }
 
+        if (Func* ctor = init_sym->get<Func>()) check_call_args(ctor, c.args);
+
         call_expr->sym = init_sym;
         call_expr->type = make_named_type(call_expr->loc,
             cls_decl ? cls_decl->name : std::string_view(),
@@ -898,6 +999,8 @@ void SemanticAnalyzer::resolve_call(Expr* call_expr, Expr::Call& c) {
         return;
     }
 
+    check_call_args(func, c.args);
+
     Expr* ret = typeVoid;
     if (!func->returns.empty() && func->returns[0] &&
         func->returns[0]->type) {
@@ -913,6 +1016,29 @@ void SemanticAnalyzer::resolve_call(Expr* call_expr, Expr::Call& c) {
     resol.resolved_func = func;
     resol.type = ret;
     call_resolutions_.push_back(std::move(resol));
+}
+
+// () 传参：按形参类型逐一对实参做转换判定
+void SemanticAnalyzer::check_call_args(Func* fn, const std::vector<Expr*>& args) {
+    if (!fn) return;
+    std::vector<Expr*> params;
+    for (VarList* vl : fn->params) {
+        if (!vl) continue;
+        for (VarItem* vi : vl->vars) {
+            if (vi && vi->type) params.push_back(vi->type);
+        }
+    }
+    if (params.size() != args.size()) {
+        error(fn->loc, "argument count mismatch: expected " +
+              std::to_string(params.size()) + ", got " + std::to_string(args.size()));
+        return;
+    }
+    for (size_t i = 0; i < args.size(); ++i) {
+        Expr* at = args[i] ? args[i]->type : nullptr;
+        if (!at || !params[i]) continue;
+        check_conversion(at, params[i], "argument passing",
+                         args[i] ? args[i]->loc : fn->loc);
+    }
 }
 
 const CallResolution* SemanticAnalyzer::find_call(Expr* e) const {
@@ -999,6 +1125,7 @@ void SemanticAnalyzer::visit_expr_member(Expr::Member& m) {
     Symbol* member = SymbolTable::lookup_member_in(target_scope, field);
     if (member) {
         current_expr->sym = member;
+        check_access(member, current_expr->loc);
 
         if (member->kind == SymbolKind::Variable && member->get_type()) {
             current_expr->type = member->get_type();
@@ -1045,6 +1172,9 @@ void SemanticAnalyzer::visit_expr_cast(Expr::Cast& cast) {
         Expr* dst = cast.target_type;
         if (is_same_type(src, dst)) {
             warning(current_expr->loc, "unnecessary cast, types are identical");
+        } else {
+            // cast 是显式转换，走 cast 的转换判定
+            check_conversion(src, dst, "cast", current_expr->loc, true);
         }
     }
 }
@@ -1079,6 +1209,7 @@ void SemanticAnalyzer::visit_expr_array(Expr::Array& arr) {
 }
 
 void SemanticAnalyzer::visit_expr_closure(Expr::Closure& clo) {
+    if (clo.body) bodies_.push_back({clo.body, clo.params, clo.returns});
     std::vector<Expr*> param_types;
     for (auto* p : clo.params) {
         if (p && p->type) {
@@ -1358,6 +1489,243 @@ Func* SemanticAnalyzer::clone_func(Func* f) {
     for (auto* r : f->returns) returns.push_back(clone_varlist(r));
     return cu_.add_node<Func>(f->loc, f->name, f->modfs,
         std::move(params), std::move(returns), clone_stmt(f->body));
+}
+
+// flag / toflag 的 label 检查：遵循 C++ 的跳转规则
+// - 目标 label 必须在本函数体内定义
+// - 不得跳入某个作用域内部（即目标所在作用域必须是跳转点作用域的祖先或自身）
+// - 不得跳入循环内部
+namespace {
+struct JumpPoint {
+    std::string label;
+    std::vector<int> scope_path;
+    int loop_depth = 0;
+    bool is_flag = false;
+    Location loc;
+};
+}
+
+void SemanticAnalyzer::check_jumps() {
+    std::unordered_set<Symbol*> init_tracked;
+    (void)init_tracked;
+    for (const BodyInfo& info : bodies_) {
+        if (!info.body) continue;
+        std::vector<JumpPoint> flags;
+        std::vector<JumpPoint> gotos;
+        int scope_counter = 0;
+
+        // 收集本体内所有 flag / toflag 及其作用域路径
+        std::function<void(Stmt*, std::vector<int>, int)> scan =
+            [&](Stmt* st, std::vector<int> path, int loops) {
+            if (!st) return;
+            if (auto* f = st->get_flag()) {
+                flags.push_back({std::string(f->label), path, loops, true, st->loc});
+                return;
+            }
+            if (auto* g = st->get_goto()) {
+                gotos.push_back({std::string(g->label), path, loops, false, st->loc});
+                return;
+            }
+            if (auto* b = st->get_block()) {
+                std::vector<int> p = path;
+                p.push_back(++scope_counter);
+                for (Stmt* x : b->stmts) scan(x, p, loops);
+                return;
+            }
+            if (auto* i = st->get_if()) {
+                scan(i->then_branch, path, loops);
+                scan(i->else_branch, path, loops);
+                return;
+            }
+            if (auto* w = st->get_while()) {
+                scan(w->body, path, loops + 1);
+                return;
+            }
+            if (auto* fo = st->get_for()) {
+                std::vector<int> p = path;
+                p.push_back(++scope_counter);
+                scan(fo->init, p, loops);
+                scan(fo->next, p, loops);
+                scan(fo->body, p, loops + 1);
+                return;
+            }
+            if (auto* sp = st->get_spawn()) {
+                scan(sp->body, path, loops);
+                return;
+            }
+        };
+        scan(info.body, {}, 0);
+
+        // 逐个检查 toflag
+        for (const JumpPoint& g : gotos) {
+            bool found = false;
+            for (const JumpPoint& f : flags) {
+                if (f.label != g.label) continue;
+                found = true;
+                // 目标作用域必须是跳转点作用域的祖先或自身
+                bool into_scope = f.scope_path.size() > g.scope_path.size();
+                if (!into_scope) {
+                    for (size_t i = 0; i < f.scope_path.size(); ++i) {
+                        if (f.scope_path[i] != g.scope_path[i]) { into_scope = true; break; }
+                    }
+                }
+                if (into_scope) {
+                    error(g.loc, "jump into the scope of label '" + g.label + "'");
+                }
+                if (f.loop_depth > g.loop_depth) {
+                    error(g.loc, "jump into a loop at label '" + g.label + "'");
+                }
+            }
+            if (!found) {
+                error(g.loc, "jump to undefined label '" + g.label + "'");
+            }
+        }
+    }
+}
+
+// 变量初始化检查：不得读取未赋值过的变量
+void SemanticAnalyzer::check_initialization() {
+    for (const BodyInfo& info : bodies_) {
+        if (!info.body) continue;
+        InitCtx ctx;
+        // 参数视为已赋值
+        for (VarList* vl : info.params) {
+            if (!vl) continue;
+            for (VarItem* vi : vl->vars) {
+                Symbol* sym = var_symbols_.count(vi) ? var_symbols_[vi] : nullptr;
+                if (sym) { ctx.declared.insert(sym); ctx.assigned.insert(sym); }
+            }
+        }
+        // 返回变量需在函数结束时已赋值
+        for (VarList* vl : info.returns) {
+            if (!vl) continue;
+            for (VarItem* vi : vl->vars) {
+                Symbol* sym = var_symbols_.count(vi) ? var_symbols_[vi] : nullptr;
+                if (sym) { ctx.declared.insert(sym); ctx.returns.push_back(sym); }
+            }
+        }
+        init_stmt(ctx, info.body);
+    }
+}
+
+void SemanticAnalyzer::init_stmt(InitCtx& ctx, Stmt* s) {
+    if (!s) return;
+    if (auto* b = s->get_block()) {
+        for (Stmt* x : b->stmts) init_stmt(ctx, x);
+        return;
+    }
+    if (auto* e = s->get_expr()) { init_expr(ctx, e->expr); return; }
+    if (auto* i = s->get_if()) {
+        init_expr(ctx, i->condition);
+        InitCtx then_ctx = ctx, else_ctx = ctx;
+        init_stmt(then_ctx, i->then_branch);
+        init_stmt(else_ctx, i->else_branch);
+        // 分支合并：仅在两个分支都已赋值的变量才算已赋值
+        std::unordered_set<Symbol*> merged;
+        for (Symbol* sym : then_ctx.assigned) {
+            if (else_ctx.assigned.count(sym)) merged.insert(sym);
+        }
+        for (Symbol* sym : ctx.assigned) merged.insert(sym);
+        ctx.assigned = std::move(merged);
+        return;
+    }
+    if (auto* w = s->get_while()) {
+        init_expr(ctx, w->condition);
+        InitCtx body_ctx = ctx;
+        init_stmt(body_ctx, w->body);
+        return;
+    }
+    if (auto* f = s->get_for()) {
+        init_stmt(ctx, f->init);
+        init_expr(ctx, f->condition);
+        InitCtx body_ctx = ctx;
+        init_stmt(body_ctx, f->body);
+        init_stmt(body_ctx, f->next);
+        return;
+    }
+    if (s->is_return()) {
+        for (Symbol* rv : ctx.returns) {
+            if (!ctx.assigned.count(rv)) {
+                error(s->loc, "return before assigning return variable");
+            }
+        }
+        return;
+    }
+    if (auto* v = s->get_var_decl()) {
+        VarList* vl = v->vars;
+        if (!vl) return;
+        for (VarItem* vi : vl->vars) {
+            Symbol* sym = var_symbols_.count(vi) ? var_symbols_[vi] : nullptr;
+            if (vi->init) {
+                init_expr(ctx, vi->init);
+                if (sym) ctx.assigned.insert(sym);
+            }
+            if (sym) ctx.declared.insert(sym);
+        }
+        return;
+    }
+    if (auto* sp = s->get_spawn()) {
+        InitCtx body_ctx = ctx;
+        init_stmt(body_ctx, sp->body);
+        return;
+    }
+    if (auto* wa = s->get_wait()) { init_expr(ctx, wa->condition); return; }
+}
+
+void SemanticAnalyzer::init_assign_target(InitCtx& ctx, Expr* e) {
+    if (!e) return;
+    if (e->sym && ctx.declared.count(e->sym)) {
+        ctx.assigned.insert(e->sym);
+    }
+}
+
+void SemanticAnalyzer::init_expr(InitCtx& ctx, Expr* e) {
+    if (!e) return;
+    if (auto* id = e->get_identifier()) {
+        (void)id;
+        if (e->sym && ctx.declared.count(e->sym) && !ctx.assigned.count(e->sym)) {
+            error(e->loc, "use of uninitialized variable '" +
+                  std::string(e->sym->get_decl() ? e->sym->get_decl()->name : "") + "'");
+        }
+        return;
+    }
+    if (auto* a = e->get_assign()) {
+        init_expr(ctx, a->value);
+        init_assign_target(ctx, a->target);
+        return;
+    }
+    if (auto* b = e->get_binary()) { init_expr(ctx, b->left); init_expr(ctx, b->right); return; }
+    if (auto* u = e->get_unary()) { init_expr(ctx, u->operand); return; }
+    if (auto* c = e->get_call()) {
+        init_expr(ctx, c->callee);
+        for (Expr* arg : c->args) init_expr(ctx, arg);
+        return;
+    }
+    if (auto* t = e->get_ternary()) {
+        init_expr(ctx, t->cond); init_expr(ctx, t->then_expr); init_expr(ctx, t->else_expr);
+        return;
+    }
+    if (auto* ix = e->get_index()) { init_expr(ctx, ix->target); init_expr(ctx, ix->index); return; }
+    if (auto* m = e->get_member()) { init_expr(ctx, m->target); return; }
+    if (auto* ca = e->get_cast()) { init_expr(ctx, ca->operand); return; }
+    if (auto* ar = e->get_array()) {
+        for (Expr* m : ar->members) init_expr(ctx, m);
+        init_expr(ctx, ar->fill_value);
+        return;
+    }
+    if (auto* cl = e->get_closure()) {
+        // 闭包体独立处理，捕获变量在此处按使用检查
+        InitCtx body_ctx;
+        for (VarList* vl : cl->params) {
+            if (!vl) continue;
+            for (VarItem* vi : vl->vars) {
+                Symbol* sym = var_symbols_.count(vi) ? var_symbols_[vi] : nullptr;
+                if (sym) { body_ctx.declared.insert(sym); body_ctx.assigned.insert(sym); }
+            }
+        }
+        init_stmt(body_ctx, cl->body);
+        return;
+    }
 }
 
 Scope* SemanticAnalyzer::clone_scope(Scope* src) {

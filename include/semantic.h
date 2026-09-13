@@ -6,6 +6,7 @@
 #include <string_view>
 #include <vector>
 #include <unordered_map>
+#include <unordered_set>
 
 #include "ast.h"
 #include "diagnostic.h"
@@ -26,10 +27,20 @@ enum class SymbolKind {
     EnumVar,
 };
 
+// 访问控制级别：priv 覆盖 readonly 覆盖 pub
+enum class Access {
+    Public,
+    Readonly,
+    Private,
+};
+
 struct Symbol {
     SymbolKind kind = SymbolKind::Variable;
     ASTNode* node = nullptr;
     Scope* scope = nullptr; // 类/命名空间的符号表指针，保证在collect时所有解析到的scope都会写入
+    // 声明所在作用域；当前作用域不在 root->...->current 路径上时访问控制生效
+    Scope* decl_scope = nullptr;
+    Access access = Access::Public;
 
     Symbol() = default;
     Symbol(SymbolKind k, ASTNode* n, Scope* s = nullptr)
@@ -149,6 +160,7 @@ struct SymbolTable {
     Scope* root() const { return root_.get(); }
 
     bool insert_local(std::string_view name, Symbol sym) {
+        sym.decl_scope = current_;
         return current_ ? current_->insert_local(name, std::move(sym)) : false;
     }
 
@@ -162,6 +174,7 @@ struct SymbolTable {
     }
 
     Symbol* insert_member(std::string name, Symbol sym) {
+        sym.decl_scope = current_;
         if (current_) return current_->insert_member(std::move(name), std::move(sym));
         return nullptr;
     }
@@ -345,6 +358,10 @@ private:
     Symbol* find_operator_overload(OpKind op, Expr& type, Expr& other);
     Symbol* find_operator_overload(OpKind op, Expr& type);
     bool can_convert_to(Expr* src, Expr* dst);
+    bool has_conversion(Expr* src, Expr* dst);
+    // = 赋值、() 传参、cast 转换三种情形共用的转换判定入口
+    bool check_conversion(Expr* src, Expr* dst, const std::string& context,
+                         const Location& loc, bool explicit_cast = false);
 
     // 类型判断
     bool is_numeric_type(Expr* t);
@@ -357,15 +374,43 @@ private:
 
     // 声明收集与注册
     void collect();
-    void collect_decl(Decl* decl);
-    void register_func(Func& f);
-    void register_special(SpecialMethod& sm);
+    void collect_decl(Decl* decl, Access default_access);
+    void register_func(Func& f, Access default_access);
+    void register_special(SpecialMethod& sm, Access default_access);
+
+    // 访问控制：priv 覆盖 readonly 覆盖 pub，未显式声明时按容器默认
+    static Access decl_access(const ModfList& modfs, Access fallback);
+    bool is_scope_on_path(Scope* s) const;
+    void check_access(Symbol* sym, const Location& loc);
+    void check_write_access(Symbol* sym, const Location& loc);
+
+    // flag/toflag 的 label 检查与变量初始化检查，按函数体（含闭包体）分别进行
+    struct BodyInfo {
+        Stmt* body = nullptr;
+        std::vector<VarList*> params;
+        std::vector<VarList*> returns;
+    };
+    std::vector<BodyInfo> bodies_;
+    void check_jumps();
+
+    std::unordered_map<VarItem*, Symbol*> var_symbols_;
+
+    struct InitCtx {
+        std::unordered_set<Symbol*> declared;
+        std::unordered_set<Symbol*> assigned;
+        std::vector<Symbol*> returns;
+    };
+    void check_initialization();
+    void init_stmt(InitCtx& ctx, Stmt* s);
+    void init_expr(InitCtx& ctx, Expr* e);
+    void init_assign_target(InitCtx& ctx, Expr* e);
 
     // 辅助：获取当前作用域的完整路径字符串（用 "::" 连接）
     std::string get_current_full_path() const;
 
     // 调用解析
     void resolve_call(Expr* call, Expr::Call& c);
+    void check_call_args(Func* fn, const std::vector<Expr*>& args);
 
     // 克隆辅助（深拷贝，新节点统一登记到 cu_）
     Expr* clone_type(Expr* t);
