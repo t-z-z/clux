@@ -1,10 +1,7 @@
 #pragma once
 
 #include <vector>
-#include <queue>
-#include <iostream>
 #include <utility>
-#include <tuple>
 
 #include "token.h"
 #include "ast.h"
@@ -110,7 +107,7 @@ private:
                 dq_.erase(dq_.begin(), dq_.begin() + walk_pos_);
             }
         }else {
-            int n = dq_.size();
+            size_t n = dq_.size();
             dq_.clear();
             while(walk_pos_ > n){
                 get_token();
@@ -205,10 +202,9 @@ private:
     bool is_infix_op(TokenKind kind);
     bool is_right_assoc(TokenKind kind);
     bool is_prefix_op(TokenKind kind);
-    bool is_postfix_op(TokenKind kind);
     bool is_statement_boundary();
     Expr* parse_prefix();
-    Expr* parse_postfix(Expr* left);
+    Expr* parse_postfix(Expr* left, bool is_type);
     Expr* parse_block_expr();
     Expr* parse_func_literal();
     Expr* parse_literal();
@@ -218,14 +214,14 @@ private:
 
     std::vector<VarList*> parse_value_params();    // (int a)
 
-    Type* parse_type();
+    Expr* parse_type();
     Expr* parse_array_length();
-    Type* parse_primitive_type();
-    Type* parse_func_type();     // $(int)int
-    Type* parse_generic_type();  // List-[T]
+    Expr* parse_primitive_type();
+    Expr* parse_func_type();     // $(int)int
+    Expr* parse_generic_type();  // List-[T]
 
     // 其他辅助函数
-    std::vector<Type*> parse_type_list_in_paren();
+    std::vector<Expr*> parse_type_list_in_paren();
     std::string_view parse_code();
     // 以下均可逆
     ModfList parse_modfs();

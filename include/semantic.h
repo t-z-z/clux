@@ -46,22 +46,20 @@ struct Symbol {
             default:                      kind = SymbolKind::Variable; break;
         }
     }
-    Type* get_type() {
+    Expr* get_type() {
         if (!node) return nullptr;
         if (auto* vi = dynamic_cast<VarItem*>(node)) {
             return vi->type;
         }
-        if (auto* t = dynamic_cast<Type*>(node)) {
-            return t;
+        if (auto* e = dynamic_cast<Expr*>(node)) {
+            if (e->is_type_node()) return e;
         }
         return nullptr;
     }
     Decl* get_decl() {
         if (!node) return nullptr;
-        if (Type* t = dynamic_cast<Type*>(node)) {
-            if (auto* c = t->get_custom()) {
-                return c->resolved_decl;
-            }
+        if (auto* e = dynamic_cast<Expr*>(node)) {
+            return e->resolved_decl;
         } else if (Decl* d = dynamic_cast<Decl*>(node)) {
             return d;
         }
@@ -204,7 +202,7 @@ struct SymbolTable {
 struct CallResolution {
     Expr* call = nullptr;
     Func* resolved_func = nullptr;
-    Type* type = nullptr;
+    Expr* type = nullptr;
     std::string message;
 };
 
@@ -222,19 +220,19 @@ class SemanticAnalyzer : public ASTVisitor {
     // 语义分析期生成的整数字面量文本存储（deque 保证元素地址稳定）
     std::deque<std::string> literal_pool_;
 
-    #define X(name,str) Type* type##name;
+    #define X(name,str) Expr* type##name;
     TYPE
     #undef X
-    Type* typeString; // StringLiteral
-    Type* typeInferred;
+    Expr* typeString; // StringLiteral
+    Expr* typeInferred;
     
 public:
     explicit SemanticAnalyzer(CompUnit& cu) : cu_(cu){
-        #define X(name,str) type##name = make_type(Location(), Type::Primitive{PrimitiveTypeKind::name});
+        #define X(name,str) type##name = make_type(Location(), Expr::Primitive{PrimitiveTypeKind::name});
         TYPE
         #undef X
-        typeString = make_type(Location(), Type::StringLiteral{});
-        typeInferred = make_type(Location(), Type::Inferred{});
+        typeString = make_type(Location(), Expr::StringLiteralType{});
+        typeInferred = make_type(Location(), Expr::Inferred{});
     }
     void merge_external_symbols(const SymbolTable& external){
         merge_scope(*symbols_.root(), *external.root());
@@ -268,7 +266,7 @@ public:
     const CallResolution* find_call(Expr* e) const;
 
     // 类型转字符串（用于生成 callkey）
-    std::string type_to_key(Type& t);
+    std::string type_to_key(Expr& t);
 
     // 作用域管理（配合 ASTVisitor）
     void scope_in(std::string) override;
@@ -308,7 +306,6 @@ public:
     void visit_stmt_if(Stmt::If&) override;
     void visit_stmt_while(Stmt::While&) override;
     void visit_stmt_for(Stmt::For&) override;
-    void visit_stmt_for_in(Stmt::ForIn&) override;
     void visit_stmt_return(Stmt::Return&) override;
     void visit_stmt_break(Stmt::Break&) override;
     void visit_stmt_continue(Stmt::Continue&) override;
@@ -320,17 +317,15 @@ public:
     void visit_stmt_spawn(Stmt::Spawn&) override;
     void visit_stmt_wait(Stmt::Wait&) override;
 
-    void visit(Type&) override;
-    void visit_type_primitive(Type::Primitive&) override;
-    void visit_type_pointer(Type::Pointer&) override;
-    void visit_type_array(Type::Array&) override;
-    void visit_type_func_ptr(Type::FuncPtr&) override;
-    void visit_type_func_ref(Type::FuncRef&) override;
-    void visit_type_custom(Type::Custom&) override;
-    void visit_type_reference(Type::Reference&) override;
-    void visit_type_inferred(Type::Inferred&) override;
-    void visit_type_void(Type::Void&) override;
-    void visit_type_string_literal(Type::StringLiteral&) override;
+    void visit_type_primitive(Expr::Primitive&) override;
+    void visit_type_pointer(Expr::Pointer&) override;
+    void visit_type_array(Expr::ArrayType&) override;
+    void visit_type_func_ptr(Expr::FuncPtr&) override;
+    void visit_type_func_ref(Expr::FuncRef&) override;
+    void visit_type_reference(Expr::Reference&) override;
+    void visit_type_inferred(Expr::Inferred&) override;
+    void visit_type_void(Expr::Void&) override;
+    void visit_type_string_literal(Expr::StringLiteralType&) override;
 
 private:
 
@@ -340,23 +335,25 @@ private:
     void warning(const Location& loc, const std::string& msg);
 
     // 类型工具
-    Type* make_type(const Location& loc, Type::Variant v);
+    Expr* make_type(const Location& loc, Expr::Variant v);
+    Expr* make_named_type(const Location& loc, std::string_view name,
+                          Decl* decl = nullptr, Scope* scope = nullptr);
     Expr* make_int_literal(const Location& loc, size_t value);
     std::string build_callkey(const std::string& name, const std::vector<VarList*>& params);
     std::string build_callkey(const std::string& name, const std::vector<Expr*>& args);
     
-    Symbol* find_operator_overload(OpKind op, Type& type, Type& other);
-    Symbol* find_operator_overload(OpKind op, Type& type);
-    bool can_convert_to(Type* src, Type* dst);
+    Symbol* find_operator_overload(OpKind op, Expr& type, Expr& other);
+    Symbol* find_operator_overload(OpKind op, Expr& type);
+    bool can_convert_to(Expr* src, Expr* dst);
 
     // 类型判断
-    bool is_numeric_type(Type* t);
-    bool is_integer_type(Type* t);
-    bool is_float_type(Type* t);
-    bool is_bool_type(Type* t);
-    bool is_same_type(Type* a, Type* b);
-    bool is_integer_promotable(Type* t);
-    bool is_void_type(Type* t);
+    bool is_numeric_type(Expr* t);
+    bool is_integer_type(Expr* t);
+    bool is_float_type(Expr* t);
+    bool is_bool_type(Expr* t);
+    bool is_same_type(Expr* a, Expr* b);
+    bool is_integer_promotable(Expr* t);
+    bool is_void_type(Expr* t);
 
     // 声明收集与注册
     void collect();
@@ -370,26 +367,14 @@ private:
     // 调用解析
     void resolve_call(Expr* call, Expr::Call& c);
 
-    // 类实例化：从类提取新符号表，在其中查找成员
-    Class* instantiate_class(Class* cls, const std::vector<ASTNode*>& tpl_args);
-
     // 克隆辅助（深拷贝，新节点统一登记到 cu_）
-    Type* clone_type(Type* t);
+    Expr* clone_type(Expr* t);
     Expr* clone_expr(Expr* e);
     Stmt* clone_stmt(Stmt* s);
     VarItem* clone_varitem(VarItem* vi);
     VarList* clone_varlist(VarList* vl);
     Func* clone_func(Func* f);
     Scope* clone_scope(Scope* src);
-
-    // 替换辅助：实参 ASTNode 目前统一是 Expr*（expr 语法覆盖 type 语法）
-    // arg_to_type：把实参 Expr 转成用于类型位置的 Type（新建节点）
-    Type* arg_to_type(Expr* e);
-    // subst_*：在原位遍历并替换（配合克隆出的专属子树使用）
-    void subst_type(Type*& t, const std::unordered_map<std::string, ASTNode*>& m);
-    void subst_expr(Expr*& e, const std::unordered_map<std::string, ASTNode*>& m);
-    void subst_stmt(Stmt* s, const std::unordered_map<std::string, ASTNode*>& m);
-    void subst_varlist(VarList* vl, const std::unordered_map<std::string, ASTNode*>& m);
 };
 
 } // namespace cx

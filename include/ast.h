@@ -3,7 +3,6 @@
 #include <vector>
 #include <string>
 #include <variant>
-#include <optional>
 #include <cstdint>
 #include <memory>
 #include <type_traits>
@@ -18,7 +17,6 @@ struct CompUnit;
 struct Import;
 struct ModfList;
 struct Modification;
-struct Type;
 struct Expr;
 struct Stmt;
 struct Decl;
@@ -220,64 +218,6 @@ inline PrimitiveTypeKind token_to_primitive_type(TokenKind kind) {
     );
 }
 
-struct Type : ASTNode {
-    // 变体列表
-    struct Primitive {
-        PrimitiveTypeKind kind;
-    };
-    struct Pointer {
-        Type *pointee;
-    };
-    struct Array { 
-        Type *element;
-        Expr* length;
-    };
-    struct StringLiteral {};
-    struct FuncPtr {
-        std::vector<Type*> params;
-        Type *return_type;
-    };
-    struct FuncRef {
-        Func* func;
-    };
-    struct Custom {
-        std::string_view name;
-        std::vector<ASTNode*> args;        // 语义分析后填充
-        Decl* resolved_decl = nullptr;  // 实际申明的位置
-        Scope* resolved_scope = nullptr; // 实例化后的符号表
-    };
-    struct Reference {
-        Type* target;
-    };
-    struct Inferred {};     // let 推导占位
-    struct Void {};
-    using Variant = std::variant<
-        Primitive,
-        Pointer,
-        Array,
-        StringLiteral,
-        FuncPtr,
-        FuncRef,
-        Custom,
-        Reference,
-        Inferred,
-        Void
-    >;
-    Variant data;
-    Type() = default;
-    explicit Type(const Location &loc, Variant d) : ASTNode(loc), data(std::move(d)) {}
-    BBB(primitive, Primitive, Type)
-    BBB(pointer, Pointer, Type)
-    BBB(array, Array, Type)
-    BBB(string_literal, StringLiteral, Type)
-    BBB(func_ptr, FuncPtr, Type)
-    BBB(func_ref, FuncRef, Type)
-    BBB(custom, Custom, Type)
-    BBB(reference, Reference, Type)
-    BBB(inferred, Inferred, Type)
-    BBB(void, Void, Type)
-};
-
 enum class LiteralKind {
 #define X(L,K) K,
 LITERAL_MAPPING
@@ -332,23 +272,39 @@ struct Expr : ASTNode {
     struct Ternary      { Expr* cond; Expr* then_expr; Expr* else_expr; };
     struct Index        { Expr* target; Expr* index; };
     struct Member       { Expr* target; std::string_view member; };
-    struct Cast         { Type* target_type; Expr* operand; };
+    struct Cast         { Expr* target_type; Expr* operand; };
     struct Array        { std::vector<Expr*> members; Expr* fill_value = nullptr; };
     struct Closure      { std::vector<VarList*> params; std::vector<VarList*> returns;
                         Stmt* body = nullptr; std::vector<Token> capture;};
-    struct PrimitiveType{ Type* type; };
+
+    struct Primitive        { PrimitiveTypeKind kind; };
+    struct Pointer          { Expr* pointee; };
+    struct ArrayType        { Expr* element; Expr* length; };
+    struct StringLiteralType {};
+    struct FuncPtr          { std::vector<Expr*> params; Expr* return_type; };
+    struct FuncRef          { Func* func; };
+    struct Reference        { Expr* target; };
+    struct Inferred         {};
+    struct Void             {};
     
     using Variant = std::variant<
         Literal, Identifier, Binary, Unary, Assign,
         Call, Ternary, Index, Member,
-        Cast, Array, Closure, PrimitiveType
+        Cast, Array, Closure,
+        Primitive, Pointer, ArrayType, StringLiteralType,
+        FuncPtr, FuncRef, Reference, Inferred, Void
     >;
     
     Variant data;
-    Type* type = nullptr;
+    Expr* type = nullptr;
     Symbol* sym = nullptr;   // 解析后的符号指针
     // 在semantic解析中保证type和sym总有一个是有指向的
     bool is_lvalue = false; // 是否可取地址
+    // 该节点处于类型位置（类型即表达式，仅靠结构无法与同名值节点区分）
+    bool is_type = false;
+    // is_type 时：解析到的类/枚举/命名空间声明及其成员作用域
+    Decl* resolved_decl = nullptr;
+    Scope* resolved_scope = nullptr;
     
     Expr() = default;
     Expr(const Location& l, Variant v) : ASTNode(l), data(std::move(v))  {}
@@ -364,20 +320,21 @@ struct Expr : ASTNode {
     BBB(cast, Cast, Expr)
     BBB(array, Array, Expr)
     BBB(closure, Closure, Expr)
-    BBB(primitive_type, PrimitiveType, Expr)
-    std::optional<Type> into_type() {
-        if (Identifier* i = get_identifier()) {
-            return Type(loc,Type::Custom{i->name, std::vector<ASTNode*>(), nullptr});
-        } else if (Call* c = get_call()) {
-            if (Identifier* i = c->callee->get_identifier()) {
-                return Type(loc,Type::Custom{i->name, std::vector<ASTNode*>(), nullptr});
-            }
-        } else if (PrimitiveType* p = get_primitive_type()) {
-            if (p->type){
-                return Type(p->type->loc,p->type->data);
-            }
-        }
-        return std::nullopt;
+    BBB(primitive, Primitive, Expr)
+    BBB(pointer, Pointer, Expr)
+    BBB(array_type, ArrayType, Expr)
+    BBB(string_literal_type, StringLiteralType, Expr)
+    BBB(func_ptr, FuncPtr, Expr)
+    BBB(func_ref, FuncRef, Expr)
+    BBB(reference, Reference, Expr)
+    BBB(inferred, Inferred, Expr)
+    BBB(void, Void, Expr)
+
+    // 该表达式节点是否承载类型（类型即表达式）
+    bool is_type_node() const {
+        return is_type || is_primitive() || is_pointer() || is_array_type() ||
+               is_string_literal_type() || is_func_ptr() || is_func_ref() ||
+               is_reference() || is_inferred() || is_void();
     }
 };
 
@@ -386,7 +343,6 @@ struct Stmt : ASTNode {
     struct ExprStmt { Expr* expr; }; // 表达式能作为语句，语句不能作为表达式，除非是闭包
     struct If       { Expr* condition; Stmt* then_branch; Stmt* else_branch; };
     struct While    { Expr* condition; Stmt* body; };
-    struct ForIn    { Token var_name; Expr* collection; Stmt* body; };
     struct For      { Stmt* init; Expr* condition; Stmt* next; Stmt* body; };
     struct Return   { };
     struct Break    { };
@@ -399,7 +355,7 @@ struct Stmt : ASTNode {
     struct Spawn    { Stmt* body; };
     struct Wait     { Expr* condition; };
     using Variant = std::variant<
-        Block, ExprStmt, If, While, For, ForIn,
+        Block, ExprStmt, If, While, For,
         Return, Break, Continue, Flag, Goto,
         Asm, Keep, VarDecl, Spawn, Wait
     >;
@@ -411,7 +367,6 @@ struct Stmt : ASTNode {
     BBB(if, If, Stmt)
     BBB(while, While, Stmt)
     BBB(for, For, Stmt)
-    BBB(for_in, ForIn, Stmt)
     BBB(return, Return, Stmt)
     BBB(break, Break, Stmt)
     BBB(continue, Continue, Stmt)
@@ -464,19 +419,19 @@ struct Cont : Decl { // container 容器，用于包含申明
 struct VarItem : ASTNode {
     std::string_view name;
     Expr *init;
-    Type* type = nullptr;
+    Expr* type = nullptr;
     VarItem() = default;
     VarItem(const Location& loc, std::string_view n, Expr* i):
         ASTNode(loc), name(n), init(i) {}
-    VarItem(const Location& loc, std::string_view n, Expr* i, Type* t):
+    VarItem(const Location& loc, std::string_view n, Expr* i, Expr* t):
         ASTNode(loc), name(n), init(i), type(t) {}
 };
 // VarList 是同一种类型的多个变量申明
 struct VarList : Decl {
-    Type* type = nullptr;
+    Expr* type = nullptr;
     std::vector<VarItem*> vars;
     VarList(const Location& loc,ModfList ml,
-            Type* t, std::vector<VarItem*> v
+            Expr* t, std::vector<VarItem*> v
         ):
         Decl(loc, "", DeclKind::VarList, std::move(ml)),
         type(t), vars(std::move(v)) {}
@@ -585,7 +540,7 @@ struct Keep : Decl {
 struct EnumVariant : ASTNode {
     std::string_view name;
     int64_t value = 0;      // 语义阶段写入：编译期整数值
-    Type* type = nullptr;   // 语义阶段写入：所属枚举类型
+    Expr* type = nullptr;   // 语义阶段写入：所属枚举类型
     EnumVariant() = default;
     EnumVariant(const Location& loc, std::string_view n)
         : ASTNode(loc), name(n) {}
@@ -608,7 +563,6 @@ struct ASTVisitor {
     Expr* current_expr;
     Func* current_func;
     Class* current_class;
-    Type* current_type;
     Stmt* current_stmt;
     // 当前嵌套循环深度，供需要循环上下文的派生 pass 使用
     int loop_depth_ = 0;
@@ -635,10 +589,6 @@ struct ASTVisitor {
     void walk(Stmt& stmt) {
         walk_children(stmt);
         visit(stmt);
-    }
-    void walk(Type& type) {
-        walk_children(type);
-        visit(type);
     }
     void walk(Modification& mod) {
         walk_children(mod);
@@ -693,7 +643,6 @@ struct ASTVisitor {
     virtual void visit_stmt_if(Stmt::If&) {}
     virtual void visit_stmt_while(Stmt::While&) {}
     virtual void visit_stmt_for(Stmt::For&) {}
-    virtual void visit_stmt_for_in(Stmt::ForIn&) {}
     virtual void visit_stmt_return(Stmt::Return&) {}
     virtual void visit_stmt_break(Stmt::Break&) {}
     virtual void visit_stmt_continue(Stmt::Continue&) {}
@@ -705,18 +654,15 @@ struct ASTVisitor {
     virtual void visit_stmt_spawn(Stmt::Spawn&) {}
     virtual void visit_stmt_wait(Stmt::Wait&) {}
 
-    virtual void visit(Type&) {}
-
-    virtual void visit_type_primitive(Type::Primitive&) {}
-    virtual void visit_type_pointer(Type::Pointer&) {}
-    virtual void visit_type_array(Type::Array&) {}
-    virtual void visit_type_string_literal(Type::StringLiteral&) {}
-    virtual void visit_type_func_ptr(Type::FuncPtr&) {}
-    virtual void visit_type_func_ref(Type::FuncRef&) {}
-    virtual void visit_type_custom(Type::Custom&) {}
-    virtual void visit_type_reference(Type::Reference&) {}
-    virtual void visit_type_inferred(Type::Inferred&) {}
-    virtual void visit_type_void(Type::Void&) {}
+    virtual void visit_type_primitive(Expr::Primitive&) {}
+    virtual void visit_type_pointer(Expr::Pointer&) {}
+    virtual void visit_type_array(Expr::ArrayType&) {}
+    virtual void visit_type_string_literal(Expr::StringLiteralType&) {}
+    virtual void visit_type_func_ptr(Expr::FuncPtr&) {}
+    virtual void visit_type_func_ref(Expr::FuncRef&) {}
+    virtual void visit_type_reference(Expr::Reference&) {}
+    virtual void visit_type_inferred(Expr::Inferred&) {}
+    virtual void visit_type_void(Expr::Void&) {}
 
     // 递归遍历子节点（基类驱动，结构变更只改这里）
     void walk_children(Decl& decl) {
@@ -859,7 +805,25 @@ struct ASTVisitor {
                 if (v.body) walk(*v.body);
                 visit_expr_closure(v);
                 scope_out();
-            }
+            } else if constexpr (std::is_same_v<T, Expr::Pointer>) {
+                if (v.pointee) walk(*v.pointee);
+                visit_type_pointer(v);
+            } else if constexpr (std::is_same_v<T, Expr::ArrayType>) {
+                if (v.element) walk(*v.element);
+                if (v.length) walk(*v.length);
+                visit_type_array(v);
+            } else if constexpr (std::is_same_v<T, Expr::FuncPtr>) {
+                for (auto* p : v.params) if (p) walk(*p);
+                if (v.return_type) walk(*v.return_type);
+                visit_type_func_ptr(v);
+            } else if constexpr (std::is_same_v<T, Expr::Reference>) {
+                if (v.target) walk(*v.target);
+                visit_type_reference(v);
+            } else if constexpr (std::is_same_v<T, Expr::Primitive>) visit_type_primitive(v);
+            else if constexpr (std::is_same_v<T, Expr::Inferred>) visit_type_inferred(v);
+            else if constexpr (std::is_same_v<T, Expr::Void>) visit_type_void(v);
+            else if constexpr (std::is_same_v<T, Expr::StringLiteralType>) visit_type_string_literal(v);
+            else if constexpr (std::is_same_v<T, Expr::FuncRef>) visit_type_func_ref(v);
             else if constexpr (std::is_same_v<T, Expr::Literal>) visit_expr_literal(v);
             else if constexpr (std::is_same_v<T, Expr::Identifier>) visit_expr_identifier(v);
         }, expr.data);
@@ -900,12 +864,6 @@ struct ASTVisitor {
                 visit_stmt_for(v);
                 --loop_depth_;
                 scope_out();
-            } else if constexpr (std::is_same_v<T, Stmt::ForIn>) {
-                ++loop_depth_;
-                if (v.collection) walk(*v.collection);
-                if (v.body) walk(*v.body);
-                visit_stmt_for_in(v);
-                --loop_depth_;
             } else if constexpr (std::is_same_v<T, Stmt::VarDecl>) {
                 if (v.vars) walk(*v.vars);
                 visit_stmt_var_decl(v);
@@ -925,36 +883,6 @@ struct ASTVisitor {
             else if constexpr (std::is_same_v<T, Stmt::Keep>) visit_stmt_keep(v);
         }, stmt.data);
         current_stmt = pre;
-    }
-
-    void walk_children(Type& type) {
-        Type* pre = current_type;
-        current_type = &type;
-        std::visit([this](auto& v) {
-            using T = std::decay_t<decltype(v)>;
-            if constexpr (std::is_same_v<T, Type::Pointer>) {
-                if (v.pointee) walk(*v.pointee);
-                visit_type_pointer(v);
-            } else if constexpr (std::is_same_v<T, Type::Array>) {
-                if (v.element) walk(*v.element);
-                if (v.length) walk(*v.length);
-                visit_type_array(v);
-            } else if constexpr (std::is_same_v<T, Type::FuncPtr>) {
-                for (auto* p : v.params) if (p) walk(*p);
-                if (v.return_type) walk(*v.return_type);
-                visit_type_func_ptr(v);
-            } else if constexpr (std::is_same_v<T, Type::Custom>) {
-                visit_type_custom(v);
-            } else if constexpr (std::is_same_v<T, Type::Reference>) {
-                if (v.target) walk(*v.target);
-                visit_type_reference(v);
-            } else if constexpr (std::is_same_v<T, Type::Primitive>) visit_type_primitive(v);
-            else if constexpr (std::is_same_v<T, Type::Inferred>) visit_type_inferred(v);
-            else if constexpr (std::is_same_v<T, Type::Void>) visit_type_void(v);
-            else if constexpr (std::is_same_v<T, Type::StringLiteral>) visit_type_string_literal(v);
-            else if constexpr (std::is_same_v<T, Type::FuncRef>) visit_type_func_ref(v);
-        }, type.data);
-        current_type = pre;
     }
 
     void walk_children(Modification&) {}

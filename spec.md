@@ -89,11 +89,11 @@ a-*         // 解引用
 a-&         // 取地址
 ```
 
-指针可以与数字类型隐式相互转化，会被编译器警告。`null` 为空指针，实际值为 0，不可直接当做数字。类指针的成员访问不会自动解引用。
+`null` 为空指针，实际值为 0，不可直接当做数字。类指针的成员访问不会自动解引用。
 
 ```cx
 int b = a-*
-int-* c = a+4        // 下一个 int 的位置
+int-* c = int-*(long(a)+4)
 int-* d = null
 ```
 
@@ -377,13 +377,11 @@ pointer p = pointer()
 }
 ```
 
-## 九、修饰与泛型
+## 九、修饰
 
-### 修饰与泛型的方向性
+### 修饰的方向性
 
 修饰在**声明点结算**：`#M @D` 中 `M` 必须完整可解析。因此修饰**不能依赖被修饰者的信息**。
-
-容器泛型在**路径点结算**：`Name-<T>` 中 `T` 在实例化时给定。因此泛型**可以依赖使用者的信息**。
 
 两者方向相反，不可互相替代。
 
@@ -403,17 +401,17 @@ pointer p = pointer()
 
 访问控制：`pub` 公开，`priv` 私有（默认私有）。
 
-修改性控制：`mut` 会修改对象，不写则不会修改对象。
-
 ```cx
 @Base {
-    trait process() (string data)
-    mut before setup() { print("Base setup") }
+    trait process(string data) {}
+    Base_setup() { print("Base setup") }
+    setup() { Base_setup() }
 }
 
 #Base @Child {
     process(string data) { print("Implemented") }
-    over can_override() { print("Child") }
+    Child_setup { Base_setup() print("Child setup") }
+    setup() { Child_setup() }
 }
 ```
 

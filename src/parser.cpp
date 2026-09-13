@@ -234,9 +234,9 @@ Func* Parser::parse_func_decl(ModfList &ml, Location &loc) {
 
 // 变量的识别：类型或推导符加标识符
 VarList* Parser::parse_var_decl(ModfList &ml, Location &loc) {
-    Type* type;
+    Expr* type;
     if (curr().kind == TokenKind::Let) {
-        type = cu_.add_node<Type>(get_loc(), Type::Inferred{});
+        type = cu_.add_node<Expr>(get_loc(), Expr::Inferred{});
         advance();
     } else {
         type = parse_type();
@@ -749,30 +749,6 @@ Stmt* Parser::parse_for_stmt() {
     if (curr().kind != TokenKind::For) return nullptr;
     Location loc = get_loc();
     advance();
-    // 检查是否为 for-in: var in collection
-    if (curr().is_ident() && peek(1).kind == TokenKind::In) {
-        Token var_tok = curr();
-        advance(); // 消费变量名
-        advance(); // 消费 'in'
-        
-        Expr* collection = parse_expr();
-        if (!collection) {
-            add_error("expected collection expression after 'in'");
-            collection = cu_.add_node<Expr>(
-                loc, Expr::Identifier{}
-            );
-        }
-        Stmt* body = parse_stmt();
-        if (!body) {
-            add_error("expected body statement for for-in loop");
-            body = cu_.add_node<Stmt>(
-                loc, Stmt::Block{}
-            );
-        }
-        return cu_.add_node<Stmt>(
-            loc, Stmt::ForIn{var_tok, collection, body}
-        );
-    }
     // 常规 for 循环: for (init; cond; next) 或 for init; cond; next
     if (curr().kind == TokenKind::ParenL) {
         advance();
@@ -1016,19 +992,6 @@ bool Parser::is_prefix_op(TokenKind kind) {
     }
 }
 
-bool Parser::is_postfix_op(TokenKind kind) {
-    switch (kind) {
-        case TokenKind::ParenL:     // ()
-        case TokenKind::BracketL:   // []
-        case TokenKind::Dot:        // .
-        case TokenKind::ColonColon: // ::
-        case TokenKind::Minus:      // -* -&
-            return true;
-        default:
-            return false;
-    }
-}
-
 bool Parser::is_statement_boundary() {
     if (is_eof()) return true;
     if (curr().kind == TokenKind::Semicolon) return true;
@@ -1066,11 +1029,9 @@ Expr* Parser::parse_expr(int min_prec) {
         return nullptr;
     }
     
-    // 处理后缀操作符
-    while (is_postfix_op(curr().kind)) {
-        left = parse_postfix(left);
-        if (!left) return nullptr;
-    }
+    // 处理后缀链（类型后缀按类型解释）
+    left = parse_postfix(left, left->is_type);
+    if (!left) return nullptr;
     
     // 处理中缀操作符
     for(;;) {
@@ -1097,10 +1058,6 @@ Expr* Parser::parse_expr(int min_prec) {
             if (!else_expr) {
                 add_error("expected expression after ':'");
             }
-            while (is_postfix_op(curr().kind)) {
-                else_expr = parse_postfix(else_expr);
-                if (!else_expr) return nullptr;
-            }
             left = cu_.add_node<Expr>(op.loc, Expr::Ternary{left, then_expr, else_expr});
             continue;
         }
@@ -1116,12 +1073,6 @@ Expr* Parser::parse_expr(int min_prec) {
                 continue;
             }
             return left;
-        }
-        
-        // 处理后缀在右操作数上
-        while (is_postfix_op(curr().kind)) {
-            right = parse_postfix(right);
-            if (!right) return nullptr;
         }
         
         // 构建中缀节点
@@ -1143,9 +1094,9 @@ Expr* Parser::parse_prefix() {
     // 内置类型转换函数：typename(值) 或 识别原始类型为泛型参数表达式
     if (curr().is_type()) {
         Location c_loc = get_loc();
-        Type* target = parse_primitive_type();
+        Expr* target = parse_type();
         if (curr().kind != TokenKind::ParenL) {
-            return cu_.add_node<Expr>(c_loc, Expr::PrimitiveType{target});
+            return target;
         }
         advance();
         Expr* operand = parse_expr();
@@ -1245,93 +1196,127 @@ Expr* Parser::parse_prefix() {
     return nullptr;
 }
 
-// 后缀解析
-Expr* Parser::parse_postfix(Expr* left) {
-    Location loc = get_loc();
-    
-    switch (curr().kind) {
-        // 函数调用：foo(bar)--{}
-        case TokenKind::ParenL:
-        case TokenKind::DoubleHyphen: {
-            std::vector<Expr*> args = parse_list<Expr*>(
-                TokenKind::ParenL,
-                TokenKind::ParenR,
-                TokenKind::Comma,
-                [this] { return parse_expr(1); },
-                "argument"
-            ).value_or({});
-            while(curr().kind == TokenKind::DoubleHyphen) {
-                if (curr().kind == TokenKind::BraceL) {
-                    Expr* e = parse_block_expr();
-                    if (!e) {
-                        add_error("expected block statement after '--'");
+// 统一后缀链：is_type 决定 [] 与 -*/-& 的解释，并决定可逆 walk 还是 advance
+Expr* Parser::parse_postfix(Expr* left, bool is_type) {
+    auto step = [&]() { if (is_type) walk(); else advance(); };
+    for (;;) {
+        Location loc = get_loc();
+        switch (curr().kind) {
+            // 函数调用：foo(bar)--{}
+            case TokenKind::ParenL:
+            case TokenKind::DoubleHyphen: {
+                if (is_type) return left;
+                std::vector<Expr*> args = parse_list<Expr*>(
+                    TokenKind::ParenL,
+                    TokenKind::ParenR,
+                    TokenKind::Comma,
+                    [this] { return parse_expr(1); },
+                    "argument"
+                ).value_or({});
+                while(curr().kind == TokenKind::DoubleHyphen) {
+                    if (curr().kind == TokenKind::BraceL) {
+                        Expr* e = parse_block_expr();
+                        if (!e) {
+                            add_error("expected block statement after '--'");
+                        }
+                        args.push_back(e);
+                    } else break;
+                }
+                left = cu_.add_node<Expr>(
+                    loc,
+                    Expr::Call{left, std::move(args)}
+                );
+                continue;
+            }
+            // 索引 vs 数组类型: []
+            case TokenKind::BracketL: {
+                step();
+                if (is_type) {
+                    Expr* length = nullptr;
+                    if (curr().kind != TokenKind::BracketR) {
+                        length = parse_array_length();
+                        if (!length) {
+                            add_error("expected array length expression");
+                            return nullptr;
+                        }
+                        if (curr().kind != TokenKind::BracketR) {
+                            add_error("expected ']' after array length");
+                            return nullptr;
+                        }
                     }
-                    args.push_back(e);
-                } else break;
+                    step();
+                    Expr* node = cu_.add_node<Expr>(loc, Expr::ArrayType{left, length});
+                    node->is_type = true;
+                    left = node;
+                } else {
+                    Expr* index = parse_expr();
+                    if (!index) {
+                        add_error("expected index expression");
+                    }
+                    if (curr().kind != TokenKind::BracketR) {
+                        add_error("expected ']'");
+                    } else {
+                        advance();
+                    }
+                    left = cu_.add_node<Expr>(
+                        loc,
+                        Expr::Index{left, index}
+                    );
+                }
+                continue;
             }
-            return cu_.add_node<Expr>(
-                loc,
-                Expr::Call{left, std::move(args)}
-            );
-        }
-        // 索引: []
-        case TokenKind::BracketL: {
-            advance();
-            Expr* index = parse_expr();
-            if (!index) {
-                add_error("expected index expression");
+            // 成员/作用域: . ::
+            case TokenKind::Dot:
+            case TokenKind::ColonColon: {
+                step();
+                if (!curr().is_ident()) {
+                    add_error("expected member name after '.' or '::'");
+                    return left;
+                }
+                std::string_view member = curr().get_val();
+                step();
+                Expr* node = cu_.add_node<Expr>(
+                    loc,
+                    Expr::Member{left, member}
+                );
+                node->is_type = left->is_type;
+                left = node;
+                continue;
             }
-            if (curr().kind != TokenKind::BracketR) {
-                add_error("expected ']'");
-            } else {
-                advance();
-            }
-            return cu_.add_node<Expr>(
-                loc,
-                Expr::Index{left, index}
-            );
-        }
-        // 成员访问: .
-        case TokenKind::Dot: {
-            advance();
-            if (!curr().is_ident()) {
-                add_error("expected member name after '.'");
-                return left;
-            }
-            std::string_view member = curr().get_val();
-            advance();
-            return cu_.add_node<Expr>(
-                loc,
-                Expr::Member{left, member}
-            );
-        }
-        // 作用域: ::
-        case TokenKind::ColonColon: {
-            advance();
-            if (!curr().is_ident()) {
-                add_error("expected member name after '::'");
-                return left;
-            }
-            std::string_view member = curr().get_val();
-            advance();
-            return cu_.add_node<Expr>(
-                loc,
-                Expr::Member{left, member}
-            );
-        }
-        // -&取地址/-*解引用
-        case TokenKind::Minus: {
-            if (peek().kind == TokenKind::Mul || peek().kind == TokenKind::BitAnd) {
-                advance();
-                while(peek().kind == TokenKind::Mul || peek().kind == TokenKind::BitAnd) {
-                    left = make_unary(curr(), left, true);
-                    advance();
+            // -* 解引用/指针，-& 取地址/引用
+            case TokenKind::Minus: {
+                if (peek().kind == TokenKind::Mul || peek().kind == TokenKind::BitAnd) {
+                    step();
+                    if (is_type) {
+                        Location uloc = get_loc();
+                        if (curr().kind == TokenKind::Mul) {
+                            step();
+                            Expr* node = cu_.add_node<Expr>(uloc, Expr::Pointer{left});
+                            node->is_type = true;
+                            left = node;
+                        } else {
+                            step();
+                            Expr* node = cu_.add_node<Expr>(uloc, Expr::Reference{left});
+                            node->is_type = true;
+                            left = node;
+                        }
+                    } else {
+                        while(peek().kind == TokenKind::Mul || peek().kind == TokenKind::BitAnd) {
+                            left = make_unary(curr(), left, true);
+                            advance();
+                        }
+                    }
+                    continue;
+                }
+                if (is_type && peek().kind == TokenKind::BracketL) {
+                    step();
+                    continue;
                 }
                 return left;
             }
+            default:
+                return left;
         }
-        default:
-            return left;
     }
 }
 
@@ -1440,8 +1425,8 @@ Expr* Parser::make_binary(Expr* left, Token op, Expr* right) {
     );
 }
 
-std::vector<Type*> Parser::parse_type_list_in_paren() {
-    return parse_list<Type*>(
+std::vector<Expr*> Parser::parse_type_list_in_paren() {
+    return parse_list<Expr*>(
         TokenKind::ParenL,
         TokenKind::ParenR,
         TokenKind::Comma,
@@ -1498,37 +1483,13 @@ Expr* Parser::parse_array_length() {
     return nullptr;
 }
 
-Type* Parser::parse_type() {
-    Type* t = nullptr;
+Expr* Parser::parse_type() {
+    Expr* t = nullptr;
 
     if (curr().is_type()) {
         t = parse_primitive_type();
     } else if (curr().kind == TokenKind::Dollar) {
         t = parse_func_type();
-    } else if (curr().kind == TokenKind::BracketL) {
-        // 前缀定长数组 [N]T：先读长度，再读元素类型
-        // 只用 walk() 保持可逆：parse_stmt 会探测性尝试 parse_var_decl，失败后 restore()
-        Location aloc = get_loc();
-        walk();
-        Expr* length = nullptr;
-        if (curr().kind != TokenKind::BracketR) {
-            length = parse_array_length();
-            if (!length) {
-                add_error("expected array length expression");
-                return nullptr;
-            }
-        }
-        if (curr().kind != TokenKind::BracketR) {
-            add_error("expected ']' after array length");
-            return nullptr;
-        }
-        walk();
-        Type* elem = parse_type();
-        if (!elem) {
-            add_error("expected element type after ']'");
-            return nullptr;
-        }
-        t = cu_.add_node<Type>(aloc, Type::Array{elem, length});
     } else if (curr().is_ident()) {
         t = parse_generic_type();
     }
@@ -1537,74 +1498,46 @@ Type* Parser::parse_type() {
         return nullptr;
     }
 
-    // 后缀类型修饰：T-* 指针、T-& 引用、T[] 长度推导数组、T[N] 定长数组
-    for (;;) {
-        if (curr().kind == TokenKind::Minus) {
-            walk();
-        }
-        if(curr().kind == TokenKind::Mul) {
-            Location ploc = get_loc();
-            walk();
-            t = cu_.add_node<Type>(ploc, Type::Pointer{t});
-        } else if (curr().kind == TokenKind::BitAnd) {
-            Location loc = get_loc();
-            walk();
-            t = cu_.add_node<Type>(loc, Type::Reference{t});
-        } else if (curr().kind == TokenKind::BracketL) {
-            Location loc = get_loc();
-            walk();
-            Expr* length = nullptr;
-            if (curr().kind != TokenKind::BracketR) {
-                length = parse_array_length();
-                if (!length) {
-                    add_error("expected array length expression");
-                    return nullptr;
-                }
-                if (curr().kind != TokenKind::BracketR) {
-                    add_error("expected ']' after array length");
-                    return nullptr;
-                }
-            }
-            walk();
-            t = cu_.add_node<Type>(loc, Type::Array{t, length});
-        } else {
-            break;
-        }
-    }
-
-    return t;
+    // 后缀链与表达式共用；类型位置按类型解释
+    return parse_postfix(t, true);
 }
 
-Type* Parser::parse_primitive_type() {
+Expr* Parser::parse_primitive_type() {
     if (!curr().is_type()) return nullptr;
     Location loc = get_loc();
     PrimitiveTypeKind kind = token_to_primitive_type(curr().kind);
     walk();
-    return cu_.add_node<Type>(loc, Type::Primitive{kind});
+    Expr* t = cu_.add_node<Expr>(loc, Expr::Primitive{kind});
+    t->is_type = true;
+    return t;
 }
 
-Type* Parser::parse_func_type() {
+Expr* Parser::parse_func_type() {
     if (curr().kind != TokenKind::Dollar) return nullptr;
     Location loc = get_loc();
     walk();
 
-    std::vector<Type*> param_types = parse_type_list_in_paren();
+    std::vector<Expr*> param_types = parse_type_list_in_paren();
 
-    Type* return_type = parse_type();
+    Expr* return_type = parse_type();
     if (!return_type) {
         add_error("expected return type after $()");
     }
 
-    return cu_.add_node<Type>(loc, Type::FuncPtr{param_types, return_type});
+    Expr* t = cu_.add_node<Expr>(loc, Expr::FuncPtr{param_types, return_type});
+    t->is_type = true;
+    return t;
 }
 
-Type* Parser::parse_generic_type() {
+Expr* Parser::parse_generic_type() {
     if (!curr().is_ident()) return nullptr;
     Location loc = get_loc();
     std::string_view name = curr().get_val();
     walk();
 
-    return cu_.add_node<Type>(loc, Type::Custom{name, {}});
+    Expr* t = cu_.add_node<Expr>(loc, Expr::Identifier{name});
+    t->is_type = true;
+    return t;
 }
 
 template<typename T, typename F>

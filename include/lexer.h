@@ -67,7 +67,7 @@ class Lexer {
         for (int i=0; i<step && pos_<source_.size();++i) advance();
     }
     inline bool check(const std::string &val){
-        for(int i=0;i<val.size();++i) if(peek_char(i)!=val[i]) return false;
+        for(size_t i=0;i<val.size();++i) if(peek_char(i)!=val[i]) return false;
         return true;
     }
     void skip_space();
