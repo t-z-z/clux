@@ -189,7 +189,6 @@ private:
     Stmt* parse_goto_stmt();
     Stmt* parse_asm_stmt();
     Stmt* parse_keep_stmt();
-    Stmt* parse_spawn_stmt();
     Stmt* parse_wait_stmt();
 
     // 语句分析辅助函数

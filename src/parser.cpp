@@ -98,25 +98,52 @@ CompUnit* Parser::parse() {
     return &cu_;
 }
 
-// namespace <name>: —— 文件顶层 using 指令（hoisted），须在 parse_decl 之前尝试，
+// using namespace <path> —— 文件顶层 using 指令（hoisted），须在 parse_decl 之前尝试，
 // 否则会被 parse_namespace_decl 误当作 brace 形式在 ':' 处报错
 bool Parser::parse_using_namespace() {
+    if (curr().kind == TokenKind::Using) {
+        advance();
+        if (curr().kind != TokenKind::Namespace) {
+            add_error("expected 'namespace' after 'using'");
+            return true;
+        }
+        Location loc = get_loc();
+        advance();
+        Expr* path = parse_type();
+        if (!path) {
+            add_error("expected namespace path after 'using namespace'");
+        }
+        cu_.add_using_namespace(path, loc);
+        return true;
+    }
+    // 已废弃：namespace <path>:
     if (curr().kind != TokenKind::Namespace) return false;
     if (!peek(1).is_ident()) return false;
     if (peek(2).kind == TokenKind::BraceL) return false;
-    advance();
     Location loc = get_loc();
-    std::vector<std::string_view> path;
-    while(curr().is_ident()) {
-        path.push_back(curr().get_val());
+    advance();
+    std::vector<std::string_view> parts;
+    while (curr().is_ident()) {
+        parts.push_back(curr().get_val());
         advance();
-        if (curr().kind == TokenKind::ColonColon) advance();
-        else if (curr().kind == TokenKind::Colon) {
+        if (curr().kind == TokenKind::ColonColon) {
             advance();
-            break;
+            continue;
         }
+        break;
+    }
+    if (curr().kind == TokenKind::Colon) advance();
+    Expr* path = nullptr;
+    for (std::string_view part : parts) {
+        if (!path) {
+            path = cu_.add_node<Expr>(loc, Expr::Identifier{part});
+        } else {
+            path = cu_.add_node<Expr>(loc, Expr::Member{path, part});
+        }
+        path->is_type = true;
     }
     cu_.add_using_namespace(path, loc);
+    add_warning("'namespace <path>:' is deprecated, use 'using namespace <path>'");
     return true;
 }
 
@@ -174,8 +201,6 @@ ModfList Parser::parse_modfs() {
                 curr().kind
             ));
             walk();
-        } else if (curr().kind == TokenKind::Hash) {
-            ml.add_custom(parse_modification());
         } else {
             break;
         }
@@ -442,7 +467,19 @@ OpKind Parser::parse_operator() {
 SpecialMethod* Parser::parse_special_method_decl(ModfList &ml, Location &loc) {
     TokenKind tok_kind = curr().kind;
     SpecialMethod::Kind kind = SpecialMethod::Kind::Conversion;
-    if (tok_kind == TokenKind::Drop){
+    if (tok_kind == TokenKind::Init){
+        advance();
+        std::vector<VarList*> params = parse_value_params();
+        admit();
+        Stmt* b = parse_block_stmt();
+        if (!b) {
+            add_error("expected INIT body");
+        }
+        return cu_.add_node<SpecialMethod>(
+            loc, SpecialMethod::Kind::Init, std::move(ml), b, nullptr,
+            std::move(params)
+        );
+    } else if (tok_kind == TokenKind::Drop){
         kind = SpecialMethod::Kind::Drop;
     } else if (tok_kind == TokenKind::Ref){
         kind = SpecialMethod::Kind::Ref;
@@ -463,6 +500,7 @@ SpecialMethod* Parser::parse_special_method_decl(ModfList &ml, Location &loc) {
             loc, kind, std::move(ml), s, vl
         );
     } else return nullptr;
+    advance();
     Stmt* b = parse_block_stmt();
     if (!b) {
         add_error("expected method body");
@@ -610,8 +648,6 @@ Stmt* Parser::parse_stmt() {
         result = parse_goto_stmt();
     }else if (curr().kind == TokenKind::Asm) {
         result = parse_asm_stmt();
-    }else if (curr().kind == TokenKind::Spawn){
-        result = parse_spawn_stmt();
     }else if (curr().kind == TokenKind::Wait){
         result = parse_wait_stmt();
     }else if (curr().kind == TokenKind::Keep){
@@ -878,22 +914,6 @@ Stmt* Parser::parse_keep_stmt() {
     );
 }
 
-Stmt* Parser::parse_spawn_stmt() {
-    Location loc = get_loc();
-    advance();
-
-    Stmt* body = parse_block_stmt();
-    if (!body) {
-        add_error("expected block after 'spawn'");
-        return nullptr;
-    }
-
-    return cu_.add_node<Stmt>(
-        loc,
-        Stmt::Spawn{body}
-    );
-}
-
 Stmt* Parser::parse_wait_stmt() {
     Location loc = get_loc();
     advance();
@@ -1137,6 +1157,23 @@ Expr* Parser::parse_prefix() {
         }
         return inner;
     }
+    // spawn(call)：以新线程执行函数调用，类型继承被调函数的返回类型
+    if (curr().kind == TokenKind::Spawn) {
+        advance();
+        if (curr().kind != TokenKind::ParenL) {
+            add_error("expected '(' after 'spawn'");
+            return nullptr;
+        }
+        advance();
+        Expr* call = parse_expr();
+        if (!call) add_error("expected call expression in 'spawn'");
+        if (curr().kind != TokenKind::ParenR) {
+            add_error("expected ')' after spawn call");
+        } else {
+            advance();
+        }
+        return cu_.add_node<Expr>(loc, Expr::Spawn{call});
+    }
     // 块表达式（闭包）
     if (curr().kind == TokenKind::BraceL) {
         return parse_block_expr();
@@ -1329,8 +1366,7 @@ Expr* Parser::parse_block_expr() {
         Expr::Closure{
             std::vector<VarList*>{},
             std::vector<VarList*>{},
-            block,
-            std::vector<Token>{}
+            block
         }
     );
 }
@@ -1339,18 +1375,6 @@ Expr* Parser::parse_block_expr() {
 Expr* Parser::parse_func_literal() {
     Location loc = get_loc();
     walk();
-    std::vector<Token> capture;
-    if (curr().kind == TokenKind::BracketL) {
-        while (curr().kind != TokenKind::BraceR) {
-            if (curr().is_ident()) {
-                capture.push_back(curr());
-            } else if (is_eof()) {
-                add_error("unterminated capture list");
-            } else {
-                add_error("expected identifier");
-            }
-        }
-    }
     std::vector<VarList*> params = parse_value_params();
     admit();
     std::vector<VarList*> returns;
@@ -1370,7 +1394,7 @@ Expr* Parser::parse_func_literal() {
     }
     return cu_.add_node<Expr>(
         loc,
-        Expr::Closure{std::move(params), returns, body, capture}
+        Expr::Closure{std::move(params), returns, body}
     );
 }
 
@@ -1570,18 +1594,27 @@ std::optional<std::vector<T>> Parser::parse_list(
                 "'"
             );
         }
-        if (curr().kind == sep) {
-            walk();
-        } else if(curr().kind == end) {
+        if (curr().kind == end) {
             walk();
             break;
-        } else if (is_eof()) {
+        }
+        // 逗号与 sep 均是强制分隔符，允许省略
+        if (curr().kind == sep || curr().kind == TokenKind::Comma) {
+            walk();
+            if (curr().kind == end) {
+                walk();
+                break;
+            }
+            continue;
+        }
+        if (is_eof()) {
             add_error("unterminated '" +
                 token_kind_to_string(start) +
                 token_kind_to_string(end) +
                 "'");
             break;
-        } else if (!elmt) {
+        }
+        if (!elmt) {
             walk();
         }
     }

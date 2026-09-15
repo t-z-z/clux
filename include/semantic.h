@@ -40,7 +40,10 @@ struct Symbol {
     Scope* scope = nullptr; // 类/命名空间的符号表指针，保证在collect时所有解析到的scope都会写入
     // 声明所在作用域；当前作用域不在 root->...->current 路径上时访问控制生效
     Scope* decl_scope = nullptr;
-    Access access = Access::Public;
+    // 声明的修饰符（VarItem 借其所属 VarList 的），访问控制与 const 直接查此
+    ModfList* modfs = nullptr;
+    // 未显式 pub/priv 时的容器默认：类成员默认私有，其余默认公开
+    bool default_public = true;
 
     Symbol() = default;
     Symbol(SymbolKind k, ASTNode* n, Scope* s = nullptr)
@@ -76,6 +79,20 @@ struct Symbol {
         }
         return nullptr;
     }
+
+    // 有效访问级别：priv > readonly > pub > default
+    Access access_level() const {
+        if (modfs) {
+            if (modfs->has(ModfKind::Priv))     return Access::Private;
+            if (modfs->has(ModfKind::Readonly)) return Access::Readonly;
+            if (modfs->has(ModfKind::Pub))      return Access::Public;
+        }
+        return default_public ? Access::Public : Access::Private;
+    }
+    bool is_const() const {
+        return modfs && modfs->has(ModfKind::Const);
+    }
+
     template<typename T>
     T* get() {
         if (T* d = dynamic_cast<T*>(node)) {
@@ -211,14 +228,6 @@ struct SymbolTable {
     }
 };
 
-// 调用解析
-struct CallResolution {
-    Expr* call = nullptr;
-    Func* resolved_func = nullptr;
-    Expr* type = nullptr;
-    std::string message;
-};
-
 // 语义分析器
 class SemanticAnalyzer : public ASTVisitor {
     // 状态
@@ -226,9 +235,6 @@ class SemanticAnalyzer : public ASTVisitor {
     SymbolTable symbols_;
     std::vector<Diagnostic> diagnostics_;
     bool has_error_ = false;
-
-    // 调用解析结果
-    std::vector<CallResolution> call_resolutions_;
 
     // 语义分析期生成的整数字面量文本存储（deque 保证元素地址稳定）
     std::deque<std::string> literal_pool_;
@@ -275,8 +281,6 @@ public:
 
     // 供其他模块查询
     const SymbolTable& symbol_table() const { return symbols_; }
-    const std::vector<CallResolution>& call_resolutions() const { return call_resolutions_; }
-    const CallResolution* find_call(Expr* e) const;
 
     // 类型转字符串（用于生成 callkey）
     std::string type_to_key(Expr& t);
@@ -311,6 +315,7 @@ public:
     void visit_expr_cast(Expr::Cast&) override;
     void visit_expr_array(Expr::Array&) override;
     void visit_expr_closure(Expr::Closure&) override;
+    void visit_expr_spawn(Expr::Spawn&) override;
     void visit_expr_ternary(Expr::Ternary&) override;
 
     void visit(Stmt&) override;
@@ -327,7 +332,6 @@ public:
     void visit_stmt_asm(Stmt::Asm&) override;
     void visit_stmt_keep(Stmt::Keep&) override;
     void visit_stmt_var_decl(Stmt::VarDecl&) override;
-    void visit_stmt_spawn(Stmt::Spawn&) override;
     void visit_stmt_wait(Stmt::Wait&) override;
 
     void visit_type_primitive(Expr::Primitive&) override;
@@ -374,12 +378,10 @@ private:
 
     // 声明收集与注册
     void collect();
-    void collect_decl(Decl* decl, Access default_access);
-    void register_func(Func& f, Access default_access);
-    void register_special(SpecialMethod& sm, Access default_access);
+    void collect_decl(Decl* decl, bool default_public);
+    void register_func(Func& f, bool default_public);
+    void register_special(SpecialMethod& sm, bool default_public);
 
-    // 访问控制：priv 覆盖 readonly 覆盖 pub，未显式声明时按容器默认
-    static Access decl_access(const ModfList& modfs, Access fallback);
     bool is_scope_on_path(Scope* s) const;
     void check_access(Symbol* sym, const Location& loc);
     void check_write_access(Symbol* sym, const Location& loc);
@@ -398,12 +400,15 @@ private:
     struct InitCtx {
         std::unordered_set<Symbol*> declared;
         std::unordered_set<Symbol*> assigned;
-        std::vector<Symbol*> returns;
     };
+    void check_main();
     void check_initialization();
     void init_stmt(InitCtx& ctx, Stmt* s);
     void init_expr(InitCtx& ctx, Expr* e);
     void init_assign_target(InitCtx& ctx, Expr* e);
+    // 返回变量只在函数体内任意位置被赋值一次即可，不做流敏感检查
+    bool body_assigns_return(Stmt* s, Symbol* target);
+    bool expr_assigns_return(Expr* e, Symbol* target);
 
     // 辅助：获取当前作用域的完整路径字符串（用 "::" 连接）
     std::string get_current_full_path() const;
@@ -411,15 +416,22 @@ private:
     // 调用解析
     void resolve_call(Expr* call, Expr::Call& c);
     void check_call_args(Func* fn, const std::vector<Expr*>& args);
+    void check_call_args(const std::vector<VarList*>& params,
+                         const std::vector<Expr*>& args, const Location& loc);
+    bool args_match(const std::vector<VarList*>& params,
+                    const std::vector<Expr*>& args);
 
     // 克隆辅助（深拷贝，新节点统一登记到 cu_）
     Expr* clone_type(Expr* t);
     Expr* clone_expr(Expr* e);
     Stmt* clone_stmt(Stmt* s);
-    VarItem* clone_varitem(VarItem* vi);
     VarList* clone_varlist(VarList* vl);
     Func* clone_func(Func* f);
+    Decl* clone_decl(Decl* d);
     Scope* clone_scope(Scope* src);
+
+    // 修饰注入：把来源类的成员合并进目标类
+    void apply_injections(Class* cls);
 };
 
 } // namespace cx

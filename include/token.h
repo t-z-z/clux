@@ -14,7 +14,8 @@ namespace cx{
     X(Own, "own") \
     X(Readonly, "readonly") \
     X(Malloc, "malloc") \
-    X(Alloca, "alloca")
+    X(Alloca, "alloca") \
+    X(Over, "over")
 
 #define TYPE \
     X(Int8, "int8") \
@@ -40,13 +41,13 @@ namespace cx{
 #define KEYWORD \
     X(Let, "let") \
     X(Namespace, "namespace") \
+    X(Using, "using") \
     X(Import, "import") \
     X(No, "no") \
     X(If, "if") \
     X(Else, "else") \
     X(While, "while") \
     X(For, "for") \
-    X(In, "in") \
     X(Return, "return") \
     X(Break, "break") \
     X(Continue, "continue") \
@@ -66,6 +67,7 @@ namespace cx{
     X(Access, "ACCESS") \
     X(Alias, "alias") \
     X(Conversion, "conversion") \
+    X(Init, "INIT") \
     MODIFIER \
     TYPE
 
@@ -217,7 +219,7 @@ struct Token {
         return kind > TokenKind::Identifier && kind < TokenKind::Unknown;
     }
     inline bool is_modf() const {
-        return kind >= TokenKind::Const && kind <= TokenKind::Alloca;
+        return kind >= TokenKind::Const && kind <= TokenKind::Over;
     }
     inline bool is_type() const {
         return kind >= TokenKind::Int8 && kind <= TokenKind::Enum;

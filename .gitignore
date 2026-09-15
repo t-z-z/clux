@@ -24,3 +24,4 @@ tests/
 !README.md
 .cache/
 *smoke*
+*.py

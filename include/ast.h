@@ -135,13 +135,14 @@ struct CompUnit {
     bool is_type_name(std::string_view name) const {
         return type_registry.find(name) != type_registry.end();
     }
-    // namespace <name>: 文件顶层 using 指令（把命名空间成员引入当前作用域，hoisted）
+    // using namespace <path>：文件顶层 using 指令（把命名空间成员引入当前作用域，hoisted）
+    // path 是类型位置的表达式（Identifier 或 Member 链），语义阶段按路径处理
     struct UsingNamespace {
-        std::vector<std::string_view> path;
+        Expr* path;
         Location loc;
     };
     std::vector<UsingNamespace> using_namespaces;
-    void add_using_namespace(std::vector<std::string_view> path, const Location& loc) {
+    void add_using_namespace(Expr* path, const Location& loc) {
         using_namespaces.push_back({path, loc});
     }
 };
@@ -168,7 +169,6 @@ struct Modification : ASTNode{
 
 struct ModfList {
     uint32_t flags;
-    std::vector<Modification*> customs;
     ModfList(): flags(0) {}
     void set(ModfKind kind) {
         flags |= (1u << static_cast<uint8_t>(kind));
@@ -181,21 +181,6 @@ struct ModfList {
     }
     void merge(const ModfList& other) {
         flags |= other.flags;
-        for (Modification* mod : other.customs) {
-            if (!has_custom(mod->name)) {
-                customs.push_back(mod);
-            }
-        }
-    }
-    bool has_custom(std::string_view name) const {
-        for (const Modification* mod : customs) {
-            if (mod->name == name) return true;
-        }
-        return false;
-    }
-    void add_custom(Modification* mod) {
-        if (!has_custom(mod->name))
-            customs.push_back(mod);
     }
 };
 
@@ -258,6 +243,8 @@ inline std::string_view opkind_to_sv(OpKind kind) {
             case OpKind::name: return str;
         OP_KIND
         #undef X
+        case OpKind::Paren: return "()";
+        case OpKind::Index: return "[]";
         default: return "";
     }
 }
@@ -268,14 +255,15 @@ struct Expr : ASTNode {
     struct Binary       { Expr* left; OpKind op; Expr* right; };
     struct Unary        { OpKind op; Expr* operand; bool is_postfix = false; };
     struct Assign       { Expr* target; OpKind op; Expr* value; };
-    struct Call         { Expr* callee; std::vector<Expr*> args; };
+    struct Call         { Expr* callee; std::vector<Expr*> args; Decl* resolved = nullptr; };
     struct Ternary      { Expr* cond; Expr* then_expr; Expr* else_expr; };
     struct Index        { Expr* target; Expr* index; };
     struct Member       { Expr* target; std::string_view member; };
     struct Cast         { Expr* target_type; Expr* operand; };
     struct Array        { std::vector<Expr*> members; Expr* fill_value = nullptr; };
     struct Closure      { std::vector<VarList*> params; std::vector<VarList*> returns;
-                        Stmt* body = nullptr; std::vector<Token> capture;};
+                        Stmt* body = nullptr; };
+    struct Spawn        { Expr* call; };
 
     struct Primitive        { PrimitiveTypeKind kind; };
     struct Pointer          { Expr* pointee; };
@@ -290,7 +278,7 @@ struct Expr : ASTNode {
     using Variant = std::variant<
         Literal, Identifier, Binary, Unary, Assign,
         Call, Ternary, Index, Member,
-        Cast, Array, Closure,
+        Cast, Array, Closure, Spawn,
         Primitive, Pointer, ArrayType, StringLiteralType,
         FuncPtr, FuncRef, Reference, Inferred, Void
     >;
@@ -320,6 +308,7 @@ struct Expr : ASTNode {
     BBB(cast, Cast, Expr)
     BBB(array, Array, Expr)
     BBB(closure, Closure, Expr)
+    BBB(spawn, Spawn, Expr)
     BBB(primitive, Primitive, Expr)
     BBB(pointer, Pointer, Expr)
     BBB(array_type, ArrayType, Expr)
@@ -352,12 +341,11 @@ struct Stmt : ASTNode {
     struct Asm      { std::string_view code; };
     struct Keep     { std::string_view tokens; };
     struct VarDecl  { VarList* vars; };
-    struct Spawn    { Stmt* body; };
     struct Wait     { Expr* condition; };
     using Variant = std::variant<
         Block, ExprStmt, If, While, For,
         Return, Break, Continue, Flag, Goto,
-        Asm, Keep, VarDecl, Spawn, Wait
+        Asm, Keep, VarDecl, Wait
     >;
     Variant data;
     Stmt() = default;
@@ -375,7 +363,6 @@ struct Stmt : ASTNode {
     BBB(asm, Asm, Stmt)
     BBB(keep, Keep, Stmt)
     BBB(var_decl, VarDecl, Stmt)
-    BBB(spawn, Spawn, Stmt)
     BBB(wait, Wait, Stmt)
 };
 
@@ -499,24 +486,29 @@ struct Extern : Cont {
 };
 
 struct Class : Cont {
+    // 修饰注入：注入来源类（`#M @C` 中的 M），只有类能被修饰
+    std::vector<Modification*> injects;
     Class(const Location &loc,
         std::string_view name,
         ModfList ml,
-        std::vector<Decl*> m
+        std::vector<Decl*> m,
+        std::vector<Modification*> inj = {}
     ):
-        Cont(loc, name, DeclKind::Class, std::move(ml), std::move(m)) {}
+        Cont(loc, name, DeclKind::Class, std::move(ml), std::move(m)),
+        injects(std::move(inj)) {}
     virtual ~Class() = default;
 };
 
 struct SpecialMethod : Decl {
     enum class Kind {
-        //  初始化函数当做普通方法处理
+        Init,       // 构造
         Drop,       // 折构
         Ref,        // 被引用
         Deref,      // 结束引用
         Access,     // 获取
         Conversion  // 类型转换
     } kind;
+    std::vector<VarList*> params;
     Stmt* body = nullptr;
     VarList* conv = nullptr;
     SpecialMethod() = default;
@@ -525,10 +517,11 @@ struct SpecialMethod : Decl {
         SpecialMethod::Kind k,
         ModfList ml,
         Stmt* b,
-        VarList* r = nullptr
+        VarList* r = nullptr,
+        std::vector<VarList*> p = {}
     ):
         Decl(loc, "", DeclKind::SpecialMethod, std::move(ml)),
-        kind(k), body(b), conv(r) {}
+        kind(k), params(std::move(p)), body(b), conv(r) {}
 };
 
 struct Keep : Decl {
@@ -576,9 +569,6 @@ struct ASTVisitor {
     }
 
     void walk(Decl& decl) {
-        for (auto* mod : decl.modfs.customs) {
-            if (mod) walk(*mod);
-        }
         walk_children(decl);
         visit(decl);
     }
@@ -634,6 +624,7 @@ struct ASTVisitor {
     virtual void visit_expr_cast(Expr::Cast&) {}
     virtual void visit_expr_array(Expr::Array&) {}
     virtual void visit_expr_closure(Expr::Closure&) {}
+    virtual void visit_expr_spawn(Expr::Spawn&) {}
     virtual void visit_expr_ternary(Expr::Ternary&) {}
 
     virtual void visit(Stmt&) {}
@@ -651,7 +642,6 @@ struct ASTVisitor {
     virtual void visit_stmt_asm(Stmt::Asm&) {}
     virtual void visit_stmt_keep(Stmt::Keep&) {}
     virtual void visit_stmt_var_decl(Stmt::VarDecl&) {}
-    virtual void visit_stmt_spawn(Stmt::Spawn&) {}
     virtual void visit_stmt_wait(Stmt::Wait&) {}
 
     virtual void visit_type_primitive(Expr::Primitive&) {}
@@ -748,6 +738,7 @@ struct ASTVisitor {
 
     void walk_children(SpecialMethod& sm) {
         scope_in(std::string(sm.name));
+        for (auto* p : sm.params) if (p) walk(*p);
         if (sm.body) walk(*sm.body);
         if (sm.conv) walk(*sm.conv);
         visit_special_method(sm);
@@ -798,6 +789,9 @@ struct ASTVisitor {
                 for (auto* m : v.members) if (m) walk(*m);
                 if (v.fill_value) walk(*v.fill_value);
                 visit_expr_array(v);
+            } else if constexpr (std::is_same_v<T, Expr::Spawn>) {
+                if (v.call) walk(*v.call);
+                visit_expr_spawn(v);
             } else if constexpr (std::is_same_v<T, Expr::Closure>) {
                 scope_in("closure");
                 for (auto* p : v.params) if (p) walk(*p);
@@ -867,9 +861,6 @@ struct ASTVisitor {
             } else if constexpr (std::is_same_v<T, Stmt::VarDecl>) {
                 if (v.vars) walk(*v.vars);
                 visit_stmt_var_decl(v);
-            } else if constexpr (std::is_same_v<T, Stmt::Spawn>) {
-                if (v.body) walk(*v.body);
-                visit_stmt_spawn(v);
             } else if constexpr (std::is_same_v<T, Stmt::Wait>) {
                 if (v.condition) walk(*v.condition);
                 visit_stmt_wait(v);

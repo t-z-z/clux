@@ -16,6 +16,11 @@ static std::string type_name_string(Expr* t) {
     return "";
 }
 
+// 引用类型的表达式即 lvalue
+static bool ref_is_lvalue(Expr* t) {
+    return t && t->is_reference();
+}
+
 // 从解析后的类型节点取成员作用域
 static Scope* named_type_scope(Expr* t) {
     if (!t) return nullptr;
@@ -81,6 +86,15 @@ bool SemanticAnalyzer::is_bool_type(Expr* t) {
 
 bool SemanticAnalyzer::is_same_type(Expr* a, Expr* b) {
     if (!a || !b) return false;
+    // StringLiteral 与 char[] 视为同类
+    auto is_char_array = [](Expr* t) {
+        if (!t || !t->is_array_type()) return false;
+        Expr* elem = t->get_array_type()->element;
+        return elem && elem->is_primitive()
+            && elem->get_primitive()->kind == PrimitiveTypeKind::Char;
+    };
+    if (a->is_string_literal_type() && is_char_array(b)) return true;
+    if (b->is_string_literal_type() && is_char_array(a)) return true;
     bool a_named = a->is_type && (a->is_identifier() || a->is_member());
     bool b_named = b->is_type && (b->is_identifier() || b->is_member());
     if (a_named && b_named) {
@@ -155,7 +169,6 @@ Expr* SemanticAnalyzer::make_int_literal(const Location& loc, size_t value) {
 
 bool SemanticAnalyzer::analyze() {
     diagnostics_.clear();
-    call_resolutions_.clear();
     has_error_ = false;
     bodies_.clear();
     collect();
@@ -163,6 +176,7 @@ bool SemanticAnalyzer::analyze() {
     // 跳转与初始化检查需要完整函数体，放在遍历之后进行
     check_jumps();
     check_initialization();
+    check_main();
     return !has_error_;
 }
 
@@ -198,22 +212,20 @@ std::string SemanticAnalyzer::build_callkey(const std::string& name,
 void SemanticAnalyzer::collect() {
     // 顶层声明默认公开
     for (Decl* decl : cu_.top_decls) {
-        collect_decl(decl, Access::Public);
+        collect_decl(decl, true);
     }
 }
 
-void SemanticAnalyzer::collect_decl(Decl* decl, Access default_access) {
+void SemanticAnalyzer::collect_decl(Decl* decl, bool default_public) {
     if (!decl) return;
-
-    // 声明点结算修饰符：priv 覆盖 readonly 覆盖 pub，否则用所在容器的默认级别
-    Access acc = decl_access(decl->modfs, default_access);
 
     switch (decl->kind) {
         case DeclKind::VarList: {
             auto* vl = static_cast<VarList*>(decl);
             for (auto* var : vl->vars) {
                 Symbol sym(SymbolKind::Variable, var);
-                sym.access = acc;
+                sym.modfs = &vl->modfs;
+                sym.default_public = default_public;
                 if (!symbols_.insert_member(std::string(var->name), std::move(sym))) {
                     error(vl->loc, "duplicate declaration of variable '" + std::string(var->name) + "'");
                 }
@@ -223,7 +235,7 @@ void SemanticAnalyzer::collect_decl(Decl* decl, Access default_access) {
 
         case DeclKind::Func:
         case DeclKind::Operator: {
-            register_func(*static_cast<Func*>(decl), acc);
+            register_func(*static_cast<Func*>(decl), default_public);
             break;
         }
 
@@ -232,6 +244,8 @@ void SemanticAnalyzer::collect_decl(Decl* decl, Access default_access) {
             std::string name(cls->name);
             Symbol* existing = symbols_.current_scope()
                 ? symbols_.current_scope()->lookup_member(name) : nullptr;
+            // 在注册本类之前解析注入来源，使自注入与来源失败能正确报错
+            apply_injections(cls);
             if (existing) {
                 if (existing->kind == SymbolKind::Class || existing->kind == SymbolKind::Namespace)
                     error(cls->loc, "redefinition of class '" + name + "'");
@@ -241,13 +255,14 @@ void SemanticAnalyzer::collect_decl(Decl* decl, Access default_access) {
             } else {
                 Symbol* sym = symbols_.insert_and_push(name, Symbol(SymbolKind::Class, cls));
                 if (sym) {
-                    sym->access = acc;
+                    sym->modfs = &cls->modfs;
+                    sym->default_public = default_public;
                     sym->node = cls;
                 }
             }
             // 类默认私有
             for (Decl* member : cls->members) {
-                collect_decl(member, Access::Private);
+                collect_decl(member, false);
             }
             symbols_.pop_scope();
             break;
@@ -267,13 +282,14 @@ void SemanticAnalyzer::collect_decl(Decl* decl, Access default_access) {
             } else {
                 Symbol* sym = symbols_.insert_and_push(name, Symbol(SymbolKind::Namespace, ns));
                 if (sym) {
-                    sym->access = acc;
+                    sym->modfs = &ns->modfs;
+                    sym->default_public = default_public;
                     sym->node = ns;
                 }
             }
             // 命名空间默认公开
             for (Decl* member : ns->members) {
-                collect_decl(member, Access::Public);
+                collect_decl(member, true);
             }
             symbols_.pop_scope();
             break;
@@ -283,7 +299,7 @@ void SemanticAnalyzer::collect_decl(Decl* decl, Access default_access) {
             auto* ext = static_cast<Extern*>(decl);
             ext->scope = symbols_.current_scope();
             for (Decl* member : ext->members) {
-                collect_decl(member, default_access);
+                collect_decl(member, default_public);
             }
             break;
         }
@@ -300,7 +316,8 @@ void SemanticAnalyzer::collect_decl(Decl* decl, Access default_access) {
             e->scope = enum_scope;
             if (parent && !existing) {
                 Symbol sym(SymbolKind::Enum, e, enum_scope);
-                sym.access = acc;
+                sym.modfs = &e->modfs;
+                sym.default_public = default_public;
                 symbols_.insert_member(ename, std::move(sym));
             }
             int64_t next_value = 0;
@@ -317,7 +334,7 @@ void SemanticAnalyzer::collect_decl(Decl* decl, Access default_access) {
         }
 
         case DeclKind::SpecialMethod: {
-            register_special(*static_cast<SpecialMethod*>(decl), acc);
+            register_special(*static_cast<SpecialMethod*>(decl), default_public);
             break;
         }
         default:
@@ -326,29 +343,29 @@ void SemanticAnalyzer::collect_decl(Decl* decl, Access default_access) {
 
 }
 
-void SemanticAnalyzer::register_func(Func& f, Access default_access) {
+void SemanticAnalyzer::register_func(Func& f, bool default_public) {
     std::string name = std::string(f.name);
     Scope* scope = symbols_.current_scope();
-    Access acc = decl_access(f.modfs, default_access);
 
-    if (scope && scope->lookup_member(name)) {
-        error(f.loc, "duplicate declaration of function '" + name + "'");
-        return;
-    }
-
-    std::string key = build_callkey(name, f.params);
+    // 只有操作符保留按签名区分，其余函数（含 INIT）不允许重载
+    bool keyed = (f.kind == DeclKind::Operator);
+    std::string key = keyed ? build_callkey(name, f.params) : name;
     if (scope && scope->lookup_member(key)) {
         error(f.loc, "duplicate declaration of function '" + name + "'");
         return;
     }
     Symbol sym(SymbolKind::Function, &f);
-    sym.access = acc;
+    sym.modfs = &f.modfs;
+    sym.default_public = default_public;
     symbols_.insert_member(key, std::move(sym));
 }
 
-void SemanticAnalyzer::register_special(SpecialMethod& sm, Access default_access) {
+void SemanticAnalyzer::register_special(SpecialMethod& sm, bool default_public) {
+    // INIT 通过遍历类成员匹配参数，不进入符号表
+    if (sm.kind == SpecialMethod::Kind::Init) return;
     std::string internal_name;
     switch (sm.kind) {
+        case SpecialMethod::Kind::Init:       return;
         case SpecialMethod::Kind::Drop:       internal_name = "DROP";       break;
         case SpecialMethod::Kind::Ref:        internal_name = "REF";        break;
         case SpecialMethod::Kind::Deref:      internal_name = "DEREF";      break;
@@ -366,7 +383,8 @@ void SemanticAnalyzer::register_special(SpecialMethod& sm, Access default_access
     }
 
     Symbol sym(SymbolKind::Function, &sm);
-    sym.access = decl_access(sm.modfs, default_access);
+    sym.modfs = &sm.modfs;
+    sym.default_public = default_public;
     symbols_.insert_member(internal_name, std::move(sym));
 }
 
@@ -448,7 +466,9 @@ void SemanticAnalyzer::visit_func(Func& f) {
     if (f.body) bodies_.push_back({f.body, f.params, f.returns});
 }
 
-void SemanticAnalyzer::visit_special_method(SpecialMethod&) {}
+void SemanticAnalyzer::visit_special_method(SpecialMethod& sm) {
+    if (sm.body) bodies_.push_back({sm.body, sm.params, {}});
+}
 
 void SemanticAnalyzer::visit_var_list(VarList& vl) {
     // 动态长度数组检查：运行时长度必须显式声明存储方式
@@ -467,7 +487,10 @@ void SemanticAnalyzer::visit_var_list(VarList& vl) {
         }
     }
     for (VarItem* var : vl.vars) {
-        if (!symbols_.insert_local(var->name, Symbol(SymbolKind::Variable, var))) {
+        Symbol sym(SymbolKind::Variable, var);
+        sym.modfs = &vl.modfs;
+        sym.default_public = true;
+        if (!symbols_.insert_local(var->name, std::move(sym))) {
             error(var->loc, "duplicate variable '" + std::string(var->name) + "'");
         } else {
             var_symbols_[var] = symbols_.current_->lookup_local(var->name);
@@ -505,6 +528,13 @@ void SemanticAnalyzer::visit_expr_literal(Expr::Literal& lit) {
 }
 
 void SemanticAnalyzer::visit_expr_identifier(Expr::Identifier& id) {
+    // self：当前实例本身，类型为自身的值类型
+    if (!current_expr->is_type && current_class && id.name == "self") {
+        current_expr->type = make_named_type(current_expr->loc, current_class->name,
+                                             current_class, symbols_.current_scope());
+        current_expr->is_lvalue = true;
+        return;
+    }
     // 类型位置的裸名：按类型解析
     if (current_expr->is_type) {
         std::string name(id.name);
@@ -629,15 +659,6 @@ bool SemanticAnalyzer::can_convert_to(Expr* src, Expr* dst) {
 }
 
 
-// 访问控制：priv 覆盖 readonly 覆盖 pub
-Access SemanticAnalyzer::decl_access(const ModfList& modfs, Access fallback) {
-    Access acc = fallback;
-    if (modfs.has(ModfKind::Pub)) acc = Access::Public;
-    if (modfs.has(ModfKind::Readonly)) acc = Access::Readonly;
-    if (modfs.has(ModfKind::Priv)) acc = Access::Private;
-    return acc;
-}
-
 // 判断作用域 s 是否位于 root -> ... -> current 的路径上
 bool SemanticAnalyzer::is_scope_on_path(Scope* s) const {
     if (!s) return false;
@@ -656,20 +677,29 @@ static std::string sym_display_name(Symbol* sym) {
 
 // 读访问控制：离开声明作用域后 priv 不可读，readonly 仍可读
 void SemanticAnalyzer::check_access(Symbol* sym, const Location& loc) {
-    if (!sym || sym->access == Access::Public) return;
+    if (!sym) return;
+    Access acc = sym->access_level();
+    if (acc == Access::Public) return;
     if (is_scope_on_path(sym->decl_scope)) return;
-    if (sym->access == Access::Private) {
+    if (acc == Access::Private) {
         error(loc, "cannot access private member '" + sym_display_name(sym) + "'");
     }
 }
 
 // 写访问控制：离开声明作用域后 priv / readonly 均不可写
 void SemanticAnalyzer::check_write_access(Symbol* sym, const Location& loc) {
-    if (!sym || sym->access == Access::Public) return;
+    if (!sym) return;
+    // const 在任何作用域都不可写
+    if (sym->is_const()) {
+        error(loc, "cannot assign to const '" + sym_display_name(sym) + "'");
+        return;
+    }
+    Access acc = sym->access_level();
+    if (acc == Access::Public) return;
     if (is_scope_on_path(sym->decl_scope)) return;
-    if (sym->access == Access::Private) {
+    if (acc == Access::Private) {
         error(loc, "cannot assign to private member '" + sym_display_name(sym) + "'");
-    } else if (sym->access == Access::Readonly) {
+    } else if (acc == Access::Readonly) {
         error(loc, "cannot assign to readonly member '" + sym_display_name(sym) + "'");
     }
 }
@@ -886,10 +916,6 @@ void SemanticAnalyzer::resolve_call(Expr* call_expr, Expr::Call& c) {
         error(call_expr->loc, msg);
         call_expr->type = typeVoid;
         call_expr->is_lvalue = false;
-        CallResolution resol;
-        resol.call = call_expr;
-        resol.type = typeVoid;
-        call_resolutions_.push_back(std::move(resol));
     };
 
     if (!c.callee) {
@@ -917,13 +943,30 @@ void SemanticAnalyzer::resolve_call(Expr* call_expr, Expr::Call& c) {
 
         call_expr->sym = c.callee->sym;
         call_expr->type = fp->return_type ? fp->return_type : typeVoid;
-        call_expr->is_lvalue = false;
-
-        CallResolution resol;
-        resol.call = call_expr;
-        resol.type = call_expr->type;
-        call_resolutions_.push_back(std::move(resol));
+        call_expr->is_lvalue = ref_is_lvalue(call_expr->type);
         return;
+    }
+
+    // 路径 1.5：被调用者是类实例 → 查找 operator ()
+    if (c.callee->type && c.callee->type->resolved_decl &&
+        c.callee->type->resolved_decl->kind == DeclKind::Class &&
+        !(c.callee->sym && c.callee->sym->kind == SymbolKind::Class)) {
+        auto* cls = static_cast<Class*>(c.callee->type->resolved_decl);
+        for (Decl* m : cls->members) {
+            if (!m || m->kind != DeclKind::Operator) continue;
+            auto* op = static_cast<Operator*>(m);
+            if (op->op != OpKind::Paren) continue;
+            if (!args_match(op->params, c.args)) continue;
+            Expr* ret = typeVoid;
+            if (!op->returns.empty() && op->returns[0] && op->returns[0]->type)
+                ret = op->returns[0]->type;
+            check_call_args(op->params, c.args, op->loc);
+            call_expr->sym = nullptr;
+            call_expr->type = ret;
+            call_expr->is_lvalue = ref_is_lvalue(ret);
+            c.resolved = op;
+            return;
+        }
     }
 
     // 路径 2：命名调用 → 解析被调用者名字，构造 callkey 后查表
@@ -946,46 +989,41 @@ void SemanticAnalyzer::resolve_call(Expr* call_expr, Expr::Call& c) {
         return;
     }
 
-    // 2a：类构造，在类自己的 scope 里查 INIT_...
+    // 2a：类构造，遍历类成员中的 INIT 逐个匹配参数
     if (callee_sym && callee_sym->kind == SymbolKind::Class) {
         Scope* cls_scope = callee_sym->scope;
         Decl* cls_decl = callee_sym->get_decl();
-        if (!cls_scope) {
+        if (!cls_scope || !cls_decl || cls_decl->kind != DeclKind::Class) {
             fail("class '" + name + "' has no scope");
             return;
         }
+        auto* cls = static_cast<Class*>(cls_decl);
 
-        std::string key = build_callkey("INIT", c.args);
-        Symbol* init_sym = SymbolTable::lookup_member_in(cls_scope, key);
-        if (!init_sym || init_sym->kind != SymbolKind::Function) {
+        SpecialMethod* ctor = nullptr;
+        for (Decl* m : cls->members) {
+            if (!m || m->kind != DeclKind::SpecialMethod) continue;
+            auto* sm = static_cast<SpecialMethod*>(m);
+            if (sm->kind != SpecialMethod::Kind::Init) continue;
+            if (args_match(sm->params, c.args)) { ctor = sm; break; }
+        }
+        if (!ctor) {
             fail("no matching constructor for class '" + name + "'");
             return;
         }
+        check_call_args(ctor->params, c.args, ctor->loc);
 
-        if (Func* ctor = init_sym->get<Func>()) check_call_args(ctor, c.args);
-
-        call_expr->sym = init_sym;
+        call_expr->sym = nullptr;
         call_expr->type = make_named_type(call_expr->loc,
-            cls_decl ? cls_decl->name : std::string_view(),
-            cls_decl, cls_scope);
+            cls->name, cls, cls_scope);
         call_expr->is_lvalue = false;
-
-        CallResolution resol;
-        resol.call = call_expr;
-        resol.type = call_expr->type;
-        if (Decl* d = init_sym->get_decl()) {
-            if (d->kind == DeclKind::Func || d->kind == DeclKind::Operator)
-                resol.resolved_func = static_cast<Func*>(d);
-        }
-        call_resolutions_.push_back(std::move(resol));
+        c.resolved = ctor;
         return;
     }
 
-    // 2b：普通函数 / 操作符，用 mangled key 在当前作用域链里查
-    std::string key = build_callkey(name, c.args);
-    Symbol* f_sym = symbols_.lookup_member(key);
+    // 2b：普通函数按名字直接查（函数不重载）
+    Symbol* f_sym = symbols_.lookup_member(name);
     if (!f_sym || f_sym->kind != SymbolKind::Function) {
-        fail("no matching overload for call to '" + name + "'");
+        fail("no matching function for call to '" + name + "'");
         return;
     }
 
@@ -1009,27 +1047,23 @@ void SemanticAnalyzer::resolve_call(Expr* call_expr, Expr::Call& c) {
 
     call_expr->sym = f_sym;
     call_expr->type = ret;
-    call_expr->is_lvalue = false;
-
-    CallResolution resol;
-    resol.call = call_expr;
-    resol.resolved_func = func;
-    resol.type = ret;
-    call_resolutions_.push_back(std::move(resol));
+    call_expr->is_lvalue = ref_is_lvalue(ret);
+    c.resolved = func;
 }
 
-// () 传参：按形参类型逐一对实参做转换判定
-void SemanticAnalyzer::check_call_args(Func* fn, const std::vector<Expr*>& args) {
-    if (!fn) return;
+// 形参列表逐一对实参做转换判定
+void SemanticAnalyzer::check_call_args(const std::vector<VarList*>& params_lists,
+                                       const std::vector<Expr*>& args,
+                                       const Location& loc) {
     std::vector<Expr*> params;
-    for (VarList* vl : fn->params) {
+    for (VarList* vl : params_lists) {
         if (!vl) continue;
         for (VarItem* vi : vl->vars) {
             if (vi && vi->type) params.push_back(vi->type);
         }
     }
     if (params.size() != args.size()) {
-        error(fn->loc, "argument count mismatch: expected " +
+        error(loc, "argument count mismatch: expected " +
               std::to_string(params.size()) + ", got " + std::to_string(args.size()));
         return;
     }
@@ -1037,15 +1071,34 @@ void SemanticAnalyzer::check_call_args(Func* fn, const std::vector<Expr*>& args)
         Expr* at = args[i] ? args[i]->type : nullptr;
         if (!at || !params[i]) continue;
         check_conversion(at, params[i], "argument passing",
-                         args[i] ? args[i]->loc : fn->loc);
+                         args[i] ? args[i]->loc : loc);
     }
 }
 
-const CallResolution* SemanticAnalyzer::find_call(Expr* e) const {
-    for (const auto& res : call_resolutions_) {
-        if (res.call == e) return &res;
+// () 传参：按形参类型逐一对实参做转换判定
+void SemanticAnalyzer::check_call_args(Func* fn, const std::vector<Expr*>& args) {
+    if (!fn) return;
+    check_call_args(fn->params, args, fn->loc);
+}
+
+// 非报错式匹配：形参数量一致且每个实参可转换
+bool SemanticAnalyzer::args_match(const std::vector<VarList*>& params_lists,
+                                  const std::vector<Expr*>& args) {
+    std::vector<Expr*> params;
+    for (VarList* vl : params_lists) {
+        if (!vl) continue;
+        for (VarItem* vi : vl->vars) {
+            if (vi && vi->type) params.push_back(vi->type);
+        }
     }
-    return nullptr;
+    if (params.size() != args.size()) return false;
+    for (size_t i = 0; i < args.size(); ++i) {
+        Expr* at = args[i] ? args[i]->type : nullptr;
+        Expr* pt = params[i];
+        if (!at || !pt) continue;
+        if (!is_same_type(at, pt) && !can_convert_to(at, pt)) return false;
+    }
+    return true;
 }
 
 void SemanticAnalyzer::visit_expr_index(Expr::Index& idx) {
@@ -1058,6 +1111,21 @@ void SemanticAnalyzer::visit_expr_index(Expr::Index& idx) {
     if (!tt) {
         current_expr->type = nullptr;
         return;
+    }
+
+    Expr* it = idx.index ? idx.index->type : nullptr;
+    if (it) {
+        if (Symbol* s = find_operator_overload(OpKind::Index, *tt, *it)) {
+            Expr* ret = typeVoid;
+            if (auto* op = s->get<Operator>()) {
+                if (!op->returns.empty() && op->returns[0] && op->returns[0]->type)
+                    ret = op->returns[0]->type;
+            }
+            current_expr->type = ret;
+            current_expr->is_lvalue = ref_is_lvalue(ret);
+            current_expr->sym = s;
+            return;
+        }
     }
 
     if (tt->is_array_type()) {
@@ -1077,6 +1145,14 @@ void SemanticAnalyzer::visit_expr_member(Expr::Member& m) {
     if (!m.target) {
         current_expr->sym = nullptr;
         current_expr->type = nullptr;
+        current_expr->is_lvalue = false;
+        return;
+    }
+
+    // 数组的 .len：返回长度
+    if (m.member == "len" && m.target->type && m.target->type->is_array_type()) {
+        current_expr->sym = nullptr;
+        current_expr->type = typeInt;
         current_expr->is_lvalue = false;
         return;
     }
@@ -1312,7 +1388,27 @@ void SemanticAnalyzer::visit_stmt_goto(Stmt::Goto&) {}
 void SemanticAnalyzer::visit_stmt_asm(Stmt::Asm&) {}
 void SemanticAnalyzer::visit_stmt_keep(Stmt::Keep&) {}
 void SemanticAnalyzer::visit_stmt_var_decl(Stmt::VarDecl&) {}
-void SemanticAnalyzer::visit_stmt_spawn(Stmt::Spawn&) {}
+// spawn(call)：类型继承被调函数的返回类型，禁止传入栈上的指针或引用
+void SemanticAnalyzer::visit_expr_spawn(Expr::Spawn& sp) {
+    if (!sp.call) {
+        current_expr->type = nullptr;
+        current_expr->is_lvalue = false;
+        return;
+    }
+    current_expr->type = sp.call->type ? sp.call->type : typeVoid;
+    current_expr->is_lvalue = false;
+
+    if (auto* c = sp.call->get_call()) {
+        for (Expr* arg : c->args) {
+            if (!arg || !arg->type) continue;
+            if (arg->type->is_reference()) {
+                error(arg->loc, "spawn cannot capture a stack reference argument");
+            } else if (arg->type->is_pointer()) {
+                error(arg->loc, "spawn cannot capture a stack pointer argument");
+            }
+        }
+    }
+}
 
 void SemanticAnalyzer::visit_stmt_wait(Stmt::Wait& wait_stmt) {
     if (!wait_stmt.condition) {
@@ -1420,13 +1516,16 @@ Expr* SemanticAnalyzer::clone_expr(Expr* e) {
         for (auto* m : v->members) members.push_back(clone_expr(m));
         return cu_.add_node<Expr>(loc, Expr::Array{std::move(members), clone_expr(v->fill_value)});
     }
+    if (auto* v = e->get_spawn()) {
+        return cu_.add_node<Expr>(loc, Expr::Spawn{clone_expr(v->call)});
+    }
     if (auto* v = e->get_closure()) {
         std::vector<VarList*> params;
         for (auto* p : v->params) params.push_back(clone_varlist(p));
         std::vector<VarList*> returns;
         for (auto* r : v->returns) returns.push_back(clone_varlist(r));
         return cu_.add_node<Expr>(loc, Expr::Closure{std::move(params), std::move(returns),
-            clone_stmt(v->body), v->capture});
+            clone_stmt(v->body)});
     }
     return cu_.add_node<Expr>(loc, e->data);
 }
@@ -1462,22 +1561,21 @@ Stmt* SemanticAnalyzer::clone_stmt(Stmt* s) {
     if (auto* v = s->get_var_decl()) {
         return cu_.add_node<Stmt>(loc, Stmt::VarDecl{clone_varlist(v->vars)});
     }
-    if (auto* v = s->get_spawn()) return cu_.add_node<Stmt>(loc, Stmt::Spawn{clone_stmt(v->body)});
     if (auto* v = s->get_wait()) return cu_.add_node<Stmt>(loc, Stmt::Wait{clone_expr(v->condition)});
     return cu_.add_node<Stmt>(loc, s->data);
 }
 
-VarItem* SemanticAnalyzer::clone_varitem(VarItem* vi) {
-    if (!vi) return nullptr;
-    return cu_.add_node<VarItem>(vi->loc, vi->name, clone_expr(vi->init));
-}
-
 VarList* SemanticAnalyzer::clone_varlist(VarList* vl) {
     if (!vl) return nullptr;
+    Expr* t = clone_type(vl->type);
     std::vector<VarItem*> vars;
     vars.reserve(vl->vars.size());
-    for (auto* vi : vl->vars) vars.push_back(clone_varitem(vi));
-    return cu_.add_node<VarList>(vl->loc, vl->modfs, clone_type(vl->type), std::move(vars));
+    for (auto* vi : vl->vars) {
+        if (!vi) { vars.push_back(nullptr); continue; }
+        vars.push_back(cu_.add_node<VarItem>(
+            vi->loc, vi->name, clone_expr(vi->init), t));
+    }
+    return cu_.add_node<VarList>(vl->loc, vl->modfs, t, std::move(vars));
 }
 
 Func* SemanticAnalyzer::clone_func(Func* f) {
@@ -1496,6 +1594,30 @@ Func* SemanticAnalyzer::clone_func(Func* f) {
 // - 不得跳入某个作用域内部（即目标所在作用域必须是跳转点作用域的祖先或自身）
 // - 不得跳入循环内部
 namespace {
+// 声明的名字键：变量列表取各变量名，特殊方法取内部名，其余取声明名
+std::vector<std::string> decl_key_names(const Decl* d) {
+    std::vector<std::string> names;
+    if (!d) return names;
+    if (auto* vl = dynamic_cast<const VarList*>(d)) {
+        for (auto* v : vl->vars) {
+            if (v) names.push_back(std::string(v->name));
+        }
+        return names;
+    }
+    if (auto* sm = dynamic_cast<const SpecialMethod*>(d)) {
+        switch (sm->kind) {
+            case SpecialMethod::Kind::Drop:   names.push_back("DROP"); break;
+            case SpecialMethod::Kind::Ref:    names.push_back("REF"); break;
+            case SpecialMethod::Kind::Deref:  names.push_back("DEREF"); break;
+            case SpecialMethod::Kind::Access: names.push_back("ACCESS"); break;
+            default: break;
+        }
+        return names;
+    }
+    if (!d->name.empty()) names.push_back(std::string(d->name));
+    return names;
+}
+
 struct JumpPoint {
     std::string label;
     std::vector<int> scope_path;
@@ -1549,10 +1671,6 @@ void SemanticAnalyzer::check_jumps() {
                 scan(fo->body, p, loops + 1);
                 return;
             }
-            if (auto* sp = st->get_spawn()) {
-                scan(sp->body, path, loops);
-                return;
-            }
         };
         scan(info.body, {}, 0);
 
@@ -1596,12 +1714,17 @@ void SemanticAnalyzer::check_initialization() {
                 if (sym) { ctx.declared.insert(sym); ctx.assigned.insert(sym); }
             }
         }
-        // 返回变量需在函数结束时已赋值
+        // 返回变量：声明处已赋值则跳过，否则要求函数体内至少赋值一次
         for (VarList* vl : info.returns) {
             if (!vl) continue;
             for (VarItem* vi : vl->vars) {
                 Symbol* sym = var_symbols_.count(vi) ? var_symbols_[vi] : nullptr;
-                if (sym) { ctx.declared.insert(sym); ctx.returns.push_back(sym); }
+                if (!sym) continue;
+                ctx.declared.insert(sym);
+                if (!vi->init && !body_assigns_return(info.body, sym)) {
+                    error(vi->loc, "return variable '" + std::string(vi->name) +
+                          "' is never assigned");
+                }
             }
         }
         init_stmt(ctx, info.body);
@@ -1643,14 +1766,7 @@ void SemanticAnalyzer::init_stmt(InitCtx& ctx, Stmt* s) {
         init_stmt(body_ctx, f->next);
         return;
     }
-    if (s->is_return()) {
-        for (Symbol* rv : ctx.returns) {
-            if (!ctx.assigned.count(rv)) {
-                error(s->loc, "return before assigning return variable");
-            }
-        }
-        return;
-    }
+    if (s->is_return()) return;
     if (auto* v = s->get_var_decl()) {
         VarList* vl = v->vars;
         if (!vl) return;
@@ -1664,12 +1780,81 @@ void SemanticAnalyzer::init_stmt(InitCtx& ctx, Stmt* s) {
         }
         return;
     }
-    if (auto* sp = s->get_spawn()) {
-        InitCtx body_ctx = ctx;
-        init_stmt(body_ctx, sp->body);
-        return;
-    }
     if (auto* wa = s->get_wait()) { init_expr(ctx, wa->condition); return; }
+}
+
+// 返回变量的"至少赋值一次"扫描：不走流敏感的 assigned 合并
+bool SemanticAnalyzer::body_assigns_return(Stmt* s, Symbol* target) {
+    if (!s) return false;
+    if (auto* b = s->get_block()) {
+        for (Stmt* x : b->stmts) if (body_assigns_return(x, target)) return true;
+        return false;
+    }
+    if (auto* e = s->get_expr()) return expr_assigns_return(e->expr, target);
+    if (auto* i = s->get_if()) {
+        return expr_assigns_return(i->condition, target)
+            || body_assigns_return(i->then_branch, target)
+            || body_assigns_return(i->else_branch, target);
+    }
+    if (auto* w = s->get_while()) {
+        return expr_assigns_return(w->condition, target)
+            || body_assigns_return(w->body, target);
+    }
+    if (auto* f = s->get_for()) {
+        return body_assigns_return(f->init, target)
+            || expr_assigns_return(f->condition, target)
+            || body_assigns_return(f->next, target)
+            || body_assigns_return(f->body, target);
+    }
+    if (s->is_return()) return false;
+    if (auto* v = s->get_var_decl()) {
+        VarList* vl = v->vars;
+        if (!vl) return false;
+        for (VarItem* vi : vl->vars) {
+            Symbol* sym = var_symbols_.count(vi) ? var_symbols_[vi] : nullptr;
+            if (sym == target && vi->init) return true;
+            if (vi->init && expr_assigns_return(vi->init, target)) return true;
+        }
+        return false;
+    }
+    if (auto* wa = s->get_wait()) return expr_assigns_return(wa->condition, target);
+    return false;
+}
+
+bool SemanticAnalyzer::expr_assigns_return(Expr* e, Symbol* target) {
+    if (!e) return false;
+    if (auto* a = e->get_assign()) {
+        if (a->target && a->target->sym == target) return true;
+        return expr_assigns_return(a->value, target);
+    }
+    if (auto* b = e->get_binary()) {
+        return expr_assigns_return(b->left, target)
+            || expr_assigns_return(b->right, target);
+    }
+    if (auto* u = e->get_unary()) return expr_assigns_return(u->operand, target);
+    if (auto* c = e->get_call()) {
+        if (expr_assigns_return(c->callee, target)) return true;
+        for (Expr* arg : c->args) if (expr_assigns_return(arg, target)) return true;
+        return false;
+    }
+    if (auto* t = e->get_ternary()) {
+        return expr_assigns_return(t->cond, target)
+            || expr_assigns_return(t->then_expr, target)
+            || expr_assigns_return(t->else_expr, target);
+    }
+    if (auto* ix = e->get_index()) {
+        return expr_assigns_return(ix->target, target)
+            || expr_assigns_return(ix->index, target);
+    }
+    if (auto* m = e->get_member()) return expr_assigns_return(m->target, target);
+    if (auto* ca = e->get_cast()) return expr_assigns_return(ca->operand, target);
+    if (auto* ar = e->get_array()) {
+        for (Expr* m : ar->members) if (expr_assigns_return(m, target)) return true;
+        return expr_assigns_return(ar->fill_value, target);
+    }
+    if (auto* sp = e->get_spawn()) return expr_assigns_return(sp->call, target);
+    if (auto* cl = e->get_closure()) return body_assigns_return(cl->body, target);
+    return false;
 }
 
 void SemanticAnalyzer::init_assign_target(InitCtx& ctx, Expr* e) {
@@ -1713,6 +1898,7 @@ void SemanticAnalyzer::init_expr(InitCtx& ctx, Expr* e) {
         init_expr(ctx, ar->fill_value);
         return;
     }
+    if (auto* sp = e->get_spawn()) { init_expr(ctx, sp->call); return; }
     if (auto* cl = e->get_closure()) {
         // 闭包体独立处理，捕获变量在此处按使用检查
         InitCtx body_ctx;
@@ -1725,6 +1911,138 @@ void SemanticAnalyzer::init_expr(InitCtx& ctx, Expr* e) {
         }
         init_stmt(body_ctx, cl->body);
         return;
+    }
+}
+
+// main 的合法形式：参数为空或 (int, char**)，返回为空或 int
+void SemanticAnalyzer::check_main() {
+    Scope* root = symbols_.root();
+    Symbol* sym = root ? root->lookup_member("main") : nullptr;
+    if (!sym || sym->kind != SymbolKind::Function) return;
+    Func* f = sym->get<Func>();
+    if (!f) return;
+
+    std::vector<Expr*> params;
+    for (VarList* vl : f->params) {
+        if (!vl) continue;
+        for (VarItem* vi : vl->vars) {
+            if (vi && vi->type) params.push_back(vi->type);
+        }
+    }
+    bool params_ok = params.empty();
+    if (!params_ok && params.size() == 2) {
+        params_ok = type_to_key(*params[0]) == "i32"
+                 && type_to_key(*params[1]) == "char**";
+    }
+    if (!params_ok) {
+        error(f->loc, "invalid 'main' signature: parameters must be empty or '(int, char**)'");
+    }
+
+    std::vector<Expr*> returns;
+    for (VarList* vl : f->returns) {
+        if (!vl) continue;
+        for (VarItem* vi : vl->vars) {
+            if (vi && vi->type) returns.push_back(vi->type);
+        }
+    }
+    bool returns_ok = returns.empty()
+        || (returns.size() == 1 && type_to_key(*returns[0]) == "i32");
+    if (!returns_ok) {
+        error(f->loc, "invalid 'main' signature: return must be empty or 'int'");
+    }
+}
+
+Decl* SemanticAnalyzer::clone_decl(Decl* d) {
+    if (!d) return nullptr;
+    switch (d->kind) {
+        case DeclKind::VarList:
+            return clone_varlist(static_cast<VarList*>(d));
+        case DeclKind::Func:
+            return clone_func(static_cast<Func*>(d));
+        case DeclKind::Operator: {
+            auto* op = static_cast<Operator*>(d);
+            Func* f = clone_func(op);
+            return cu_.add_node<Operator>(op->loc, op->op, op->name, op->modfs,
+                f->params, f->returns, f->body);
+        }
+        case DeclKind::SpecialMethod: {
+            auto* sm = static_cast<SpecialMethod*>(d);
+            std::vector<VarList*> params;
+            params.reserve(sm->params.size());
+            for (auto* p : sm->params) params.push_back(clone_varlist(p));
+            return cu_.add_node<SpecialMethod>(sm->loc, sm->kind, sm->modfs,
+                clone_stmt(sm->body),
+                sm->conv ? clone_varlist(sm->conv) : nullptr,
+                std::move(params));
+        }
+        case DeclKind::Keep: {
+            auto* k = static_cast<Keep*>(d);
+            return cu_.add_node<Keep>(k->loc, k->code, k->modfs);
+        }
+        case DeclKind::Class: {
+            auto* c = static_cast<Class*>(d);
+            std::vector<Decl*> members;
+            members.reserve(c->members.size());
+            for (auto* m : c->members) members.push_back(clone_decl(m));
+            return cu_.add_node<Class>(c->loc, c->name, c->modfs, std::move(members));
+        }
+        case DeclKind::Enum: {
+            auto* e = static_cast<Enum*>(d);
+            std::vector<EnumVariant*> variants;
+            variants.reserve(e->variants.size());
+            for (auto* v : e->variants) {
+                variants.push_back(cu_.add_node<EnumVariant>(v->loc, v->name));
+            }
+            return cu_.add_node<Enum>(e->loc, e->name, e->modfs, std::move(variants));
+        }
+        default:
+            return d;
+    }
+}
+
+// 修饰注入：把来源类的成员合并到目标类，非重名成员追加在原有字段之后。
+// 同名时，来源成员带 over 才覆盖；两个来源的 over 成员同名则警告并保留先到的。
+void SemanticAnalyzer::apply_injections(Class* cls) {
+    if (!cls || cls->injects.empty()) return;
+
+    std::unordered_map<std::string, size_t> index;
+    std::unordered_set<std::string> injected;
+    for (size_t i = 0; i < cls->members.size(); ++i) {
+        for (const std::string& n : decl_key_names(cls->members[i])) {
+            index[n] = i;
+        }
+    }
+
+    for (Modification* mod : cls->injects) {
+        if (!mod) continue;
+        Symbol* sym = symbols_.lookup_member(std::string(mod->name));
+        Decl* src_decl = sym ? sym->get_decl() : nullptr;
+        if (!src_decl || src_decl->kind != DeclKind::Class) {
+            error(mod->loc, "cannot inject from '" + std::string(mod->name) +
+                  "': not a class");
+            continue;
+        }
+        auto* src = static_cast<Class*>(src_decl);
+        for (Decl* m : src->members) {
+            if (!m) continue;
+            bool over = m->modfs.has(ModfKind::Over);
+            for (const std::string& n : decl_key_names(m)) {
+                auto it = index.find(n);
+                if (it == index.end()) {
+                    index[n] = cls->members.size();
+                    injected.insert(n);
+                    cls->members.push_back(clone_decl(m));
+                } else if (over) {
+                    Decl* cur = cls->members[it->second];
+                    if (injected.count(n) && cur && cur->modfs.has(ModfKind::Over)) {
+                        warning(m->loc, "conflicting 'over' injection for '" + n + "'");
+                        continue;
+                    }
+                    cls->members[it->second] = clone_decl(m);
+                    injected.insert(n);
+                }
+            }
+        }
     }
 }
 
