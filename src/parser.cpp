@@ -160,8 +160,9 @@ Import* Parser::parse_import() {
     if (curr().kind != TokenKind::Import) return nullptr;
     advance();
     if (curr().is_ident() || curr().kind == TokenKind::StringLiteral){
+        bool is_str = (curr().kind == TokenKind::StringLiteral);
         std::unique_ptr<Import> result = std::make_unique<Import>(
-            get_loc(), curr().get_val(), no
+            get_loc(), curr().get_val(), no, is_str
         );
         advance();
         Import* raw = result.get();
@@ -175,10 +176,24 @@ Import* Parser::parse_import() {
 Decl* Parser::parse_decl() {
     if (!curr().is_word() && curr().kind != TokenKind::At
         && curr().kind != TokenKind::Dollar
-        && curr().kind != TokenKind::BracketL) return nullptr;
+        && curr().kind != TokenKind::BracketL
+        && curr().kind != TokenKind::Hash) return nullptr;
     ModfList ml = parse_modfs();
     size_t sp = point();
     Location loc = get_loc();
+    // '#mods @Class {}' 修饰注入：可逆探测，非 '@' 时退回交给类型解析
+    if (curr().kind == TokenKind::Hash) {
+        std::vector<Modification*> injs;
+        while (curr().kind == TokenKind::Hash) {
+            Modification* mod = parse_modification();
+            if (!mod) break;
+            injs.push_back(mod);
+        }
+        if (curr().kind == TokenKind::At) {
+            return parse_class_decl(ml, loc, std::move(injs));
+        }
+        restore(sp);
+    }
     // 易于确定的优先级更高
     if (curr().kind == TokenKind::At) return parse_class_decl(ml, loc);
     if (curr().kind == TokenKind::Enum) return parse_enum_decl(ml, loc);
@@ -218,9 +233,8 @@ Modification* Parser::parse_modification() {
     }
     std::string_view name = curr().get_val();
     walk();
-    std::vector<ASTNode*> args; // No template args without generics
 
-    return cu_.add_node<Modification>(loc, name, args);
+    return cu_.add_node<Modification>(loc, name);
 }
 
 // 函数的识别：名称后接参数括号
@@ -297,7 +311,7 @@ VarList* Parser::parse_var_decl(ModfList &ml, Location &loc) {
     );
 }
 
-Class* Parser::parse_class_decl(ModfList &ml, Location &loc) {
+Class* Parser::parse_class_decl(ModfList &ml, Location &loc, std::vector<Modification*> injs) {
     if (curr().kind != TokenKind::At) return nullptr;
     advance();
     std::string_view name;
@@ -312,7 +326,7 @@ Class* Parser::parse_class_decl(ModfList &ml, Location &loc) {
     ml.merge(nml);
     std::vector<Decl*> members = parse_members();
     Class* raw = cu_.add_node<Class>(
-        loc, std::move(name), std::move(ml), std::move(members)
+        loc, std::move(name), std::move(ml), std::move(members), std::move(injs)
     );
     return raw;
 }
@@ -1507,9 +1521,8 @@ Expr* Parser::parse_array_length() {
     return nullptr;
 }
 
-Expr* Parser::parse_type() {
+Expr* Parser::parse_type_atom() {
     Expr* t = nullptr;
-
     if (curr().is_type()) {
         t = parse_primitive_type();
     } else if (curr().kind == TokenKind::Dollar) {
@@ -1517,13 +1530,51 @@ Expr* Parser::parse_type() {
     } else if (curr().is_ident()) {
         t = parse_generic_type();
     }
-
-    if (!t) {
-        return nullptr;
-    }
-
+    if (!t) return nullptr;
     // 后缀链与表达式共用；类型位置按类型解释
     return parse_postfix(t, true);
+}
+
+// 类型：'#mod T' 组合类型，层从左到右，冲突时左侧优先
+Expr* Parser::parse_type() {
+    if (curr().kind != TokenKind::Hash) {
+        return parse_type_atom();
+    }
+    Location loc = get_loc();
+    std::vector<Expr*> layers;
+    std::vector<bool> is_mod;
+    bool has_value = false;
+    for (;;) {
+        if (curr().kind == TokenKind::Hash) {
+            Location hloc = get_loc();
+            walk();
+            if (!curr().is_ident()) {
+                add_error("expected modifier name after '#'");
+                return nullptr;
+            }
+            std::string_view name = curr().get_val();
+            walk();
+            Expr* mod = cu_.add_node<Expr>(hloc, Expr::Identifier{name});
+            mod->is_type = true;
+            layers.push_back(mod);
+            is_mod.push_back(true);
+            continue;
+        }
+        if (has_value) break;
+        Expr* base = parse_type_atom();
+        if (!base) break;
+        layers.push_back(base);
+        is_mod.push_back(false);
+        has_value = true;
+    }
+    if (layers.empty()) return nullptr;
+    if (!has_value) {
+        add_error("modifier type requires a value type");
+        return nullptr;
+    }
+    Expr* node = cu_.add_node<Expr>(loc, Expr::Modifier{std::move(layers), std::move(is_mod)});
+    node->is_type = true;
+    return node;
 }
 
 Expr* Parser::parse_primitive_type() {

@@ -25,3 +25,4 @@ tests/
 .cache/
 *smoke*
 *.py
+tools/

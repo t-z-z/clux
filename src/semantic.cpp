@@ -24,11 +24,33 @@ static bool ref_is_lvalue(Expr* t) {
 // 从解析后的类型节点取成员作用域
 static Scope* named_type_scope(Expr* t) {
     if (!t) return nullptr;
+    if (t->is_modifier()) {
+        auto* m = t->get_modifier();
+        for (size_t i = 0; i < m->layers.size(); ++i) {
+            if (!m->is_mod[i]) continue;
+            if (Scope* s = named_type_scope(m->layers[i])) return s;
+        }
+        return nullptr;
+    }
     if (t->resolved_scope) return t->resolved_scope;
     if (t->resolved_decl) {
         if (Cont* cont = dynamic_cast<Cont*>(t->resolved_decl)) return cont->scope;
     }
     return nullptr;
+}
+
+// 组合类型中承载值的层（唯一的非修饰层），逐层剥去修饰
+static Expr* underlying_type(Expr* t) {
+    while (t && t->is_modifier()) {
+        auto* m = t->get_modifier();
+        Expr* val = nullptr;
+        for (size_t i = 0; i < m->layers.size(); ++i) {
+            if (!m->is_mod[i]) { val = m->layers[i]; break; }
+        }
+        if (!val || val == t) break;
+        t = val;
+    }
+    return t;
 }
 
 // 浮点类型提升级：float16 < float < double
@@ -56,12 +78,14 @@ static int integer_rank(PrimitiveTypeKind k) {
 }
 
 bool SemanticAnalyzer::is_numeric_type(Expr* t) {
+    t = underlying_type(t);
     if (!t || !t->is_primitive()) return false;
     auto k = t->get_primitive()->kind;
     return k != PrimitiveTypeKind::Bool && k != PrimitiveTypeKind::Type && k != PrimitiveTypeKind::Void;
 }
 
 bool SemanticAnalyzer::is_integer_type(Expr* t) {
+    t = underlying_type(t);
     if (!t) return false;
     if(auto* p = t->get_primitive()){
         PrimitiveTypeKind k = p->kind;
@@ -75,17 +99,32 @@ bool SemanticAnalyzer::is_integer_type(Expr* t) {
 }
 
 bool SemanticAnalyzer::is_float_type(Expr* t) {
+    t = underlying_type(t);
     if (!t || !t->is_primitive()) return false;
     auto k = t->get_primitive()->kind;
     return k == PrimitiveTypeKind::Float16 || k == PrimitiveTypeKind::Float || k == PrimitiveTypeKind::Double;
 }
 
 bool SemanticAnalyzer::is_bool_type(Expr* t) {
+    t = underlying_type(t);
     return t && t->is_primitive() && t->get_primitive()->kind == PrimitiveTypeKind::Bool;
 }
 
 bool SemanticAnalyzer::is_same_type(Expr* a, Expr* b) {
     if (!a || !b) return false;
+    if (a->is_modifier() || b->is_modifier()) {
+        auto* ma = a->get_modifier();
+        auto* mb = b->get_modifier();
+        if (!ma || !mb) return false;
+        if (ma->layers.size() != mb->layers.size()) return false;
+        for (size_t i = 0; i < ma->layers.size(); ++i) {
+            if (ma->is_mod[i] != mb->is_mod[i]) return false;
+            if (!is_same_type(ma->layers[i], mb->layers[i])) return false;
+        }
+        return true;
+    }
+    a = underlying_type(a);
+    b = underlying_type(b);
     // StringLiteral 与 char[] 视为同类
     auto is_char_array = [](Expr* t) {
         if (!t || !t->is_array_type()) return false;
@@ -119,6 +158,7 @@ bool SemanticAnalyzer::is_same_type(Expr* a, Expr* b) {
 }
 
 bool SemanticAnalyzer::is_integer_promotable(Expr* t) {
+    t = underlying_type(t);
     if (!t || !t->is_primitive()) return false;
     auto k = t->get_primitive()->kind;
     return k == PrimitiveTypeKind::Int8 || k == PrimitiveTypeKind::Short
@@ -127,6 +167,7 @@ bool SemanticAnalyzer::is_integer_promotable(Expr* t) {
 }
 
 bool SemanticAnalyzer::is_void_type(Expr* t) {
+    t = underlying_type(t);
     if (!t) return false;
     if (t->is_void()) return true;
     // 解析器把源码中的 void 生成为 Primitive{Void}
@@ -168,16 +209,24 @@ Expr* SemanticAnalyzer::make_int_literal(const Location& loc, size_t value) {
 }
 
 bool SemanticAnalyzer::analyze() {
+    collect_only();
+    analyze_rest();
+    return !has_error_;
+}
+
+void SemanticAnalyzer::collect_only() {
     diagnostics_.clear();
     has_error_ = false;
     bodies_.clear();
     collect();
+}
+
+void SemanticAnalyzer::analyze_rest() {
+    process_using_namespaces();
     walk(cu_);
     // 跳转与初始化检查需要完整函数体，放在遍历之后进行
     check_jumps();
     check_initialization();
-    check_main();
-    return !has_error_;
 }
 
 std::string SemanticAnalyzer::build_callkey(const std::string& name,
@@ -213,6 +262,48 @@ void SemanticAnalyzer::collect() {
     // 顶层声明默认公开
     for (Decl* decl : cu_.top_decls) {
         collect_decl(decl, true);
+    }
+}
+
+// using namespace：把命名空间成员并入全局；重复导入跳过，非命名空间报错
+void SemanticAnalyzer::process_using_namespaces() {
+    std::unordered_set<Decl*> seen;
+    for (const auto& un : cu_.using_namespaces) {
+        Expr* path = un.path;
+        if (!path) continue;
+        std::string full = type_name_string(path);
+        Scope* cur = symbols_.root();
+        Symbol* sym = nullptr;
+        size_t start = 0;
+        bool bad = false;
+        while (start <= full.size()) {
+            size_t pos = full.find("::", start);
+            std::string part = full.substr(start,
+                pos == std::string::npos ? std::string::npos : pos - start);
+            sym = SymbolTable::lookup_member_in(cur, part);
+            if (!sym) { bad = true; break; }
+            if (pos == std::string::npos) break;
+            cur = sym->scope;
+            if (!cur) { bad = true; break; }
+            start = pos + 2;
+        }
+        if (bad || !sym) {
+            error(un.loc, "unknown namespace '" + full + "'");
+            continue;
+        }
+        if (sym->kind != SymbolKind::Namespace) {
+            error(un.loc, "'" + full + "' is not a namespace");
+            continue;
+        }
+        Decl* ns_decl = sym->get_decl();
+        if (!ns_decl || !seen.insert(ns_decl).second) continue;  // 重复导入跳过
+        Scope* ns_scope = sym->scope;
+        if (!ns_scope) continue;
+        // 已有名字优先，仅补空缺
+        for (const auto& [name, m] : ns_scope->members) {
+            if (symbols_.root()->members.find(name) == symbols_.root()->members.end())
+                symbols_.root()->members[name] = m;
+        }
     }
 }
 
@@ -389,6 +480,7 @@ void SemanticAnalyzer::register_special(SpecialMethod& sm, bool default_public) 
 }
 
 std::string SemanticAnalyzer::type_to_key(Expr& t) {
+    if (Expr* u = underlying_type(&t); u != &t) return type_to_key(*u);
     if (t.is_primitive()) {
         auto k = t.get_primitive()->kind;
         switch (k) {
@@ -1198,7 +1290,12 @@ void SemanticAnalyzer::visit_expr_member(Expr::Member& m) {
     
     std::string field = std::string(m.member);
 
-    Symbol* member = SymbolTable::lookup_member_in(target_scope, field);
+    Symbol* member = nullptr;
+    if (m.target->type && m.target->type->is_modifier()) {
+        member = lookup_member_on_type(m.target->type, field, nullptr);
+    } else {
+        member = SymbolTable::lookup_member_in(target_scope, field);
+    }
     if (member) {
         current_expr->sym = member;
         check_access(member, current_expr->loc);
@@ -1435,6 +1532,30 @@ void SemanticAnalyzer::visit_type_reference(Expr::Reference&) {}
 void SemanticAnalyzer::visit_type_string_literal(Expr::StringLiteralType&) {
     // StringLiteral is a valid type, no additional checks needed
 }
+void SemanticAnalyzer::visit_type_modifier(Expr::Modifier&) {}
+
+// 组合类型成员查找：层从左到右，左侧优先
+Symbol* SemanticAnalyzer::lookup_member_on_type(Expr* type, const std::string& field, Scope** found_scope) {
+    if (found_scope) *found_scope = nullptr;
+    if (!type) return nullptr;
+    if (type->is_modifier()) {
+        auto* m = type->get_modifier();
+        for (size_t i = 0; i < m->layers.size(); ++i) {
+            if (!m->is_mod[i]) continue;
+            Scope* s = named_type_scope(m->layers[i]);
+            if (!s) continue;
+            if (Symbol* sym = s->lookup_member(field)) {
+                if (found_scope) *found_scope = s;
+                return sym;
+            }
+        }
+        return nullptr;
+    }
+    Scope* s = named_type_scope(type);
+    if (found_scope) *found_scope = s;
+    return s ? s->lookup_member(field) : nullptr;
+}
+
 void SemanticAnalyzer::visit_type_void(Expr::Void&) {
     // Void is valid as a return type or pointer pointee context, checked by callers
 }
@@ -1444,6 +1565,14 @@ void SemanticAnalyzer::visit_type_inferred(Expr::Inferred&) {}
 Expr* SemanticAnalyzer::clone_type(Expr* t) {
     if (!t) return nullptr;
     Location loc = t->loc;
+    if (auto* m = t->get_modifier()) {
+        std::vector<Expr*> layers;
+        layers.reserve(m->layers.size());
+        for (auto* l : m->layers) layers.push_back(clone_type(l));
+        Expr* n = cu_.add_node<Expr>(loc, Expr::Modifier{std::move(layers), m->is_mod});
+        n->is_type = true;
+        return n;
+    }
     if (auto* p = t->get_primitive()) return cu_.add_node<Expr>(loc, Expr::Primitive{p->kind});
     if (t->is_string_literal_type()) return cu_.add_node<Expr>(loc, Expr::StringLiteralType{});
     if (t->is_void()) return cu_.add_node<Expr>(loc, Expr::Void{});

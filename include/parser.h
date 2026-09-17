@@ -166,7 +166,7 @@ private:
     bool parse_modifier_directive(ModfList& defaults);
     VarList* parse_var_decl(ModfList &ml, Location &loc);
     Func* parse_func_decl(ModfList &ml, Location &loc);
-    Class* parse_class_decl(ModfList &ml, Location &loc);
+    Class* parse_class_decl(ModfList &ml, Location &loc, std::vector<Modification*> injs = {});
     Namespace* parse_namespace_decl(ModfList &ml, Location &loc);
     Extern* parse_extern_decl(ModfList &ml, Location &loc);
     Operator* parse_operator_overload(ModfList &ml, Location &loc);
@@ -214,6 +214,7 @@ private:
     std::vector<VarList*> parse_value_params();    // (int a)
 
     Expr* parse_type();
+    Expr* parse_type_atom();
     Expr* parse_array_length();
     Expr* parse_primitive_type();
     Expr* parse_func_type();     // $(int)int

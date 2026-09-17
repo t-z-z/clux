@@ -162,9 +162,8 @@ inline ModfKind token_to_modf(TokenKind tk) {
 struct Modification : ASTNode{
     std::string_view name;
     Decl* decl = nullptr;
-    std::vector<ASTNode*> args;
-    Modification(const Location&l, std::string_view n, std::vector<ASTNode*> a)
-        :ASTNode(l), name(n), args(std::move(a)) {}
+    Modification(const Location&l, std::string_view n)
+        :ASTNode(l), name(n) {}
 };
 
 struct ModfList {
@@ -186,8 +185,10 @@ struct ModfList {
 
 struct Import : ASTNode {
     bool no = false;
+    bool is_string = false;  // 路径来自字符串字面量（相对/绝对），否则为模块名
     std::string_view path;
-    Import(const Location &loc, std::string_view p, bool n): ASTNode(loc), no(n), path(p)  {}
+    Import(const Location &loc, std::string_view p, bool n, bool str = false)
+        : ASTNode(loc), no(n), is_string(str), path(p)  {}
     Import() = default;
 };
 
@@ -264,6 +265,9 @@ struct Expr : ASTNode {
     struct Closure      { std::vector<VarList*> params; std::vector<VarList*> returns;
                         Stmt* body = nullptr; };
     struct Spawn        { Expr* call; };
+    // 组合类型：层从左到右，冲突时左侧优先（左侧覆盖右侧）
+    // is_mod[i] 为真表示 layers[i] 是 #修饰层（贡献成员、不承载值）
+    struct Modifier     { std::vector<Expr*> layers; std::vector<bool> is_mod; };
 
     struct Primitive        { PrimitiveTypeKind kind; };
     struct Pointer          { Expr* pointee; };
@@ -278,7 +282,7 @@ struct Expr : ASTNode {
     using Variant = std::variant<
         Literal, Identifier, Binary, Unary, Assign,
         Call, Ternary, Index, Member,
-        Cast, Array, Closure, Spawn,
+        Cast, Array, Closure, Spawn, Modifier,
         Primitive, Pointer, ArrayType, StringLiteralType,
         FuncPtr, FuncRef, Reference, Inferred, Void
     >;
@@ -309,6 +313,7 @@ struct Expr : ASTNode {
     BBB(array, Array, Expr)
     BBB(closure, Closure, Expr)
     BBB(spawn, Spawn, Expr)
+    BBB(modifier, Modifier, Expr)
     BBB(primitive, Primitive, Expr)
     BBB(pointer, Pointer, Expr)
     BBB(array_type, ArrayType, Expr)
@@ -323,7 +328,7 @@ struct Expr : ASTNode {
     bool is_type_node() const {
         return is_type || is_primitive() || is_pointer() || is_array_type() ||
                is_string_literal_type() || is_func_ptr() || is_func_ref() ||
-               is_reference() || is_inferred() || is_void();
+               is_reference() || is_inferred() || is_void() || is_modifier();
     }
 };
 
@@ -653,6 +658,7 @@ struct ASTVisitor {
     virtual void visit_type_reference(Expr::Reference&) {}
     virtual void visit_type_inferred(Expr::Inferred&) {}
     virtual void visit_type_void(Expr::Void&) {}
+    virtual void visit_type_modifier(Expr::Modifier&) {}
 
     // 递归遍历子节点（基类驱动，结构变更只改这里）
     void walk_children(Decl& decl) {
@@ -816,6 +822,10 @@ struct ASTVisitor {
             } else if constexpr (std::is_same_v<T, Expr::Primitive>) visit_type_primitive(v);
             else if constexpr (std::is_same_v<T, Expr::Inferred>) visit_type_inferred(v);
             else if constexpr (std::is_same_v<T, Expr::Void>) visit_type_void(v);
+            else if constexpr (std::is_same_v<T, Expr::Modifier>) {
+                for (auto* l : v.layers) if (l) walk(*l);
+                visit_type_modifier(v);
+            }
             else if constexpr (std::is_same_v<T, Expr::StringLiteralType>) visit_type_string_literal(v);
             else if constexpr (std::is_same_v<T, Expr::FuncRef>) visit_type_func_ref(v);
             else if constexpr (std::is_same_v<T, Expr::Literal>) visit_expr_literal(v);

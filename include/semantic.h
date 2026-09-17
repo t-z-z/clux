@@ -226,6 +226,24 @@ struct SymbolTable {
         }
         return nullptr;
     }
+
+    // 把 other 的符号并入本表；同名以本表已有者优先
+    void merge_from(const SymbolTable& other) {
+        if (!root_ || !other.root_) return;
+        merge_scope(*root_, *other.root_);
+    }
+    static void merge_scope(Scope& dst, const Scope& src) {
+        for (const auto& [name, sym] : src.locals) {
+            if (dst.locals.find(name) == dst.locals.end()) dst.locals[name] = sym;
+        }
+        for (const auto& [name, sym] : src.members) {
+            if (dst.members.find(name) == dst.members.end()) dst.members[name] = sym;
+        }
+        for (const auto& src_child : src.children) {
+            Scope* dst_child = dst.get_or_create_child(src_child->name);
+            merge_scope(*dst_child, *src_child);
+        }
+    }
 };
 
 // 语义分析器
@@ -254,26 +272,16 @@ public:
         typeInferred = make_type(Location(), Expr::Inferred{});
     }
     void merge_external_symbols(const SymbolTable& external){
-        merge_scope(*symbols_.root(), *external.root());
-    }
-    void merge_scope(Scope& dst, const Scope& src) {
-        for (const auto& [name, sym] : src.locals) {
-            if (dst.locals.find(name) == dst.locals.end()) {
-                dst.locals[name] = sym;
-            }
-        }
-        for (const auto& [name, sym] : src.members) {
-            if (dst.members.find(name) == dst.members.end()) {
-                dst.members[name] = sym;
-            }
-        }
-        for (const auto& src_child : src.children) {
-            Scope* dst_child = dst.get_or_create_child(src_child->name);
-            merge_scope(*dst_child, *src_child);
-        }
+        symbols_.merge_from(external);
     }
     // 主入口
     bool analyze();
+    // 仅收集符号表（不遍历函数体），供多模块分阶段编译
+    void collect_only();
+    // 遍历体与后续检查（需已收集/合并符号表）
+    void analyze_rest();
+    // 顶层 main 签名检查（符号表全局化后调用一次）
+    void check_main();
 
     // 诊断信息访问
     bool has_error() const { return has_error_; }
@@ -342,6 +350,7 @@ public:
     void visit_type_reference(Expr::Reference&) override;
     void visit_type_inferred(Expr::Inferred&) override;
     void visit_type_void(Expr::Void&) override;
+    void visit_type_modifier(Expr::Modifier&) override;
     void visit_type_string_literal(Expr::StringLiteralType&) override;
 
 private:
@@ -375,9 +384,11 @@ private:
     bool is_same_type(Expr* a, Expr* b);
     bool is_integer_promotable(Expr* t);
     bool is_void_type(Expr* t);
+    Symbol* lookup_member_on_type(Expr* type, const std::string& field, Scope** found_scope);
 
     // 声明收集与注册
     void collect();
+    void process_using_namespaces();
     void collect_decl(Decl* decl, bool default_public);
     void register_func(Func& f, bool default_public);
     void register_special(SpecialMethod& sm, bool default_public);
@@ -401,7 +412,6 @@ private:
         std::unordered_set<Symbol*> declared;
         std::unordered_set<Symbol*> assigned;
     };
-    void check_main();
     void check_initialization();
     void init_stmt(InitCtx& ctx, Stmt* s);
     void init_expr(InitCtx& ctx, Expr* e);

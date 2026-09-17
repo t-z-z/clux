@@ -279,6 +279,8 @@ add_int(int a, int b) int r = a + b {}
 add_double(double a, double b) double r = a + b {}
 ```
 
+没有重载。
+
 ## 八、容器
 
 容器是持有名字的组。
@@ -376,7 +378,7 @@ pointer p = pointer()
 
 ### 修饰的方向性
 
-修饰在**声明点结算**：`#M @D` 中 `M` 必须完整可解析。因此修饰**不能依赖被修饰者的信息**。
+修饰在**声明点结算**：`#M @D` 中 `M` 必须完整可解析。
 
 两者方向相反，不可互相替代。
 
@@ -403,7 +405,7 @@ pointer p = pointer()
     setup() { Base_setup() }
 }
 
-#Base @Child {
+@Child #Base {
     process(string data) { print("Implemented") }
     Child_setup { Base_setup() print("Child setup") }
     setup() { Child_setup() }
@@ -415,8 +417,10 @@ pointer p = pointer()
 修饰注入是一种容器操作，将修饰符注入到类声明上。
 
 ```cx
-#foo #bar @baz { }
+#foo #bar @baz #qux { }
 ```
+
+在以上修饰中，foo的成员覆盖了bar的，bar的覆盖了baz的，baz覆盖qux。
 
 修饰注入也支持泛型：
 
