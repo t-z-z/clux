@@ -3,6 +3,8 @@
 #include "../include/lexer.h"
 #include "../include/parser.h"
 #include "../include/semantic.h"
+#include "../include/ir_writer.h"
+#include "../include/translator.h"
 
 #include <filesystem>
 #include <fstream>
@@ -68,9 +70,15 @@ std::string resolve_import(const Import& imp, const std::string& cur_dir,
 
 } // namespace
 
-bool compile(const std::string& source, const std::string& filename,
-             const std::string& lib_dir) {
-    StringPool pool;
+struct FrontendResult {
+    std::vector<std::unique_ptr<Module>> modules;
+    bool ok = false;
+};
+
+FrontendResult run_frontend(StringPool& pool, const std::string& source,
+                            const std::string& filename,
+                            const std::string& lib_dir) {
+    FrontendResult result;
     std::vector<std::unique_ptr<Module>> modules;
     std::unordered_map<std::string, Module*> by_path;
 
@@ -95,7 +103,7 @@ bool compile(const std::string& source, const std::string& filename,
     };
 
     Module* main_mod = load(source, filename);
-    if (!main_mod) return false;
+    if (!main_mod) return result;
 
     // 收集阶段：BFS 展开所有 import（重复/导入自己/循环引用均跳过）
     bool load_failed = false;
@@ -123,7 +131,7 @@ bool compile(const std::string& source, const std::string& filename,
             if (!load(src, canon)) load_failed = true;
         }
     }
-    if (load_failed) return false;
+    if (load_failed) return result;
 
     // 各模块先只收集符号表
     for (auto& m : modules) {
@@ -153,7 +161,31 @@ bool compile(const std::string& source, const std::string& filename,
         for (size_t i = before; i < ds.size(); ++i) emit_diagnostic(ds[i]);
         if (ds.size() > before) ok = false;
     }
-    return ok;
+    result.ok = ok;
+    result.modules = std::move(modules);
+    return result;
+}
+
+bool check(const std::string& source, const std::string& filename,
+           const std::string& lib_dir) {
+    StringPool pool;
+    return run_frontend(pool, source, filename, lib_dir).ok;
+}
+
+bool translate(const std::string& source, const std::string& filename,
+               const std::string& lib_dir, std::ostream& out) {
+    // pool 必须活到翻译结束，否则 AST 中 string_view 悬垂
+    StringPool pool;
+    FrontendResult r = run_frontend(pool, source, filename, lib_dir);
+    if (!r.ok) return false;
+    IRWriter ir(out);
+    ir.emit_header();
+    for (auto& m : r.modules) {
+        Translator t(*m->cu, ir);
+        t.run();
+    }
+    ir.flush();
+    return true;
 }
 
 } // namespace cx

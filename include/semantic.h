@@ -371,6 +371,7 @@ private:
     Symbol* find_operator_overload(OpKind op, Expr& type);
     bool can_convert_to(Expr* src, Expr* dst);
     bool has_conversion(Expr* src, Expr* dst);
+    bool init_matches_class_ctor(Expr* dst, Expr* init);
     // = 赋值、() 传参、cast 转换三种情形共用的转换判定入口
     bool check_conversion(Expr* src, Expr* dst, const std::string& context,
                          const Location& loc, bool explicit_cast = false);

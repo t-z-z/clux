@@ -602,6 +602,8 @@ void SemanticAnalyzer::visit_var_list(VarList& vl) {
         if (!var || !var->init || !var->init->type) continue;
         Expr* dt = var->type ? var->type : vl.type;
         if (!dt || dt->is_inferred()) continue;
+        // 目标是类且存在匹配的 INIT 时，视为构造初始化
+        if (init_matches_class_ctor(dt, var->init)) continue;
         check_conversion(var->init->type, dt, "initialization", var->init->loc);
     }
     for (VarItem* var : vl.vars) {
@@ -776,6 +778,20 @@ bool SemanticAnalyzer::can_convert_to(Expr* src, Expr* dst) {
     return false;
 }
 
+
+bool SemanticAnalyzer::init_matches_class_ctor(Expr* dst, Expr* init) {
+    Expr* u = underlying_type(dst);
+    if (!u || !u->resolved_decl || u->resolved_decl->kind != DeclKind::Class) return false;
+    auto* cls = static_cast<Class*>(u->resolved_decl);
+    std::vector<Expr*> args = {init};
+    for (Decl* m : cls->members) {
+        if (!m || m->kind != DeclKind::SpecialMethod) continue;
+        auto* sm = static_cast<SpecialMethod*>(m);
+        if (sm->kind == SpecialMethod::Kind::Init && args_match(sm->params, args))
+            return true;
+    }
+    return false;
+}
 
 // 判断作用域 s 是否位于 root -> ... -> current 的路径上
 bool SemanticAnalyzer::is_scope_on_path(Scope* s) const {
@@ -1118,17 +1134,20 @@ void SemanticAnalyzer::resolve_call(Expr* call_expr, Expr::Call& c) {
         auto* cls = static_cast<Class*>(cls_decl);
 
         SpecialMethod* ctor = nullptr;
+        bool has_init = false;
         for (Decl* m : cls->members) {
             if (!m || m->kind != DeclKind::SpecialMethod) continue;
             auto* sm = static_cast<SpecialMethod*>(m);
             if (sm->kind != SpecialMethod::Kind::Init) continue;
+            has_init = true;
             if (args_match(sm->params, c.args)) { ctor = sm; break; }
         }
-        if (!ctor) {
+        // 无 INIT 的类允许零参默认构造，字段用声明处默认值初始化
+        if (!ctor && (has_init || !c.args.empty())) {
             fail("no matching constructor for class '" + name + "'");
             return;
         }
-        check_call_args(ctor->params, c.args, ctor->loc);
+        if (ctor) check_call_args(ctor->params, c.args, ctor->loc);
 
         call_expr->sym = nullptr;
         call_expr->type = make_named_type(call_expr->loc,
