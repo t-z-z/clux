@@ -849,8 +849,8 @@ void SemanticAnalyzer::visit_expr_binary(Expr::Binary& b) {
     if (Symbol* s = find_operator_overload(b.op, *lt, *rt)) {
         Expr* overload_ret = typeVoid;
         if (auto* op = s->get<Operator>()) {
-            if (!op->returns.empty() && op->returns[0] && op->returns[0]->type)
-                overload_ret = op->returns[0]->type;
+            if (!op->returns.empty() && op->returns.back() && op->returns.back()->type)
+                overload_ret = op->returns.back()->type;
         }
         current_expr->type = overload_ret;
         current_expr->sym = s;
@@ -930,8 +930,8 @@ void SemanticAnalyzer::visit_expr_unary(Expr::Unary& u) {
 
     if (Symbol* s = find_operator_overload(u.op, *ot)) {
         if (auto* op = s->get<Operator>()) {
-            if (!op->returns.empty() && op->returns[0] && op->returns[0]->type) {
-                current_expr->type = op->returns[0]->type;
+            if (!op->returns.empty() && op->returns.back() && op->returns.back()->type) {
+                current_expr->type = op->returns.back()->type;
             } else {
                 current_expr->type = typeVoid;
             }
@@ -1076,8 +1076,8 @@ void SemanticAnalyzer::resolve_call(Expr* call_expr, Expr::Call& c) {
             if (op->op != OpKind::Paren) continue;
             if (!args_match(op->params, c.args)) continue;
             Expr* ret = typeVoid;
-            if (!op->returns.empty() && op->returns[0] && op->returns[0]->type)
-                ret = op->returns[0]->type;
+            if (!op->returns.empty() && op->returns.back() && op->returns.back()->type)
+                ret = op->returns.back()->type;
             check_call_args(op->params, c.args, op->loc);
             call_expr->sym = nullptr;
             call_expr->type = ret;
@@ -1163,9 +1163,9 @@ void SemanticAnalyzer::resolve_call(Expr* call_expr, Expr::Call& c) {
     check_call_args(func, c.args);
 
     Expr* ret = typeVoid;
-    if (!func->returns.empty() && func->returns[0] &&
-        func->returns[0]->type) {
-        ret = func->returns[0]->type;
+    if (!func->returns.empty() && func->returns.back() &&
+        func->returns.back()->type) {
+        ret = func->returns.back()->type;
     }
 
     call_expr->sym = f_sym;
@@ -1241,8 +1241,8 @@ void SemanticAnalyzer::visit_expr_index(Expr::Index& idx) {
         if (Symbol* s = find_operator_overload(OpKind::Index, *tt, *it)) {
             Expr* ret = typeVoid;
             if (auto* op = s->get<Operator>()) {
-                if (!op->returns.empty() && op->returns[0] && op->returns[0]->type)
-                    ret = op->returns[0]->type;
+                if (!op->returns.empty() && op->returns.back() && op->returns.back()->type)
+                    ret = op->returns.back()->type;
             }
             current_expr->type = ret;
             current_expr->is_lvalue = ref_is_lvalue(ret);
@@ -1422,8 +1422,8 @@ void SemanticAnalyzer::visit_expr_closure(Expr::Closure& clo) {
     }
 
     Expr* ret_type = nullptr;
-    if (!clo.returns.empty() && clo.returns[0] && clo.returns[0]->type) {
-        ret_type = clo.returns[0]->type;
+    if (!clo.returns.empty() && clo.returns.back() && clo.returns.back()->type) {
+        ret_type = clo.returns.back()->type;
     }
 
     current_expr->type = make_type(current_expr->loc,
@@ -1535,18 +1535,6 @@ void SemanticAnalyzer::visit_expr_spawn(Expr::Spawn& sp) {
                 error(arg->loc, "spawn cannot capture a stack pointer argument");
             }
         }
-    }
-}
-
-void SemanticAnalyzer::visit_stmt_wait(Stmt::Wait& wait_stmt) {
-    if (!wait_stmt.condition) {
-        error(current_stmt->loc, "wait statement missing condition");
-        return;
-    }
-    
-    Expr* cond_type = wait_stmt.condition->type;
-    if (cond_type && !is_bool_type(cond_type)) {
-        warning(wait_stmt.condition->loc, "wait condition is not bool, implicit conversion");
     }
 }
 
@@ -1721,7 +1709,6 @@ Stmt* SemanticAnalyzer::clone_stmt(Stmt* s) {
     if (auto* v = s->get_var_decl()) {
         return cu_.add_node<Stmt>(loc, Stmt::VarDecl{clone_varlist(v->vars)});
     }
-    if (auto* v = s->get_wait()) return cu_.add_node<Stmt>(loc, Stmt::Wait{clone_expr(v->condition)});
     return cu_.add_node<Stmt>(loc, s->data);
 }
 
@@ -1940,7 +1927,6 @@ void SemanticAnalyzer::init_stmt(InitCtx& ctx, Stmt* s) {
         }
         return;
     }
-    if (auto* wa = s->get_wait()) { init_expr(ctx, wa->condition); return; }
 }
 
 // 返回变量的"至少赋值一次"扫描：不走流敏感的 assigned 合并
@@ -1977,7 +1963,6 @@ bool SemanticAnalyzer::body_assigns_return(Stmt* s, Symbol* target) {
         }
         return false;
     }
-    if (auto* wa = s->get_wait()) return expr_assigns_return(wa->condition, target);
     return false;
 }
 
@@ -2106,7 +2091,7 @@ void SemanticAnalyzer::check_main() {
         }
     }
     bool returns_ok = returns.empty()
-        || (returns.size() == 1 && type_to_key(*returns[0]) == "i32");
+        || (returns.size() == 1 && type_to_key(*returns.back()) == "i32");
     if (!returns_ok) {
         error(f->loc, "invalid 'main' signature: return must be empty or 'int'");
     }

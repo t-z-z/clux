@@ -201,6 +201,20 @@ add(int a, int b) int r {
 
 参数与变量声明规则相同。
 
+函数支持多个返回声明，永远返回最后一个
+
+```cx
+foo(int a int b) bool r=false int q=a {
+    if (b > a) {
+        q=b
+        r=true
+    }
+}
+main() {
+    int x = foo(1 2)
+}
+```
+
 ### 尾随代码块
 
 函数调用时可以直接跟花括号，作为尾随代码块参数：

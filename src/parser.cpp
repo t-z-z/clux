@@ -672,8 +672,6 @@ Stmt* Parser::parse_stmt() {
         result = parse_goto_stmt();
     }else if (curr().kind == TokenKind::Asm) {
         result = parse_asm_stmt();
-    }else if (curr().kind == TokenKind::Wait){
-        result = parse_wait_stmt();
     }else if (curr().kind == TokenKind::Keep){
         result = parse_keep_stmt();
     }else {
@@ -935,30 +933,6 @@ Stmt* Parser::parse_keep_stmt() {
     return cu_.add_node<Stmt>(
         loc,
         Stmt::Keep{code}
-    );
-}
-
-Stmt* Parser::parse_wait_stmt() {
-    Location loc = get_loc();
-    advance();
-
-    if (curr().kind != TokenKind::ParenL) {
-        add_error("expected '(' after 'wait'");
-        return nullptr;
-    }
-    advance();
-
-    Expr* condition = parse_expr();
-
-    if (curr().kind != TokenKind::ParenR) {
-        add_error("expected ')' after wait condition");
-        return nullptr;
-    }
-    advance();
-
-    return cu_.add_node<Stmt>(
-        loc,
-        Stmt::Wait{condition}
     );
 }
 
@@ -1263,25 +1237,32 @@ Expr* Parser::parse_postfix(Expr* left, bool is_type) {
     for (;;) {
         Location loc = get_loc();
         switch (curr().kind) {
-            // 函数调用：foo(bar)--{}
+            // 函数调用：foo(bar) / foo(bar)--{} / foo--{}
             case TokenKind::ParenL:
             case TokenKind::DoubleHyphen: {
                 if (is_type) return left;
-                std::vector<Expr*> args = parse_list<Expr*>(
-                    TokenKind::ParenL,
-                    TokenKind::ParenR,
-                    TokenKind::Comma,
-                    [this] { return parse_expr(1); },
-                    "argument"
-                ).value_or({});
-                while(curr().kind == TokenKind::DoubleHyphen) {
-                    if (curr().kind == TokenKind::BraceL) {
-                        Expr* e = parse_block_expr();
-                        if (!e) {
-                            add_error("expected block statement after '--'");
-                        }
-                        args.push_back(e);
-                    } else break;
+                std::vector<Expr*> args;
+                if (curr().kind == TokenKind::ParenL) {
+                    args = parse_list<Expr*>(
+                        TokenKind::ParenL,
+                        TokenKind::ParenR,
+                        TokenKind::Comma,
+                        [this] { return parse_expr(1); },
+                        "argument"
+                    ).value_or({});
+                }
+                while (curr().kind == TokenKind::DoubleHyphen) {
+                    advance();  // 消费 '--'
+                    if (curr().kind != TokenKind::BraceL) {
+                        add_error("expected block statement after '--'");
+                        break;
+                    }
+                    Expr* e = parse_block_expr();
+                    if (!e) {
+                        add_error("expected block statement after '--'");
+                        break;
+                    }
+                    args.push_back(e);
                 }
                 left = cu_.add_node<Expr>(
                     loc,
@@ -1684,27 +1665,13 @@ std::optional<std::vector<T>> Parser::parse_list(
 
 std::string_view Parser::parse_code() {
     use_alias_ = false;
-    if (curr().kind != TokenKind::BackQuote) {
-        add_error("expected '`'");
-    }
-    advance();
-    if (curr().kind == TokenKind::BackQuote) {
-        advance();
+    if (curr().kind != TokenKind::RawCode) {
+        add_error("expected code block");
         use_alias_ = true;
         return "";
     }
-    size_t start = lexer_.get_pos();
-    while (!is_eof() && curr().kind != TokenKind::BackQuote) {
-        advance();
-    }
-    if (is_eof()) {
-        add_error("unterminated code block (missing closing '`')");
-        use_alias_ = true;
-        return "";
-    }
-    size_t end = lexer_.get_pos();
+    std::string_view code = curr().val;
     advance();
-    std::string_view code = lexer_.get_source_range(start,end);
     use_alias_ = true;
     return code;
 }

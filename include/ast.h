@@ -348,11 +348,10 @@ struct Stmt : ASTNode {
     struct Asm      { std::string_view code; };
     struct Keep     { std::string_view tokens; };
     struct VarDecl  { VarList* vars; };
-    struct Wait     { Expr* condition; };
     using Variant = std::variant<
         Block, ExprStmt, If, While, For,
         Return, Break, Continue, Flag, Goto,
-        Asm, Keep, VarDecl, Wait
+        Asm, Keep, VarDecl
     >;
     Variant data;
     Stmt() = default;
@@ -370,7 +369,6 @@ struct Stmt : ASTNode {
     BBB(asm, Asm, Stmt)
     BBB(keep, Keep, Stmt)
     BBB(var_decl, VarDecl, Stmt)
-    BBB(wait, Wait, Stmt)
 };
 
 enum class DeclKind {
@@ -652,7 +650,6 @@ struct ASTVisitor {
     virtual void visit_stmt_asm(Stmt::Asm&) {}
     virtual void visit_stmt_keep(Stmt::Keep&) {}
     virtual void visit_stmt_var_decl(Stmt::VarDecl&) {}
-    virtual void visit_stmt_wait(Stmt::Wait&) {}
 
     virtual void visit_type_primitive(Expr::Primitive&) {}
     virtual void visit_type_pointer(Expr::Pointer&) {}
@@ -880,9 +877,6 @@ struct ASTVisitor {
             } else if constexpr (std::is_same_v<T, Stmt::VarDecl>) {
                 if (v.vars) walk(*v.vars);
                 visit_stmt_var_decl(v);
-            } else if constexpr (std::is_same_v<T, Stmt::Wait>) {
-                if (v.condition) walk(*v.condition);
-                visit_stmt_wait(v);
             }
             else if constexpr (std::is_same_v<T, Stmt::Return>) visit_stmt_return(v);
             else if constexpr (std::is_same_v<T, Stmt::Break>) visit_stmt_break(v);

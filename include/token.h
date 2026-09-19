@@ -52,7 +52,6 @@ namespace cx{
     X(Break, "break") \
     X(Continue, "continue") \
     X(Spawn, "spawn") \
-    X(Wait, "wait") \
     X(Mem, "mem") \
     X(Extern, "extern") \
     X(Asm, "asm") \
@@ -157,6 +156,7 @@ namespace cx{
     KEYWORD \
     \
     X(Identifier, "identifier") \
+    X(RawCode, "raw code") \
     \
     OPERATOR \
     \

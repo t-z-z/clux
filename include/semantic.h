@@ -340,7 +340,6 @@ public:
     void visit_stmt_asm(Stmt::Asm&) override;
     void visit_stmt_keep(Stmt::Keep&) override;
     void visit_stmt_var_decl(Stmt::VarDecl&) override;
-    void visit_stmt_wait(Stmt::Wait&) override;
 
     void visit_type_primitive(Expr::Primitive&) override;
     void visit_type_pointer(Expr::Pointer&) override;

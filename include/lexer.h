@@ -75,6 +75,7 @@ class Lexer {
     void skip_comment();
     Token read_char();
     Token read_string();
+    Token read_raw_code();
     Token read_number();
     Token read_operator();
     Token read_identifier();

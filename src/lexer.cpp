@@ -103,6 +103,22 @@ Token Lexer::read_string(){
     return Token(TokenKind::StringLiteral,sv,s_loc);
 }
 
+Token Lexer::read_raw_code() {
+    Location s_loc = get_location();
+    advance();  // 跳过开始反引号
+    size_t s_pos = pos_;
+    while (!is_eof() && curr_char() != '`') advance();
+    if (is_eof()) {
+        add_error("unterminated raw code block (missing closing '`')");
+        return Token(TokenKind::RawCode, std::string_view(), s_loc);
+    }
+    size_t len = pos_ - s_pos;
+    std::string_view sv(source_.data() + s_pos, len);
+    advance();  // 跳过结束反引号
+    // 原文须存入字符串池，否则 lexer 析构后 string_view 悬垂
+    return Token(TokenKind::RawCode, pool_.insert(sv), s_loc);
+}
+
 Token Lexer::read_number() {
     Location start_loc = get_location();
     size_t s_pos = pos_;
@@ -401,6 +417,8 @@ Token Lexer::next_token() {
         return read_string();          // 字符串字面量
     } else if (ch == '\'') {
         return read_char();// 字符字面量
+    } else if (ch == '`') {
+        return read_raw_code();        // 反引号原文
     } else {
         return read_operator();        // 操作符或分隔符
     }
