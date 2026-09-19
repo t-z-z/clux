@@ -18,8 +18,9 @@ namespace cx {
 namespace {
 
 struct Module {
-    std::string path;   // 规范化绝对路径，作为去重键
-    std::string dir;    // 所在目录
+    std::string path;     // 规范化绝对路径，作为去重键
+    std::string dir;      // 所在目录
+    std::string filename; // Location.filename 的稳定存储，须活过 AST
     std::string source;
     std::unique_ptr<CompUnit> cu;
     std::unique_ptr<SemanticAnalyzer> sem;
@@ -77,8 +78,9 @@ bool compile(const std::string& source, const std::string& filename,
         auto mod = std::make_unique<Module>();
         mod->path = canonical_path(fname);
         mod->dir = fs::path(mod->path).parent_path().string();
+        mod->filename = fname;
         mod->source = src;
-        Lexer lexer(mod->source, pool, fname);
+        Lexer lexer(mod->source, pool, mod->filename);
         mod->cu = std::make_unique<CompUnit>();
         Parser parser(lexer, *mod->cu, pool);
         parser.parse();
@@ -138,10 +140,8 @@ bool compile(const std::string& source, const std::string& filename,
     for (auto& m : modules) {
         m->sem->merge_external_symbols(global);
         m->sem->analyze_rest();
-        if (m->sem->has_error()) {
-            for (const Diagnostic& d : m->sem->diagnostics()) emit_diagnostic(d);
-            ok = false;
-        }
+        for (const Diagnostic& d : m->sem->diagnostics()) emit_diagnostic(d);
+        if (m->sem->has_error()) ok = false;
     }
 
     // 只在主模块检查 main（合并后 main 可来自任意模块）

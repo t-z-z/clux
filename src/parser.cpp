@@ -70,7 +70,8 @@ CompUnit* Parser::parse() {
             admit();
             continue;
         }
-        if (curr().kind == TokenKind::Import){
+        if (curr().kind == TokenKind::Import ||
+            (curr().kind == TokenKind::No && peek().kind == TokenKind::Import)){
             Import* i = parse_import();
             if (i){
                 admit();
@@ -197,6 +198,7 @@ Decl* Parser::parse_decl() {
     // 易于确定的优先级更高
     if (curr().kind == TokenKind::At) return parse_class_decl(ml, loc);
     if (curr().kind == TokenKind::Enum) return parse_enum_decl(ml, loc);
+    if (curr().kind == TokenKind::Keep) return parse_keep_decl(ml, loc);
     if (curr().kind == TokenKind::Operator) return parse_operator_overload(ml, loc);
     if (curr().kind == TokenKind::Extern) return parse_extern_decl(ml, loc);
     if (Decl* d = parse_namespace_decl(ml, loc)) return d; restore(sp);
@@ -324,9 +326,17 @@ Class* Parser::parse_class_decl(ModfList &ml, Location &loc, std::vector<Modific
     }
     ModfList nml = parse_modfs();
     ml.merge(nml);
+    // 尾随注入：#mod 出现在类名之后、成员之前（如 `@b #qux { }`）
+    std::vector<Modification*> trailing;
+    while (curr().kind == TokenKind::Hash) {
+        Modification* mod = parse_modification();
+        if (!mod) break;
+        trailing.push_back(mod);
+    }
     std::vector<Decl*> members = parse_members();
     Class* raw = cu_.add_node<Class>(
-        loc, std::move(name), std::move(ml), std::move(members), std::move(injs)
+        loc, std::move(name), std::move(ml), std::move(members),
+        std::move(injs), std::move(trailing)
     );
     return raw;
 }
@@ -1352,7 +1362,7 @@ Expr* Parser::parse_postfix(Expr* left, bool is_type) {
                             left = node;
                         }
                     } else {
-                        while(peek().kind == TokenKind::Mul || peek().kind == TokenKind::BitAnd) {
+                        while(curr().kind == TokenKind::Mul || curr().kind == TokenKind::BitAnd) {
                             left = make_unary(curr(), left, true);
                             advance();
                         }

@@ -13,7 +13,7 @@ class Lexer {
     // 统一字符串池由外部（编译驱动）持有，lexer 只引用它，
     // 这样转义后的字符串字面量与其他阶段共享同一份存储
     Lexer(const std::string &source, StringPool &pool, const std::string &filename="<input>"):
-        source_(source), pool_(pool), filename_(filename){};
+        source_(source), pool_(pool), filename_(pool_.insert(filename)){};
 
     Token next_token();
     std::string_view get_source_range(const size_t& start, const size_t& end) {
@@ -22,7 +22,7 @@ class Lexer {
 
     inline bool has_error() const {return !errors_.empty();}
     const std::vector<Diagnostic> &errors() const {return errors_;}
-    const std::string& get_filename() const {return filename_;}
+    std::string_view get_filename() const {return filename_;}
 
     inline int get_line() const {return lin_;}
     inline int get_column() const {return col_;}
@@ -40,7 +40,8 @@ class Lexer {
     private:
     std::string source_;
     StringPool &pool_;
-    std::string filename_;
+    // 指向 pool_ 内的稳定存储，使 Location.filename 活过 Lexer 生命周期
+    std::string_view filename_;
 
     int lin_=1;
     int col_=1;

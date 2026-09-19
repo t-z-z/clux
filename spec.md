@@ -27,8 +27,6 @@
 - **容器**：持有名字的盒子。类与命名空间是两种容器。
 - **修饰**：附加到声明或容器上的标签，改变其语义。
 
-这是从"最小单元"到"组织方式"的嵌套。读到后面章节时，前面章节的概念已经介绍完毕，不会出现前向依赖。
-
 ## 三、词法
 
 注释：
@@ -356,7 +354,7 @@ pointer p = pointer()
 ```cx
 @Vec2 {
     int x, y
-    trait operator + (Vec2 other) Vec2 r {
+    operator + (Vec2 other) Vec2 r {
         r = Vec2(x + other.x, y + other.y)
     }
 }
@@ -368,7 +366,7 @@ pointer p = pointer()
 @Array-<T> {
     T[100] data
     int len = 0
-    trait op [](int index) T-& r {
+    op [](int index) T-& r {
         r = data[index]-&
     }
 }
@@ -400,7 +398,7 @@ pointer p = pointer()
 
 ```cx
 @Base {
-    trait process(string data) {}
+    process(string data) {}
     Base_setup() { print("Base setup") }
     setup() { Base_setup() }
 }

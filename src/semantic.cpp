@@ -112,10 +112,10 @@ bool SemanticAnalyzer::is_bool_type(Expr* t) {
 
 bool SemanticAnalyzer::is_same_type(Expr* a, Expr* b) {
     if (!a || !b) return false;
-    if (a->is_modifier() || b->is_modifier()) {
+    // 双方都带修饰：逐层比较；仅一方带修饰：剥离修饰层后按值类型比较
+    if (a->is_modifier() && b->is_modifier()) {
         auto* ma = a->get_modifier();
         auto* mb = b->get_modifier();
-        if (!ma || !mb) return false;
         if (ma->layers.size() != mb->layers.size()) return false;
         for (size_t i = 0; i < ma->layers.size(); ++i) {
             if (ma->is_mod[i] != mb->is_mod[i]) return false;
@@ -151,6 +151,20 @@ bool SemanticAnalyzer::is_same_type(Expr* a, Expr* b) {
     }
     if (a->is_reference() && b->is_reference()) {
         return is_same_type(a->get_reference()->target, b->get_reference()->target);
+    }
+    // 数组：元素类型相同即可（长度可推导，暂不严格比较）
+    if (a->is_array_type() && b->is_array_type()) {
+        return is_same_type(a->get_array_type()->element,
+                            b->get_array_type()->element);
+    }
+    if (a->is_func_ptr() && b->is_func_ptr()) {
+        auto* fa = a->get_func_ptr();
+        auto* fb = b->get_func_ptr();
+        if (fa->params.size() != fb->params.size()) return false;
+        for (size_t i = 0; i < fa->params.size(); ++i) {
+            if (!is_same_type(fa->params[i], fb->params[i])) return false;
+        }
+        return is_same_type(fa->return_type, fb->return_type);
     }
     if (a->is_string_literal_type() && b->is_string_literal_type()) return true;
     if (a->is_void() && b->is_void()) return true;
@@ -351,6 +365,7 @@ void SemanticAnalyzer::collect_decl(Decl* decl, bool default_public) {
                     sym->node = cls;
                 }
             }
+            cls->scope = symbols_.current_scope();
             // 类默认私有
             for (Decl* member : cls->members) {
                 collect_decl(member, false);
@@ -378,6 +393,7 @@ void SemanticAnalyzer::collect_decl(Decl* decl, bool default_public) {
                     sym->node = ns;
                 }
             }
+            ns->scope = symbols_.current_scope();
             // 命名空间默认公开
             for (Decl* member : ns->members) {
                 collect_decl(member, true);
@@ -567,8 +583,11 @@ void SemanticAnalyzer::visit_var_list(VarList& vl) {
     if (vl.type && vl.type->is_array_type()) {
         auto* arr = vl.type->get_array_type();
         if (arr->length) {
-            // 检查长度是否为编译期常量（字面量或标识符引用常量）
+            // 检查长度是否为编译期常量（字面量，或引用 const 变量的标识符）
             bool is_const_length = arr->length->is_literal();
+            if (!is_const_length && arr->length->sym && arr->length->sym->is_const()) {
+                is_const_length = true;
+            }
             if (!is_const_length) {
                 bool has_alloca = vl.modfs.has(ModfKind::Alloca);
                 bool has_malloc = vl.modfs.has(ModfKind::Malloc);
@@ -577,6 +596,13 @@ void SemanticAnalyzer::visit_var_list(VarList& vl) {
                 }
             }
         }
+    }
+    // 初始化类型检查：显式声明类型时，初值须可转换到声明类型（let 推导跳过）
+    for (VarItem* var : vl.vars) {
+        if (!var || !var->init || !var->init->type) continue;
+        Expr* dt = var->type ? var->type : vl.type;
+        if (!dt || dt->is_inferred()) continue;
+        check_conversion(var->init->type, dt, "initialization", var->init->loc);
     }
     for (VarItem* var : vl.vars) {
         Symbol sym(SymbolKind::Variable, var);
@@ -623,7 +649,7 @@ void SemanticAnalyzer::visit_expr_identifier(Expr::Identifier& id) {
     // self：当前实例本身，类型为自身的值类型
     if (!current_expr->is_type && current_class && id.name == "self") {
         current_expr->type = make_named_type(current_expr->loc, current_class->name,
-                                             current_class, symbols_.current_scope());
+                                             current_class, current_class->scope);
         current_expr->is_lvalue = true;
         return;
     }
@@ -811,7 +837,7 @@ bool SemanticAnalyzer::check_conversion(Expr* src, Expr* dst, const std::string&
         warning(loc, "explicit cast between incompatible types in " + context);
         return true;
     }
-    warning(loc, "implicit conversion in " + context);
+    error(loc, "cannot implicitly convert between incompatible types in " + context);
     return false;
 }
 
@@ -1112,8 +1138,13 @@ void SemanticAnalyzer::resolve_call(Expr* call_expr, Expr::Call& c) {
         return;
     }
 
-    // 2b：普通函数按名字直接查（函数不重载）
-    Symbol* f_sym = symbols_.lookup_member(name);
+    // 2b：callee 已解析出函数符号（限定名/成员方法）时直接使用
+    Symbol* f_sym = nullptr;
+    if (callee_sym && callee_sym->kind == SymbolKind::Function) {
+        f_sym = callee_sym;
+    } else {
+        f_sym = symbols_.lookup_member(name);
+    }
     if (!f_sym || f_sym->kind != SymbolKind::Function) {
         fail("no matching function for call to '" + name + "'");
         return;
@@ -2129,50 +2160,53 @@ Decl* SemanticAnalyzer::clone_decl(Decl* d) {
     }
 }
 
-// 修饰注入：把来源类的成员合并到目标类，非重名成员追加在原有字段之后。
-// 同名时，来源成员带 over 才覆盖；两个来源的 over 成员同名则警告并保留先到的。
+// 修饰注入：`#a @b #c` 的优先级从左到右递减（前置注入 > 基类 > 尾随注入）。
+// 高优先级来源先占用名字，低优先级同名的成员被忽略。
 void SemanticAnalyzer::apply_injections(Class* cls) {
-    if (!cls || cls->injects.empty()) return;
+    if (!cls) return;
+    if (cls->injects.empty() && cls->trailing_injects.empty()) return;
 
-    std::unordered_map<std::string, size_t> index;
-    std::unordered_set<std::string> injected;
-    for (size_t i = 0; i < cls->members.size(); ++i) {
-        for (const std::string& n : decl_key_names(cls->members[i])) {
-            index[n] = i;
-        }
-    }
-
-    for (Modification* mod : cls->injects) {
-        if (!mod) continue;
+    auto resolve = [&](Modification* mod) -> Class* {
+        if (!mod) return nullptr;
         Symbol* sym = symbols_.lookup_member(std::string(mod->name));
-        Decl* src_decl = sym ? sym->get_decl() : nullptr;
-        if (!src_decl || src_decl->kind != DeclKind::Class) {
+        Decl* d = sym ? sym->get_decl() : nullptr;
+        if (!d || d->kind != DeclKind::Class) {
             error(mod->loc, "cannot inject from '" + std::string(mod->name) +
                   "': not a class");
-            continue;
+            return nullptr;
         }
-        auto* src = static_cast<Class*>(src_decl);
+        return static_cast<Class*>(d);
+    };
+
+    // 来源按优先级从高到低：前置注入（左→右）、基类自身、尾随注入（左→右）
+    std::vector<Class*> sources;
+    for (Modification* mod : cls->injects) {
+        if (Class* c = resolve(mod)) sources.push_back(c);
+    }
+    sources.push_back(cls);
+    for (Modification* mod : cls->trailing_injects) {
+        if (Class* c = resolve(mod)) sources.push_back(c);
+    }
+
+    std::vector<Decl*> result;
+    std::unordered_map<std::string, size_t> index;
+    for (Class* src : sources) {
         for (Decl* m : src->members) {
             if (!m) continue;
-            bool over = m->modfs.has(ModfKind::Over);
+            bool claimed = false;
             for (const std::string& n : decl_key_names(m)) {
-                auto it = index.find(n);
-                if (it == index.end()) {
-                    index[n] = cls->members.size();
-                    injected.insert(n);
-                    cls->members.push_back(clone_decl(m));
-                } else if (over) {
-                    Decl* cur = cls->members[it->second];
-                    if (injected.count(n) && cur && cur->modfs.has(ModfKind::Over)) {
-                        warning(m->loc, "conflicting 'over' injection for '" + n + "'");
-                        continue;
-                    }
-                    cls->members[it->second] = clone_decl(m);
-                    injected.insert(n);
-                }
+                if (index.count(n)) { claimed = true; break; }
             }
+            if (claimed) continue;
+            // 基类自身成员保持原指针，注入来源的成员克隆，避免共享 AST 节点
+            Decl* placed = (src == cls) ? m : clone_decl(m);
+            for (const std::string& n : decl_key_names(placed)) {
+                index[n] = result.size();
+            }
+            result.push_back(placed);
         }
     }
+    cls->members = std::move(result);
 }
 
 Scope* SemanticAnalyzer::clone_scope(Scope* src) {

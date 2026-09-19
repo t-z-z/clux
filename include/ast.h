@@ -231,8 +231,10 @@ inline bool is_binary(OpKind op) {
     return op >= OpKind::Plus && op <= OpKind::Shr;
 }
 inline bool is_unary(OpKind op) {
+    // Mul / BitAnd 在单元位置分别代表 -* 解引用、-& 取地址
     return (op >= OpKind::Not && op <= OpKind::BitNot)
-        || (op >= OpKind::Plus && op <= OpKind::Minus);
+        || (op >= OpKind::Plus && op <= OpKind::Minus)
+        || op == OpKind::Mul || op == OpKind::BitAnd;
 }
 inline bool is_assign(OpKind op) {
     return op >= OpKind::Assign && op <= OpKind::ShrAssign;
@@ -491,16 +493,19 @@ struct Extern : Cont {
 };
 
 struct Class : Cont {
-    // 修饰注入：注入来源类（`#M @C` 中的 M），只有类能被修饰
+    // 修饰注入：`#a @b #c` 中 @ 之前的为前置注入，之后的为尾随注入。
+    // 优先级从左到右递减：前置 > 基类 > 尾随。
     std::vector<Modification*> injects;
+    std::vector<Modification*> trailing_injects;
     Class(const Location &loc,
         std::string_view name,
         ModfList ml,
         std::vector<Decl*> m,
-        std::vector<Modification*> inj = {}
+        std::vector<Modification*> inj = {},
+        std::vector<Modification*> tinj = {}
     ):
         Cont(loc, name, DeclKind::Class, std::move(ml), std::move(m)),
-        injects(std::move(inj)) {}
+        injects(std::move(inj)), trailing_injects(std::move(tinj)) {}
     virtual ~Class() = default;
 };
 
@@ -785,7 +790,11 @@ struct ASTVisitor {
                 if (v.index) walk(*v.index);
                 visit_expr_index(v);
             } else if constexpr (std::is_same_v<T, Expr::Member>) {
+                // 限定名作为 callee 时，target 仍需正常解析（如 c.method / ns::fn）
+                bool pre_callee = in_callee_;
+                in_callee_ = false;
                 if (v.target) walk(*v.target);
+                in_callee_ = pre_callee;
                 visit_expr_member(v);
             } else if constexpr (std::is_same_v<T, Expr::Cast>) {
                 if (v.operand) walk(*v.operand);
