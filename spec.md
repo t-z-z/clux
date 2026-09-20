@@ -343,7 +343,6 @@ math::add(1, 2)
 - `DROP`：对象销毁前自动执行
 - `REF` / `DEREF`：被引用 / 结束引用时触发
 - `ACCESS`：被获取值时触发
-- `conversion`：被当其他类型读取时触发
 
 ```cx
 @pointer {
@@ -369,8 +368,26 @@ pointer p = pointer()
 @Vec2 {
     int x, y
     operator + (Vec2 other) Vec2 r {
-        r = Vec2(x + other.x, y + other.y)
+        r = Vec2(x+other.x y+other.y)
     }
+}
+operator - (Vec2 a Vec2 b) Vec2 r {
+    r=Vec2(a.x-b.x a.y-b.y)
+}
+```
+
+### 转换方法
+
+使用`conversion`来定义类型转换方法
+
+```cx
+@Vec2 {
+    int x,y
+    conversion() Vector r=Vector(x y) {
+    }
+}
+conversion(Vec2 a) Vector r {
+    r=Vector(a.x a.y)
 }
 ```
 

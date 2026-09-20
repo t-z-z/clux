@@ -25,6 +25,7 @@ void Translator::emit_decl(Decl* d) {
     switch (d->kind) {
         case DeclKind::Func:
         case DeclKind::Operator:
+        case DeclKind::Conversion:
             emit_func(*static_cast<Func*>(d), nullptr);
             break;
         case DeclKind::Namespace:
@@ -65,6 +66,9 @@ void Translator::walk_mangled(Decl* d, const std::string& prefix) {
                 if (m->kind == DeclKind::SpecialMethod) {
                     mangled_[m] = here + "_" +
                         special_name(static_cast<SpecialMethod*>(m));
+                } else if (m->kind == DeclKind::Conversion) {
+                    mangled_[m] = here + "_" +
+                        conversion_name(static_cast<Conversion*>(m));
                 } else {
                     walk_mangled(m, here);
                 }
@@ -74,6 +78,9 @@ void Translator::walk_mangled(Decl* d, const std::string& prefix) {
         case DeclKind::Func:
         case DeclKind::Operator:
             mangled_[d] = here;
+            break;
+        case DeclKind::Conversion:
+            mangled_[d] = conversion_name(static_cast<Conversion*>(d));
             break;
         case DeclKind::Extern:
             for (Decl* m : static_cast<Extern*>(d)->members)
@@ -111,7 +118,6 @@ std::string Translator::special_name(SpecialMethod* sm) {
         case SpecialMethod::Kind::Ref:        base = "REF"; break;
         case SpecialMethod::Kind::Deref:      base = "DEREF"; break;
         case SpecialMethod::Kind::Access:     base = "ACCESS"; break;
-        case SpecialMethod::Kind::Conversion: base = "conversion"; break;
     }
     if (sm->kind == SpecialMethod::Kind::Init) {
         for (VarList* vl : sm->params) {
@@ -124,8 +130,27 @@ std::string Translator::special_name(SpecialMethod* sm) {
             }
         }
     }
-    if (sm->kind == SpecialMethod::Kind::Conversion && sm->conv && sm->conv->type) {
-        base += "_" + type_key(sm->conv->type);
+    return base;
+}
+
+std::string Translator::conversion_name(Conversion* cf) {
+    std::string base = "conversion";
+    for (VarList* vl : cf->params) {
+        if (!vl) continue;
+        for (VarItem* vi : vl->vars) {
+            if (!vi) continue;
+            base += "_";
+            base += vi->type ? type_key(vi->type)
+                             : (vl->type ? type_key(vl->type) : "x");
+        }
+    }
+    base += "_ret";
+    if (!cf->returns.empty() && cf->returns.back()) {
+        for (VarItem* ri : cf->returns.back()->vars) {
+            if (ri && ri->type) base += "_" + type_key(ri->type);
+        }
+        if (cf->returns.back()->type && cf->returns.back()->vars.empty())
+            base += "_" + type_key(cf->returns.back()->type);
     }
     return base;
 }
@@ -405,6 +430,7 @@ void Translator::emit_class(Class* c) {
     for (Decl* m : c->members) {
         if (!m) continue;
         if (m->kind == DeclKind::Func || m->kind == DeclKind::Operator ||
+            m->kind == DeclKind::Conversion ||
             m->kind == DeclKind::SpecialMethod) {
             std::string name = mangled_of(m);
             if (!emitted.insert(name).second) continue;
@@ -476,7 +502,11 @@ void Translator::emit_var_decl(VarList* vl) {
             if (it == classes_.end()) { ctx_.slots[vi] = "null"; continue; }
             std::string inst;
             if (vi->init) {
-                inst = eval(vi->init);
+                Conversion* cf = nullptr;
+                if (vi->init->conv && vi->init->conv->kind == DeclKind::Conversion)
+                    cf = static_cast<Conversion*>(vi->init->conv);
+                if (cf) inst = emit_conversion_call(vi->init, cf);
+                else    inst = eval(vi->init);
             } else {
                 inst = ir_.reg();
                 emit_instr(inst + " = alloca " + it->second.llvm_name);
@@ -1044,6 +1074,67 @@ std::string Translator::eval_cast(Expr*, Expr::Cast* c) {
     return cast_value(v, src, dst);
 }
 
+std::string Translator::emit_conversion_call(Expr* e, Conversion* cf) {
+    Expr* ret_type_expr = nullptr;
+    if (!cf->returns.empty() && cf->returns.back()) {
+        VarList* rl = cf->returns.back();
+        if (!rl->vars.empty() && rl->vars.back() && rl->vars.back()->type)
+            ret_type_expr = rl->vars.back()->type;
+        else
+            ret_type_expr = rl->type;
+    }
+    std::string ret_ir = ret_type_expr ? map_type(ret_type_expr) : "ptr";
+
+    std::string sret_slot = ir_.reg();
+    emit_instr(sret_slot + " = alloca " + ret_ir);
+
+    std::vector<std::string> args;
+    args.push_back("ptr sret(" + ret_ir + ") " + sret_slot);
+
+    int param_count = 0;
+    for (VarList* vl : cf->params) {
+        if (!vl) continue;
+        for (VarItem* vi : vl->vars) if (vi) ++param_count;
+    }
+
+    if (param_count == 0) {
+        // 无参形式：声明在源类，e 即源对象
+        std::string self = eval(e);
+        args.push_back("ptr " + self);
+    } else {
+        // 有参形式：e 即源值，对应第一个形参
+        int i = 0;
+        for (VarList* vl : cf->params) {
+            if (!vl) continue;
+            for (VarItem* vi : vl->vars) {
+                if (!vi) continue;
+                if (i == 0) {
+                    Expr* pt_expr = vi->type ? vi->type : vl->type;
+                    std::string pt = pt_expr ? map_type(pt_expr) : "i32";
+                    std::string v = eval(e);
+                    args.push_back(pt + " " + v);
+                }
+                ++i;
+            }
+        }
+    }
+
+    std::string sig = "call void @" + IRWriter::quote(mangled_of(cf)) + "(";
+    for (size_t k = 0; k < args.size(); ++k) {
+        if (k) sig += ", ";
+        sig += args[k];
+    }
+    sig += ")";
+    emit_instr(sig);
+    // 类返回值经 sret 传出的是实例指针，加载后返回
+    if (ret_type_expr && as_class(ret_type_expr)) {
+        std::string loaded = ir_.reg();
+        emit_instr(loaded + " = load ptr, ptr " + sret_slot);
+        return loaded;
+    }
+    return sret_slot;
+}
+
 std::string Translator::emit_operator_call(Expr* e, Operator* op,
                                            Expr* lhs, Expr* rhs) {
     std::string ret_t = e->type ? map_type(e->type) : "void";
@@ -1118,6 +1209,20 @@ std::string Translator::eval_call(Expr* e, Expr::Call* c) {
     if (c->callee && c->callee->type && c->callee->type->is_func_ptr()) {
         auto* fp = c->callee->type->get_func_ptr();
         return call_func_ptr(e, c, fp);
+    }
+    // 无 INIT 的类零参默认构造：分配实例
+    if (!c->resolved && c->callee && c->callee->sym &&
+        c->callee->sym->kind == SymbolKind::Class) {
+        Class* cls = as_class(e->type);
+        if (cls) {
+            auto it = classes_.find(cls);
+            if (it != classes_.end()) {
+                std::string slot = ir_.reg();
+                emit_instr(slot + " = alloca " + it->second.llvm_name);
+                return slot;
+            }
+        }
+        return "0";
     }
     if (!c->resolved) return "0";
 

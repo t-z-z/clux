@@ -25,6 +25,7 @@ struct VarItem;
 struct VarList;
 struct Func;
 struct Operator;
+struct Conversion;
 struct Enum;
 struct EnumVariant;
 struct Namespace;
@@ -299,6 +300,8 @@ struct Expr : ASTNode {
     // is_type 时：解析到的类/枚举/命名空间声明及其成员作用域
     Decl* resolved_decl = nullptr;
     Scope* resolved_scope = nullptr;
+    // 该表达式需经 conversion 转换到目标类型时，指向对应的 Conversion 声明
+    Decl* conv = nullptr;
     
     Expr() = default;
     Expr(const Location& l, Variant v) : ASTNode(l), data(std::move(v))  {}
@@ -373,7 +376,7 @@ struct Stmt : ASTNode {
 
 enum class DeclKind {
     // 等级从低到高
-    Keep, VarList, SpecialMethod, Func, Compose, Operator, Enum, Class, Extern, Namespace,
+    Keep, VarList, SpecialMethod, Func, Compose, Operator, Conversion, Enum, Class, Extern, Namespace,
 };
 
 struct Decl : ASTNode {
@@ -472,6 +475,15 @@ struct Operator : Func {
         }
 };
 
+struct Conversion : Func {
+    Conversion() = default;
+    Conversion(const Location& loc, std::string_view name, ModfList ml,
+        std::vector<VarList*> p, std::vector<VarList*> r, Stmt* b)
+        : Func(loc, name, std::move(ml), std::move(p), std::move(r), b) {
+        kind = DeclKind::Conversion;
+    }
+};
+
 struct Namespace : Cont {
     Namespace() = default;
     Namespace(
@@ -513,23 +525,20 @@ struct SpecialMethod : Decl {
         Drop,       // 折构
         Ref,        // 被引用
         Deref,      // 结束引用
-        Access,     // 获取
-        Conversion  // 类型转换
+        Access      // 获取
     } kind;
     std::vector<VarList*> params;
     Stmt* body = nullptr;
-    VarList* conv = nullptr;
     SpecialMethod() = default;
     SpecialMethod (
         const Location& loc,
         SpecialMethod::Kind k,
         ModfList ml,
         Stmt* b,
-        VarList* r = nullptr,
         std::vector<VarList*> p = {}
     ):
         Decl(loc, "", DeclKind::SpecialMethod, std::move(ml)),
-        kind(k), params(std::move(p)), body(b), conv(r) {}
+        kind(k), params(std::move(p)), body(b) {}
 };
 
 struct Keep : Decl {
@@ -668,6 +677,7 @@ struct ASTVisitor {
             case DeclKind::VarList:       walk_children(static_cast<VarList&>(decl)); break;
             case DeclKind::Func:          walk_children(static_cast<Func&>(decl)); break;
             case DeclKind::Operator:      walk_children(static_cast<Func&>(decl)); break;
+            case DeclKind::Conversion:    walk_children(static_cast<Func&>(decl)); break;
             case DeclKind::Class:         walk_children(static_cast<Class&>(decl)); break;
             case DeclKind::Namespace:     walk_children(static_cast<Namespace&>(decl)); break;
             case DeclKind::Extern:        walk_children(static_cast<Extern&>(decl)); break;
@@ -748,7 +758,6 @@ struct ASTVisitor {
         scope_in(std::string(sm.name));
         for (auto* p : sm.params) if (p) walk(*p);
         if (sm.body) walk(*sm.body);
-        if (sm.conv) walk(*sm.conv);
         visit_special_method(sm);
         scope_out();
     }

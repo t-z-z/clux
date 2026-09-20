@@ -56,6 +56,7 @@ private:
     void collect_classes_decl(Decl* d);
     std::string mangled_of(Decl* d) const;
     std::string special_name(SpecialMethod* sm);
+    std::string conversion_name(Conversion* cf);
     std::string type_key(Expr* t);
 
     std::string map_type(Expr* t);
@@ -104,6 +105,7 @@ private:
     std::string cast_value(const std::string& v,
                            const std::string& src, const std::string& dst);
     std::string emit_operator_call(Expr* e, Operator* op, Expr* lhs, Expr* rhs);
+    std::string emit_conversion_call(Expr* e, Conversion* cf);
     void emit_declare(Func& f);
 };
 

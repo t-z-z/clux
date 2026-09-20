@@ -200,6 +200,7 @@ Decl* Parser::parse_decl() {
     if (curr().kind == TokenKind::Enum) return parse_enum_decl(ml, loc);
     if (curr().kind == TokenKind::Keep) return parse_keep_decl(ml, loc);
     if (curr().kind == TokenKind::Operator) return parse_operator_overload(ml, loc);
+    if (curr().kind == TokenKind::Conversion) return parse_conversion_decl(ml, loc);
     if (curr().kind == TokenKind::Extern) return parse_extern_decl(ml, loc);
     if (Decl* d = parse_namespace_decl(ml, loc)) return d; restore(sp);
     if (Decl* d = parse_func_decl(ml, loc)) return d; restore(sp);
@@ -490,7 +491,7 @@ OpKind Parser::parse_operator() {
 
 SpecialMethod* Parser::parse_special_method_decl(ModfList &ml, Location &loc) {
     TokenKind tok_kind = curr().kind;
-    SpecialMethod::Kind kind = SpecialMethod::Kind::Conversion;
+    SpecialMethod::Kind kind;
     if (tok_kind == TokenKind::Init){
         advance();
         std::vector<VarList*> params = parse_value_params();
@@ -500,7 +501,7 @@ SpecialMethod* Parser::parse_special_method_decl(ModfList &ml, Location &loc) {
             add_error("expected INIT body");
         }
         return cu_.add_node<SpecialMethod>(
-            loc, SpecialMethod::Kind::Init, std::move(ml), b, nullptr,
+            loc, SpecialMethod::Kind::Init, std::move(ml), b,
             std::move(params)
         );
     } else if (tok_kind == TokenKind::Drop){
@@ -511,18 +512,6 @@ SpecialMethod* Parser::parse_special_method_decl(ModfList &ml, Location &loc) {
         kind = SpecialMethod::Kind::Deref;
     } else if (tok_kind == TokenKind::Access){
         kind = SpecialMethod::Kind::Access;
-    } else if (tok_kind == TokenKind::Conversion){
-        advance();
-        ModfList m = ModfList();
-        VarList* vl = parse_var_decl(m, loc);
-        if (!vl) return nullptr;
-        Stmt* s = parse_block_stmt();
-        if (!s) {
-            add_error("expected conversion method body");
-        }
-        return cu_.add_node<SpecialMethod>(
-            loc, kind, std::move(ml), s, vl
-        );
     } else return nullptr;
     advance();
     Stmt* b = parse_block_stmt();
@@ -532,6 +521,28 @@ SpecialMethod* Parser::parse_special_method_decl(ModfList &ml, Location &loc) {
     return cu_.add_node<SpecialMethod>(
         loc, kind, std::move(ml), b
     );
+}
+
+Conversion* Parser::parse_conversion_decl(ModfList &ml, Location &loc) {
+    if (curr().kind != TokenKind::Conversion) return nullptr;
+    advance();
+    if (curr().kind != TokenKind::ParenL) {
+        add_error("expected '(' after conversion");
+        return cu_.add_node<Conversion>();
+    }
+    std::vector<VarList*> params = parse_value_params();
+    admit();
+    std::vector<VarList*> returns;
+    for (;;) {
+        ModfList rml = parse_modfs();
+        Location rloc = get_loc();
+        VarList* r = parse_var_decl(rml, rloc);
+        if (r) returns.push_back(r); else break;
+    }
+    Stmt* body = parse_block_stmt();
+    if (!body) add_error("expected conversion body");
+    return cu_.add_node<Conversion>(loc, "conversion", std::move(ml),
+        std::move(params), std::move(returns), body);
 }
 
 Extern* Parser::parse_extern_decl(ModfList &ml, Location &loc) {

@@ -171,6 +171,7 @@ private:
     Extern* parse_extern_decl(ModfList &ml, Location &loc);
     Operator* parse_operator_overload(ModfList &ml, Location &loc);
     SpecialMethod* parse_special_method_decl(ModfList &ml, Location &loc);
+    Conversion* parse_conversion_decl(ModfList &ml, Location &loc);
     Enum* parse_enum_decl(ModfList &ml, Location &loc);
     Keep* parse_keep_decl(ModfList &ml, Location &loc);
 

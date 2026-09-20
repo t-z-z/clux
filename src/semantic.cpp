@@ -272,6 +272,25 @@ std::string SemanticAnalyzer::build_callkey(const std::string& name,
     return key;
 }
 
+std::string SemanticAnalyzer::build_conv_key(Func& f) {
+    std::string pkey;
+    for (VarList* vl : f.params) {
+        if (!vl) continue;
+        for (VarItem* vi : vl->vars) {
+            if (vi && vi->type && !vi->type->is_inferred()) pkey += type_to_key(*vi->type);
+            else pkey += "_";
+        }
+    }
+    std::string rkey;
+    if (!f.returns.empty() && f.returns.back()) {
+        for (VarItem* ri : f.returns.back()->vars) {
+            if (ri && ri->type) rkey += type_to_key(*ri->type);
+        }
+    }
+    if (pkey.empty()) return "conversion_" + rkey;
+    return "conversion_" + pkey + "_" + rkey;
+}
+
 void SemanticAnalyzer::collect() {
     // 顶层声明默认公开
     for (Decl* decl : cu_.top_decls) {
@@ -339,7 +358,8 @@ void SemanticAnalyzer::collect_decl(Decl* decl, bool default_public) {
         }
 
         case DeclKind::Func:
-        case DeclKind::Operator: {
+        case DeclKind::Operator:
+        case DeclKind::Conversion: {
             register_func(*static_cast<Func*>(decl), default_public);
             break;
         }
@@ -454,9 +474,11 @@ void SemanticAnalyzer::register_func(Func& f, bool default_public) {
     std::string name = std::string(f.name);
     Scope* scope = symbols_.current_scope();
 
-    // 只有操作符保留按签名区分，其余函数（含 INIT）不允许重载
-    bool keyed = (f.kind == DeclKind::Operator);
-    std::string key = keyed ? build_callkey(name, f.params) : name;
+    // 操作符与转换按签名区分，其余函数（含 INIT）不允许重载
+    bool keyed = (f.kind == DeclKind::Operator || f.kind == DeclKind::Conversion);
+    std::string key;
+    if (f.kind == DeclKind::Conversion) key = build_conv_key(f);
+    else key = keyed ? build_callkey(name, f.params) : name;
     if (scope && scope->lookup_member(key)) {
         error(f.loc, "duplicate declaration of function '" + name + "'");
         return;
@@ -477,9 +499,6 @@ void SemanticAnalyzer::register_special(SpecialMethod& sm, bool default_public) 
         case SpecialMethod::Kind::Ref:        internal_name = "REF";        break;
         case SpecialMethod::Kind::Deref:      internal_name = "DEREF";      break;
         case SpecialMethod::Kind::Access:     internal_name = "ACCESS";     break;
-        case SpecialMethod::Kind::Conversion: 
-        if (sm.conv) internal_name = "conversion_" + type_to_key(*sm.conv->type);else return; 
-        break;
         default: error(sm.loc, "unknown special method"); return;
     }
 
@@ -602,6 +621,12 @@ void SemanticAnalyzer::visit_var_list(VarList& vl) {
         if (!var || !var->init || !var->init->type) continue;
         Expr* dt = var->type ? var->type : vl.type;
         if (!dt || dt->is_inferred()) continue;
+        if (is_same_type(var->init->type, dt)) continue;
+        // 隐式转换优先匹配 conversion
+        if (Symbol* conv = find_conversion(*var->init->type, *dt)) {
+            var->init->conv = conv->get_decl();
+            continue;
+        }
         // 目标是类且存在匹配的 INIT 时，视为构造初始化
         if (init_matches_class_ctor(dt, var->init)) continue;
         check_conversion(var->init->type, dt, "initialization", var->init->loc);
@@ -742,6 +767,17 @@ Symbol* SemanticAnalyzer::find_operator_overload(OpKind op, Expr& type) {
     return cls_sym;
 }
 
+Symbol* SemanticAnalyzer::find_conversion(Expr& src, Expr& dst) {
+    std::string srckey = type_to_key(src);
+    std::string dstkey = type_to_key(dst);
+    if (Symbol* sym = symbols_.lookup_member("conversion_" + srckey + "_" + dstkey))
+        return sym;
+    if (!src.resolved_decl || src.resolved_decl->kind != DeclKind::Class) return nullptr;
+    Scope* scope = static_cast<Class*>(src.resolved_decl)->scope;
+    if (!scope) return nullptr;
+    return scope->lookup_member("conversion_" + dstkey);
+}
+
 bool SemanticAnalyzer::can_convert_to(Expr* src, Expr* dst) {
     if (!src || !dst) return false;
     if (is_same_type(src, dst)) return true;
@@ -759,21 +795,8 @@ bool SemanticAnalyzer::can_convert_to(Expr* src, Expr* dst) {
         return true;
     }
 
-    // 类的 conversion 特殊方法
-    if (src->resolved_decl && src->resolved_decl->kind == DeclKind::Class) {
-        Class& cls = static_cast<Class&>(*src->resolved_decl);
-        if (cls.scope) {
-            Symbol* cands = cls.scope->lookup_member("conversion_" + type_to_key(*dst));
-            if (cands) {
-                if (auto* sm = cands->get<SpecialMethod>()) {
-                    if (sm->conv && sm->conv->type) {
-                        return is_same_type(sm->conv->type, dst);
-                    }
-                }
-                return true;
-            }
-        }
-    }
+    // conversion：全局有参形式或源类无参形式
+    if (find_conversion(*src, *dst)) return true;
 
     return false;
 }
@@ -1941,6 +1964,12 @@ void SemanticAnalyzer::init_stmt(InitCtx& ctx, Stmt* s) {
             if (vi->init) {
                 init_expr(ctx, vi->init);
                 if (sym) ctx.assigned.insert(sym);
+            } else {
+                // 类实例无初值时默认构造，视为已赋值
+                Expr* vt = vi->type ? vi->type : vl->type;
+                if (sym && vt && vt->resolved_decl &&
+                    vt->resolved_decl->kind == DeclKind::Class)
+                    ctx.assigned.insert(sym);
             }
             if (sym) ctx.declared.insert(sym);
         }
@@ -2034,7 +2063,7 @@ void SemanticAnalyzer::init_expr(InitCtx& ctx, Expr* e) {
         (void)id;
         if (e->sym && ctx.declared.count(e->sym) && !ctx.assigned.count(e->sym)) {
             error(e->loc, "use of uninitialized variable '" +
-                  std::string(e->sym->get_decl() ? e->sym->get_decl()->name : "") + "'");
+                  sym_display_name(e->sym) + "'");
         }
         return;
     }
@@ -2135,9 +2164,16 @@ Decl* SemanticAnalyzer::clone_decl(Decl* d) {
             params.reserve(sm->params.size());
             for (auto* p : sm->params) params.push_back(clone_varlist(p));
             return cu_.add_node<SpecialMethod>(sm->loc, sm->kind, sm->modfs,
-                clone_stmt(sm->body),
-                sm->conv ? clone_varlist(sm->conv) : nullptr,
-                std::move(params));
+                clone_stmt(sm->body), std::move(params));
+        }
+        case DeclKind::Conversion: {
+            auto* cf = static_cast<Conversion*>(d);
+            std::vector<VarList*> params;
+            for (auto* p : cf->params) params.push_back(clone_varlist(p));
+            std::vector<VarList*> returns;
+            for (auto* r : cf->returns) returns.push_back(clone_varlist(r));
+            return cu_.add_node<Conversion>(cf->loc, cf->name, cf->modfs,
+                std::move(params), std::move(returns), clone_stmt(cf->body));
         }
         case DeclKind::Keep: {
             auto* k = static_cast<Keep*>(d);
