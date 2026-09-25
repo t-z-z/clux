@@ -110,7 +110,7 @@ FrontendResult run_frontend(StringPool& pool, const std::string& source,
     for (size_t i = 0; i < modules.size(); ++i) {
         Module* cur = modules[i].get();
         for (Import* imp : cur->cu->imports) {
-            if (!imp) continue;
+            if (!imp || imp->no) continue;
             std::string target = resolve_import(*imp, cur->dir, lib_dir);
             if (target.empty()) {
                 emit_diagnostic(Diagnostic(DiagLevel::Error,

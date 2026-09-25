@@ -54,7 +54,6 @@ private:
     Ctx ctx_;
     std::vector<LoopCtx> loops_;
     int closure_counter_ = 0;
-    bool runtime_decls_emitted_ = false;
 
     void collect_mangled();
     void walk_mangled(Decl* d, const std::string& prefix);

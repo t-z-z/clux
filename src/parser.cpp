@@ -168,6 +168,7 @@ Import* Parser::parse_import() {
         advance();
         Import* raw = result.get();
         cu_.add_node(std::move(result));
+        cu_.imports.push_back(raw);
         return raw;
     }
     add_error("expected filename or \"filename\"");

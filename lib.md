@@ -21,15 +21,10 @@ println("done")
 ### 输入
 
 ```cx
-read-<T>(char[] s) bool r
+input() char r
 ```
 
-`read` 从标准输入读取一串字符，以空符（空格换行等）为分隔标准
-
-```cx
-char[] s
-read(s)
-```
+`input` 从标准输入读入一个字符
 
 ## metatype 元类型
 

@@ -10,11 +10,6 @@ namespace cx {
 // 收集
 
 void Translator::run() {
-    if (!runtime_decls_emitted_) {
-        ir_.emit_type("declare i32 @pthread_create(ptr, ptr, ptr, ptr)");
-        ir_.emit_type("declare ptr @malloc(i64)");
-        runtime_decls_emitted_ = true;
-    }
     collect_mangled();
     collect_classes();
     for (Decl* d : cu_.top_decls) emit_decl(d);
@@ -609,6 +604,35 @@ void Translator::emit_var_decl(VarList* vl) {
         std::string slot = ir_.reg();
         emit_instr(slot + " = alloca " + vt);
         ctx_.slots[vi] = slot;
+        if (vtype && vtype->is_array_type() && vi->init &&
+            vi->init->type && vi->init->type->is_string_literal_type()) {
+            auto* lit = vi->init->get_literal();
+            std::string content = lit ? std::string(lit->value) : std::string();
+            size_t n = content.size();
+            std::string sym = ir_.string_const(content);
+            std::string backing = ir_.reg();
+            emit_instr(backing + " = alloca i8, i64 " +
+                       std::to_string(n ? n : 1));
+            for (size_t k = 0; k < n; ++k) {
+                std::string src = ir_.reg();
+                emit_instr(src + " = getelementptr i8, ptr @" + sym +
+                           ", i64 " + std::to_string(k));
+                std::string b = ir_.reg();
+                emit_instr(b + " = load i8, ptr " + src);
+                std::string dst = ir_.reg();
+                emit_instr(dst + " = getelementptr i8, ptr " + backing +
+                           ", i64 " + std::to_string(k));
+                emit_instr("store i8 " + b + ", ptr " + dst);
+            }
+            std::string s1 = ir_.reg();
+            emit_instr(s1 + " = insertvalue { ptr, i64 } undef, ptr " +
+                       backing + ", 0");
+            std::string s2 = ir_.reg();
+            emit_instr(s2 + " = insertvalue { ptr, i64 } " + s1 + ", i64 " +
+                       std::to_string(static_cast<long long>(n)) + ", 1");
+            emit_instr("store { ptr, i64 } " + s2 + ", ptr " + slot);
+            continue;
+        }
         if (vi->init) {
             std::string v = eval(vi->init);
             std::string src_t = vi->init->type ? map_type(vi->init->type) : vt;
@@ -788,6 +812,13 @@ std::string Translator::eval_lvalue(Expr* e) {
     if (auto* ix = e->get_index()) {
         std::string base = data_ptr_of(ix->target);
         std::string idx = eval(ix->index);
+        std::string it = ix->index && ix->index->type
+                       ? map_type(ix->index->type) : "i32";
+        if (it != "i64" && !idx.empty() && idx[0] == '%') {
+            std::string ext = ir_.reg();
+            emit_instr(ext + " = sext " + it + " " + idx + " to i64");
+            idx = ext;
+        }
         std::string et = map_type(e->type);
         std::string addr = ir_.reg();
         emit_instr(addr + " = getelementptr " + et + ", ptr " + base + ", i64 " + idx);
@@ -829,6 +860,11 @@ std::string Translator::eval_literal(Expr::Literal* lit) {
     switch (lit->kind) {
         case LiteralKind::Bool:
             return (lit->value == "true" || lit->value == "1") ? "1" : "0";
+        case LiteralKind::Char: {
+            unsigned char c = lit->value.empty()
+                            ? 0 : static_cast<unsigned char>(lit->value[0]);
+            return std::to_string(static_cast<unsigned>(c));
+        }
         case LiteralKind::String:
             return "@" + ir_.string_const(lit->value);
         default:
