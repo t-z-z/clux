@@ -349,6 +349,9 @@ math::add(1, 2)
     char-* p
     INIT() { p = null }
     INIT(char c) { p = c-& }
+    REF(){}
+    DEREF(){}
+    ACCESS(){}
 }
 
 pointer p = pointer()
