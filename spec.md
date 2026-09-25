@@ -342,7 +342,6 @@ math::add(1, 2)
 - `INIT`：构造方法，手动调用返回一个对应类型的值
 - `DROP`：对象销毁前自动执行
 - `REF` / `DEREF`：被引用 / 结束引用时触发
-- `ACCESS`：被获取值时触发
 
 ```cx
 @pointer {
@@ -351,7 +350,6 @@ math::add(1, 2)
     INIT(char c) { p = c-& }
     REF(){}
     DEREF(){}
-    ACCESS(){}
 }
 
 pointer p = pointer()

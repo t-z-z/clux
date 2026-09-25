@@ -510,8 +510,6 @@ SpecialMethod* Parser::parse_special_method_decl(ModfList &ml, Location &loc) {
         kind = SpecialMethod::Kind::Ref;
     } else if (tok_kind == TokenKind::Deref){
         kind = SpecialMethod::Kind::Deref;
-    } else if (tok_kind == TokenKind::Access){
-        kind = SpecialMethod::Kind::Access;
     } else return nullptr;
     advance();
     Stmt* b = parse_block_stmt();
@@ -1144,6 +1142,9 @@ Expr* Parser::parse_prefix() {
     if (curr().is_ident()) {
         std::string_view name = curr().get_val();
         advance();
+        if (name == "null") {
+            return cu_.add_node<Expr>(loc, Expr::Null{});
+        }
         return cu_.add_node<Expr>(
             loc,
             Expr::Identifier{name}

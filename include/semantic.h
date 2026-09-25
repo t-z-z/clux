@@ -262,6 +262,7 @@ class SemanticAnalyzer : public ASTVisitor {
     #undef X
     Expr* typeString; // StringLiteral
     Expr* typeInferred;
+    Expr* typeNull;   // Null
     
 public:
     explicit SemanticAnalyzer(CompUnit& cu) : cu_(cu){
@@ -270,6 +271,7 @@ public:
         #undef X
         typeString = make_type(Location(), Expr::StringLiteralType{});
         typeInferred = make_type(Location(), Expr::Inferred{});
+        typeNull = make_type(Location(), Expr::Null{});
     }
     void merge_external_symbols(const SymbolTable& external){
         symbols_.merge_from(external);
@@ -314,6 +316,7 @@ public:
     void visit(Expr&) override;
     void visit_expr_literal(Expr::Literal&) override;
     void visit_expr_identifier(Expr::Identifier&) override;
+    void visit_expr_null(Expr::Null&) override;
     void visit_expr_binary(Expr::Binary&) override;
     void visit_expr_unary(Expr::Unary&) override;
     void visit_expr_assign(Expr::Assign&) override;

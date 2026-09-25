@@ -281,13 +281,14 @@ struct Expr : ASTNode {
     struct Reference        { Expr* target; };
     struct Inferred         {};
     struct Void             {};
+    struct Null             {};
     
     using Variant = std::variant<
         Literal, Identifier, Binary, Unary, Assign,
         Call, Ternary, Index, Member,
         Cast, Array, Closure, Spawn, Modifier,
         Primitive, Pointer, ArrayType, StringLiteralType,
-        FuncPtr, FuncRef, Reference, Inferred, Void
+        FuncPtr, FuncRef, Reference, Inferred, Void, Null
     >;
     
     Variant data;
@@ -328,6 +329,7 @@ struct Expr : ASTNode {
     BBB(reference, Reference, Expr)
     BBB(inferred, Inferred, Expr)
     BBB(void, Void, Expr)
+    BBB(null, Null, Expr)
 
     // 该表达式节点是否承载类型（类型即表达式）
     bool is_type_node() const {
@@ -525,7 +527,6 @@ struct SpecialMethod : Decl {
         Drop,       // 折构
         Ref,        // 被引用
         Deref,      // 结束引用
-        Access      // 获取
     } kind;
     std::vector<VarList*> params;
     Stmt* body = nullptr;
@@ -669,6 +670,7 @@ struct ASTVisitor {
     virtual void visit_type_reference(Expr::Reference&) {}
     virtual void visit_type_inferred(Expr::Inferred&) {}
     virtual void visit_type_void(Expr::Void&) {}
+    virtual void visit_expr_null(Expr::Null&) {}
     virtual void visit_type_modifier(Expr::Modifier&) {}
 
     // 递归遍历子节点（基类驱动，结构变更只改这里）
@@ -837,6 +839,7 @@ struct ASTVisitor {
             } else if constexpr (std::is_same_v<T, Expr::Primitive>) visit_type_primitive(v);
             else if constexpr (std::is_same_v<T, Expr::Inferred>) visit_type_inferred(v);
             else if constexpr (std::is_same_v<T, Expr::Void>) visit_type_void(v);
+            else if constexpr (std::is_same_v<T, Expr::Null>) visit_expr_null(v);
             else if constexpr (std::is_same_v<T, Expr::Modifier>) {
                 for (auto* l : v.layers) if (l) walk(*l);
                 visit_type_modifier(v);

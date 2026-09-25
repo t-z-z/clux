@@ -1,7 +1,6 @@
 #pragma once
 
 #include <string>
-#include <tuple>
 #include <unordered_map>
 #include <vector>
 
@@ -32,7 +31,14 @@ private:
     std::unordered_map<Class*, ClassInfo> classes_;
 
     struct LoopCtx { std::string break_label, continue_label; int scope_depth; };
-    struct DropEntry { std::string ptr; std::string drop_fn; int scope_depth; };
+    struct CleanupEntry {
+        enum Kind { Drop, Deref };
+        Kind        kind = Drop;
+        std::string slot;         // Drop: 实例指针槽；Deref: 指针变量槽
+        std::string drop_fn;      // Drop 用
+        Class*      cls = nullptr; // Deref 用
+        int         scope_depth = 0;
+    };
 
     struct Ctx {
         Func* fn = nullptr;
@@ -42,7 +48,7 @@ private:
         std::string exit_label;
         std::unordered_map<const VarItem*, std::string> slots;
         bool term = false;
-        std::vector<DropEntry> drops;
+        std::vector<CleanupEntry> drops;
         int scope_depth = 0;
     };
     Ctx ctx_;
@@ -58,6 +64,13 @@ private:
     std::string special_name(SpecialMethod* sm);
     std::string conversion_name(Conversion* cf);
     std::string type_key(Expr* t);
+
+    SpecialMethod* find_special(Class* cls, SpecialMethod::Kind k) const;
+    Class*         pointee_class(Expr* t);
+    void           emit_guard_call(SpecialMethod* sm, const std::string& val);
+    void           emit_bind_ref(Class* cls, const std::string& val,
+                                 SpecialMethod::Kind k);
+    void           register_deref(const std::string& slot, Class* cls);
 
     std::string map_type(Expr* t);
     Class* as_class(Expr* t);

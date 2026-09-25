@@ -168,6 +168,7 @@ bool SemanticAnalyzer::is_same_type(Expr* a, Expr* b) {
     }
     if (a->is_string_literal_type() && b->is_string_literal_type()) return true;
     if (a->is_void() && b->is_void()) return true;
+    if (a->is_null() && b->is_null()) return true;
     return false;
 }
 
@@ -498,7 +499,6 @@ void SemanticAnalyzer::register_special(SpecialMethod& sm, bool default_public) 
         case SpecialMethod::Kind::Drop:       internal_name = "DROP";       break;
         case SpecialMethod::Kind::Ref:        internal_name = "REF";        break;
         case SpecialMethod::Kind::Deref:      internal_name = "DEREF";      break;
-        case SpecialMethod::Kind::Access:     internal_name = "ACCESS";     break;
         default: error(sm.loc, "unknown special method"); return;
     }
 
@@ -567,6 +567,7 @@ std::string SemanticAnalyzer::type_to_key(Expr& t) {
         return "%" + type_name_string(&t);
     }
     if (t.is_void()) return "void";
+    if (t.is_null()) return "null";
     if (t.is_inferred()) {
         error(t.loc, "cannot convert inferred type to unique key");
         return "_";
@@ -669,6 +670,11 @@ void SemanticAnalyzer::visit_expr_literal(Expr::Literal& lit) {
         LITERAL_MAPPING
         #undef X
     }
+    current_expr->is_lvalue = false;
+}
+
+void SemanticAnalyzer::visit_expr_null(Expr::Null&) {
+    current_expr->type = typeNull;
     current_expr->is_lvalue = false;
 }
 
@@ -788,6 +794,9 @@ bool SemanticAnalyzer::can_convert_to(Expr* src, Expr* dst) {
     // bool 与整数互转
     if (is_bool_type(src) && is_integer_type(dst)) return true;
     if (is_integer_type(src) && is_bool_type(dst)) return true;
+
+    // null → 任意指针
+    if (src->is_null() && dst->is_pointer()) return true;
 
     // 任意指针 → void*
     if (src->is_pointer() && dst->is_pointer() &&
@@ -1798,7 +1807,6 @@ std::vector<std::string> decl_key_names(const Decl* d) {
             case SpecialMethod::Kind::Drop:   names.push_back("DROP"); break;
             case SpecialMethod::Kind::Ref:    names.push_back("REF"); break;
             case SpecialMethod::Kind::Deref:  names.push_back("DEREF"); break;
-            case SpecialMethod::Kind::Access: names.push_back("ACCESS"); break;
             default: break;
         }
         return names;

@@ -117,7 +117,7 @@ std::string Translator::special_name(SpecialMethod* sm) {
         case SpecialMethod::Kind::Drop:       base = "DROP"; break;
         case SpecialMethod::Kind::Ref:        base = "REF"; break;
         case SpecialMethod::Kind::Deref:      base = "DEREF"; break;
-        case SpecialMethod::Kind::Access:     base = "ACCESS"; break;
+        default: break;
     }
     if (sm->kind == SpecialMethod::Kind::Init) {
         for (VarList* vl : sm->params) {
@@ -239,11 +239,62 @@ std::string Translator::map_type(Expr* t) {
         }
     }
     if (t->get_pointer()) return "ptr";
+    if (t->get_reference()) return "ptr";
     if (t->get_array_type()) return "{ ptr, i64 }";
     if (t->get_string_literal_type()) return "ptr";
     if (t->get_func_ptr()) return "ptr";
+    if (t->is_null()) return "ptr";
     if (as_class(t)) return "ptr";
     return "i32";
+}
+
+SpecialMethod* Translator::find_special(Class* cls, SpecialMethod::Kind k) const {
+    if (!cls) return nullptr;
+    for (Decl* m : cls->members) {
+        if (!m || m->kind != DeclKind::SpecialMethod) continue;
+        auto* sm = static_cast<SpecialMethod*>(m);
+        if (sm->kind == k) return sm;
+    }
+    return nullptr;
+}
+
+Class* Translator::pointee_class(Expr* t) {
+    if (!t) return nullptr;
+    if (auto* p = t->get_pointer())   return as_class(p->pointee);
+    if (auto* r = t->get_reference()) return as_class(r->target);
+    return nullptr;
+}
+
+void Translator::emit_guard_call(SpecialMethod* sm, const std::string& val) {
+    if (!sm) return;
+    if (val == "null") return;
+    std::string nn = ir_.reg();
+    emit_instr(nn + " = icmp ne ptr " + val + ", null");
+    std::string call_l = ir_.named_label("hook.call");
+    std::string cont_l = ir_.named_label("hook.cont");
+    emit_term("br i1 " + nn + ", label %" + call_l + ", label %" + cont_l);
+    open_block(call_l);
+    emit_instr("call void @" + IRWriter::quote(mangled_of(sm)) +
+               "(ptr " + val + ")");
+    emit_term("br label %" + cont_l);
+    open_block(cont_l);
+}
+
+void Translator::emit_bind_ref(Class* cls, const std::string& val,
+                               SpecialMethod::Kind k) {
+    if (!cls) return;
+    emit_guard_call(find_special(cls, k), val);
+}
+
+void Translator::register_deref(const std::string& slot, Class* cls) {
+    if (!cls) return;
+    if (!find_special(cls, SpecialMethod::Kind::Deref)) return;
+    CleanupEntry e;
+    e.kind = CleanupEntry::Deref;
+    e.slot = slot;
+    e.cls = cls;
+    e.scope_depth = ctx_.scope_depth;
+    ctx_.drops.push_back(e);
 }
 
 // 指令发射
@@ -270,8 +321,14 @@ void Translator::emit_drops_to(int depth) {
     while (!ctx_.drops.empty() && ctx_.drops.back().scope_depth > depth) {
         auto& d = ctx_.drops.back();
         if (!ctx_.term) {
-            emit_instr("call void @" + IRWriter::quote(d.drop_fn) +
-                       "(ptr " + d.ptr + ")");
+            if (d.kind == CleanupEntry::Deref) {
+                std::string v = ir_.reg();
+                emit_instr(v + " = load ptr, ptr " + d.slot);
+                emit_guard_call(find_special(d.cls, SpecialMethod::Kind::Deref), v);
+            } else {
+                emit_instr("call void @" + IRWriter::quote(d.drop_fn) +
+                           "(ptr " + d.slot + ")");
+            }
         }
         ctx_.drops.pop_back();
     }
@@ -340,6 +397,14 @@ void Translator::emit_func(Func& f, Class* cls) {
         emit_instr(slot + " = alloca " + vt);
         emit_instr("store " + vt + " " + argn + ", ptr " + slot);
         ctx_.slots[vi] = slot;
+        if (vt == "ptr") {
+            Expr* vt_expr = vi->type;
+            Class* pc = pointee_class(vt_expr);
+            if (pc) {
+                emit_bind_ref(pc, argn, SpecialMethod::Kind::Ref);
+                register_deref(slot, pc);
+            }
+        }
     }
     if (main_with_ret) {
         std::string slot = ir_.reg();
@@ -403,6 +468,13 @@ void Translator::emit_special(SpecialMethod& sm, Class* cls) {
         emit_instr(slot + " = alloca " + vt);
         emit_instr("store " + vt + " " + argn + ", ptr " + slot);
         ctx_.slots[vi] = slot;
+        if (vt == "ptr") {
+            Class* pc = pointee_class(vi->type);
+            if (pc) {
+                emit_bind_ref(pc, argn, SpecialMethod::Kind::Ref);
+                register_deref(slot, pc);
+            }
+        }
     }
 
     if (sm.body) emit_stmt(sm.body);
@@ -520,8 +592,12 @@ void Translator::emit_var_decl(VarList* vl) {
                     if (m && m->kind == DeclKind::SpecialMethod) {
                         auto* sm = static_cast<SpecialMethod*>(m);
                         if (sm->kind == SpecialMethod::Kind::Drop) {
-                            ctx_.drops.push_back({inst, mangled_of(sm),
-                                                  ctx_.scope_depth});
+                            CleanupEntry e;
+                            e.kind = CleanupEntry::Drop;
+                            e.slot = inst;
+                            e.drop_fn = mangled_of(sm);
+                            e.scope_depth = ctx_.scope_depth;
+                            ctx_.drops.push_back(e);
                             break;
                         }
                     }
@@ -538,6 +614,13 @@ void Translator::emit_var_decl(VarList* vl) {
             std::string src_t = vi->init->type ? map_type(vi->init->type) : vt;
             if (src_t != vt) v = cast_value(v, src_t, vt);
             emit_instr("store " + vt + " " + v + ", ptr " + slot);
+            if (vt == "ptr") {
+                Class* pc = pointee_class(vtype);
+                if (pc) {
+                    emit_bind_ref(pc, v, SpecialMethod::Kind::Ref);
+                    register_deref(slot, pc);
+                }
+            }
         }
     }
 }
@@ -657,6 +740,7 @@ void Translator::emit_goto(Stmt::Goto& g) {
 
 std::string Translator::eval(Expr* e) {
     if (!e) return "0";
+    if (e->is_null())                     return "null";
     if (auto* lit = e->get_literal())     return eval_literal(lit);
     if (auto* id  = e->get_identifier())  return eval_identifier(e, id);
     if (auto* b   = e->get_binary())      return eval_binary(e, b);
@@ -868,7 +952,16 @@ std::string Translator::eval_binary(Expr* e, Expr::Binary* b) {
 }
 
 std::string Translator::eval_unary(Expr* e, Expr::Unary* u) {
-    if (u->op == OpKind::BitAnd) return eval_lvalue(u->operand);
+    if (u->op == OpKind::BitAnd) {
+        Expr* op = u->operand;
+        if (op && as_class(op->type)) {
+            std::string slot = eval_lvalue(op);
+            std::string r = ir_.reg();
+            emit_instr(r + " = load ptr, ptr " + slot);
+            return r;
+        }
+        return eval_lvalue(op);
+    }
     std::string ot = u->operand && u->operand->type ? map_type(u->operand->type) : "i32";
     std::string ov = eval(u->operand);
     std::string res = ir_.reg();
@@ -925,6 +1018,10 @@ std::string Translator::eval_assign(Expr::Assign* a) {
         v = r2;
     }
     emit_instr("store " + t + " " + v + ", ptr " + ptr);
+    if (t == "ptr" && a->target) {
+        Class* pc = pointee_class(a->target->type);
+        if (pc) emit_bind_ref(pc, v, SpecialMethod::Kind::Ref);
+    }
     return v;
 }
 

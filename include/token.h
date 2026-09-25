@@ -63,7 +63,6 @@ namespace cx{
     X(Drop, "DROP") \
     X(Ref, "REF") \
     X(Deref, "DEREF") \
-    X(Access, "ACCESS") \
     X(Alias, "alias") \
     X(Conversion, "conversion") \
     X(Init, "INIT") \
