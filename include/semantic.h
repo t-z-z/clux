@@ -380,12 +380,17 @@ private:
     // = 赋值、() 传参、cast 转换三种情形共用的转换判定入口
     bool check_conversion(Expr* src, Expr* dst, const std::string& context,
                          const Location& loc, bool explicit_cast = false);
+    // 数组字面量/字符串字面量的编译期元素数不得超过目标数组类型的长度约束
+    void check_array_len_fit(Expr* src, Expr* dst_type, const std::string& context,
+                             const Location& loc);
 
     // 类型判断
     bool is_numeric_type(Expr* t);
     bool is_integer_type(Expr* t);
     bool is_float_type(Expr* t);
     bool is_bool_type(Expr* t);
+    // 条件位置允许的类型：bool、指针、切片（视图）、null
+    bool is_condition_type(Expr* t);
     bool is_same_type(Expr* a, Expr* b);
     bool is_integer_promotable(Expr* t);
     bool is_void_type(Expr* t);
@@ -435,6 +440,8 @@ private:
                          const std::vector<Expr*>& args, const Location& loc);
     bool args_match(const std::vector<VarList*>& params,
                     const std::vector<Expr*>& args);
+    // vi 是否为当前函数最后一个返回声明中的返回变量
+    bool is_return_var_item(VarItem* vi) const;
 
     // 克隆辅助（深拷贝，新节点统一登记到 cu_）
     Expr* clone_type(Expr* t);

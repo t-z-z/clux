@@ -110,6 +110,13 @@ bool SemanticAnalyzer::is_bool_type(Expr* t) {
     return t && t->is_primitive() && t->get_primitive()->kind == PrimitiveTypeKind::Bool;
 }
 
+bool SemanticAnalyzer::is_condition_type(Expr* t) {
+    if (is_bool_type(t)) return true;
+    t = underlying_type(t);
+    if (!t) return false;
+    return t->is_pointer() || t->is_array_type() || t->is_null();
+}
+
 bool SemanticAnalyzer::is_same_type(Expr* a, Expr* b) {
     if (!a || !b) return false;
     // 双方都带修饰：逐层比较；仅一方带修饰：剥离修饰层后按值类型比较
@@ -622,6 +629,26 @@ void SemanticAnalyzer::visit_var_list(VarList& vl) {
         if (!var || !var->init || !var->init->type) continue;
         Expr* dt = var->type ? var->type : vl.type;
         if (!dt || dt->is_inferred()) continue;
+        // 返回变量不接受数组/字符串字面量：栈存储返回后悬垂
+        bool lit_slice = var->init->is_array() ||
+            (var->init->type && var->init->type->is_string_literal_type());
+        if (lit_slice && is_return_var_item(var)) {
+            error(var->init->loc,
+                  "cannot initialize return variable with array literal: "
+                  "its stack storage would dangle after return");
+        }
+        // 数组字面量：元素数不得超过声明的编译期常量长度
+        if (dt->is_array_type() && var->init->is_array()) {
+            check_array_len_fit(var->init, dt, "declared", var->init->loc);
+            // 字面量类型对齐声明类型，使长度以声明为准
+            if (dt->get_array_type()->length &&
+                dt->get_array_type()->length->is_literal())
+                var->init->type = dt;
+        } else if (dt->is_array_type() && var->init->type &&
+                   var->init->type->is_string_literal_type()) {
+            // 字符串字面量初值：只检查长度，保留其类型供 translator 生成切片
+            check_array_len_fit(var->init, dt, "declared", var->init->loc);
+        }
         if (is_same_type(var->init->type, dt)) continue;
         // 隐式转换优先匹配 conversion
         if (Symbol* conv = find_conversion(*var->init->type, *dt)) {
@@ -795,7 +822,12 @@ bool SemanticAnalyzer::can_convert_to(Expr* src, Expr* dst) {
     if (is_bool_type(src) && is_integer_type(dst)) return true;
     if (is_integer_type(src) && is_bool_type(dst)) return true;
 
-    // null → 任意指针
+    // 指针→bool：按非空；数组→bool：按 len != 0（切片是视图，无 null 态）
+    if (is_bool_type(dst) && (src->is_pointer() || src->is_array_type()))
+        return true;
+    if (is_bool_type(dst) && src->is_null()) return true;
+
+    // null → 任意指针（数组是视图，无 null 态，不在此列）
     if (src->is_null() && dst->is_pointer()) return true;
 
     // 任意指针 → void*
@@ -876,6 +908,46 @@ bool SemanticAnalyzer::has_conversion(Expr* src, Expr* dst) {
 }
 
 // = 赋值、() 传参、cast 转换三种情形共用的转换判定入口
+// 表达式的编译期数组长度：数组字面量取元素数，字符串字面量取字符数；
+// 填充形式 [x ...] 的长度由目标决定，返回 -1 表示无法静态确定
+static long long const_array_len_of(Expr* e) {
+    if (!e) return -1;
+    if (auto* a = e->get_array()) {
+        if (a->fill_value) return -1;
+        return (long long)a->members.size();
+    }
+    if (e->is_literal() && e->get_literal()->kind == LiteralKind::String)
+        return (long long)e->get_literal()->value.size();
+    return -1;
+}
+
+bool SemanticAnalyzer::is_return_var_item(VarItem* vi) const {
+    if (!vi || !current_func) return false;
+    if (current_func->returns.empty() || !current_func->returns.back())
+        return false;
+    for (VarItem* rvi : current_func->returns.back()->vars)
+        if (rvi == vi) return true;
+    return false;
+}
+
+void SemanticAnalyzer::check_array_len_fit(Expr* src, Expr* dst_type,
+                                           const std::string& context,
+                                           const Location& loc) {
+    if (!src || !dst_type || !dst_type->is_array_type()) return;
+    Expr* len = dst_type->get_array_type()->length;
+    if (!len || !len->is_literal()) return;
+    size_t decl_len = 0;
+    try { decl_len = std::stoul(std::string(len->get_literal()->value)); }
+    catch (...) { return; }
+    if (decl_len == 0) return;
+    long long n = const_array_len_of(src);
+    if (n >= 0 && (size_t)n > decl_len) {
+        error(loc, "array literal has " + std::to_string(n) +
+              " elements but " + context + " length is " +
+              std::to_string(decl_len));
+    }
+}
+
 bool SemanticAnalyzer::check_conversion(Expr* src, Expr* dst, const std::string& context,
                                         const Location& loc, bool explicit_cast) {
     if (!src || !dst) return false;
@@ -1061,7 +1133,19 @@ void SemanticAnalyzer::visit_expr_assign(Expr::Assign& a) {
     Expr* lt = a.target->type;
     Expr* rt = a.value->type;
 
+    // 返回变量不接受数组/字符串字面量：字面量存储留在函数栈上，返回后指针悬垂
+    bool literal_slice = a.value->is_array() ||
+        (a.value->type && a.value->type->is_string_literal_type());
+    if (literal_slice && a.target->sym) {
+        VarItem* tvi = dynamic_cast<VarItem*>(a.target->sym->node);
+        if (is_return_var_item(tvi)) {
+            error(a.value->loc,
+                  "cannot assign array literal to return variable: "
+                  "its stack storage would dangle after return");
+        }
+    }
     // 赋值统一走 = 的转换判定
+    check_array_len_fit(a.value, lt, "target", current_expr->loc);
     check_conversion(rt, lt, "assignment", current_expr->loc);
 
     current_expr->type = lt;
@@ -1211,6 +1295,41 @@ void SemanticAnalyzer::resolve_call(Expr* call_expr, Expr::Call& c) {
         return;
     }
 
+    // 切片形参的调用点打包：f(a b c) 等价于 f([a b c])
+    if (!func->params.empty()) {
+        std::vector<Expr*> params;
+        for (VarList* vl : func->params) {
+            if (!vl) continue;
+            for (VarItem* vi : vl->vars)
+                if (vi && vi->type) params.push_back(vi->type);
+        }
+        if (params.size() == 1 && params[0]->is_array_type() && !c.args.empty()) {
+            Expr* pt = params[0];
+            bool direct = c.args.size() == 1 && c.args[0] && c.args[0]->type &&
+                          is_same_type(c.args[0]->type, pt);
+            if (!direct) {
+                Expr* elem = pt->get_array_type()->element;
+                bool ok = elem != nullptr;
+                for (Expr* a : c.args) {
+                    if (!a || !a->type) { ok = false; break; }
+                    if (!is_same_type(a->type, elem) &&
+                        !can_convert_to(a->type, elem)) { ok = false; break; }
+                    // 元素自身的长度约束（如形参 char[2][] 中的 char[2]）
+                    check_array_len_fit(a, elem, "parameter element", a->loc);
+                }
+                if (ok) {
+                    Expr* arr = cu_.add_node<Expr>(call_expr->loc,
+                        Expr::Array{c.args, nullptr});
+                    arr->type = make_type(call_expr->loc,
+                        Expr::ArrayType{elem,
+                            make_int_literal(call_expr->loc, c.args.size())});
+                    arr->is_lvalue = false;
+                    c.args = {arr};
+                }
+            }
+        }
+    }
+
     check_call_args(func, c.args);
 
     Expr* ret = typeVoid;
@@ -1244,6 +1363,8 @@ void SemanticAnalyzer::check_call_args(const std::vector<VarList*>& params_lists
     for (size_t i = 0; i < args.size(); ++i) {
         Expr* at = args[i] ? args[i]->type : nullptr;
         if (!at || !params[i]) continue;
+        check_array_len_fit(args[i], params[i], "parameter",
+                            args[i] ? args[i]->loc : loc);
         check_conversion(at, params[i], "argument passing",
                          args[i] ? args[i]->loc : loc);
     }
@@ -1517,7 +1638,7 @@ void SemanticAnalyzer::visit_stmt_if(Stmt::If& if_stmt) {
     }
     
     Expr* cond_type = if_stmt.condition->type;
-    if (cond_type && !is_bool_type(cond_type)) {
+    if (cond_type && !is_condition_type(cond_type)) {
         warning(if_stmt.condition->loc, "if condition is not bool, implicit conversion");
     }
 }
@@ -1529,7 +1650,7 @@ void SemanticAnalyzer::visit_stmt_while(Stmt::While& while_stmt) {
     }
     
     Expr* cond_type = while_stmt.condition->type;
-    if (cond_type && !is_bool_type(cond_type)) {
+    if (cond_type && !is_condition_type(cond_type)) {
         warning(while_stmt.condition->loc, "while condition is not bool, implicit conversion");
     }
 }
@@ -1537,7 +1658,7 @@ void SemanticAnalyzer::visit_stmt_while(Stmt::While& while_stmt) {
 void SemanticAnalyzer::visit_stmt_for(Stmt::For& for_stmt) {
     if (for_stmt.condition) {
         Expr* cond_type = for_stmt.condition->type;
-        if (cond_type && !is_bool_type(cond_type)) {
+        if (cond_type && !is_condition_type(cond_type)) {
             warning(for_stmt.condition->loc, "for condition is not bool, implicit conversion");
         }
     }
@@ -1978,6 +2099,11 @@ void SemanticAnalyzer::init_stmt(InitCtx& ctx, Stmt* s) {
                 if (sym && vt && vt->resolved_decl &&
                     vt->resolved_decl->kind == DeclKind::Class)
                     ctx.assigned.insert(sym);
+                // 定长数组声明即分配 backing，视为已赋值；切片无长度、无 backing，未初始化
+                if (sym && vt && vt->is_array_type()) {
+                    Expr* len = vt->get_array_type()->length;
+                    if (len && len->is_literal()) ctx.assigned.insert(sym);
+                }
             }
             if (sym) ctx.declared.insert(sym);
         }

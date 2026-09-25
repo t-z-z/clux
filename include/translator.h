@@ -95,6 +95,8 @@ private:
     void emit_goto(Stmt::Goto& g);
 
     std::string eval(Expr* e);
+    std::string eval_cond(Expr* e);
+    std::string to_bool(Expr* e, const std::string& v);
     std::string eval_lvalue(Expr* e);
     std::string eval_literal(Expr::Literal* lit);
     std::string eval_identifier(Expr* e, Expr::Identifier* id);
@@ -105,6 +107,7 @@ private:
     std::string eval_index(Expr* e, Expr::Index* ix);
     std::string eval_member(Expr* e, Expr::Member* m);
     std::string eval_array(Expr* e, Expr::Array* arr);
+    std::string build_string_slice(Expr* lit);
     std::string eval_cast(Expr* e, Expr::Cast* c);
     std::string eval_ternary(Expr* e, Expr::Ternary* t);
     std::string eval_closure(Expr* e, Expr::Closure* c);

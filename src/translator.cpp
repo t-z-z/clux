@@ -7,6 +7,7 @@
 
 namespace cx {
 
+
 // 收集
 
 void Translator::run() {
@@ -604,6 +605,24 @@ void Translator::emit_var_decl(VarList* vl) {
         std::string slot = ir_.reg();
         emit_instr(slot + " = alloca " + vt);
         ctx_.slots[vi] = slot;
+        if (vtype && vtype->is_array_type() && !vi->init) {
+            int len = array_length_of(vtype);
+            if (len > 0) {
+                Expr* el = vtype->get_array_type()->element;
+                std::string et = el ? map_type(el) : "i32";
+                std::string backing = ir_.reg();
+                emit_instr(backing + " = alloca " + et + ", i64 " +
+                           std::to_string((long long)len));
+                std::string s1 = ir_.reg();
+                emit_instr(s1 + " = insertvalue { ptr, i64 } undef, ptr " +
+                           backing + ", 0");
+                std::string s2 = ir_.reg();
+                emit_instr(s2 + " = insertvalue { ptr, i64 } " + s1 +
+                           ", i64 " + std::to_string((long long)len) + ", 1");
+                emit_instr("store { ptr, i64 } " + s2 + ", ptr " + slot);
+                continue;
+            }
+        }
         if (vtype && vtype->is_array_type() && vi->init &&
             vi->init->type && vi->init->type->is_string_literal_type()) {
             auto* lit = vi->init->get_literal();
@@ -650,7 +669,7 @@ void Translator::emit_var_decl(VarList* vl) {
 }
 
 void Translator::emit_if(Stmt::If& i) {
-    std::string cond = eval(i.condition);
+    std::string cond = eval_cond(i.condition);
     std::string then_l = ir_.named_label("if.then");
     std::string else_l = ir_.named_label("if.else");
     std::string end_l  = ir_.named_label("if.end");
@@ -680,7 +699,7 @@ void Translator::emit_while(Stmt::While& w) {
     emit_term("br label %" + cond_l);
 
     open_block(cond_l);
-    std::string c = eval(w.condition);
+    std::string c = eval_cond(w.condition);
     emit_term("br i1 " + c + ", label %" + body_l + ", label %" + end_l);
 
     open_block(body_l);
@@ -706,7 +725,7 @@ void Translator::emit_for(Stmt::For& f) {
     emit_term("br label %" + cond_l);
 
     open_block(cond_l);
-    std::string c = f.condition ? eval(f.condition) : "1";
+    std::string c = f.condition ? eval_cond(f.condition) : "1";
     emit_term("br i1 " + c + ", label %" + body_l + ", label %" + end_l);
 
     open_block(body_l);
@@ -761,6 +780,27 @@ void Translator::emit_goto(Stmt::Goto& g) {
 }
 
 // 表达式
+
+std::string Translator::to_bool(Expr* e, const std::string& v) {
+    if (!e || !e->type) return v;
+    if (e->type->is_pointer()) {
+        std::string r = ir_.reg();
+        emit_instr(r + " = icmp ne ptr " + v + ", null");
+        return r;
+    }
+    if (e->type->is_array_type()) {
+        std::string n = ir_.reg();
+        emit_instr(n + " = extractvalue { ptr, i64 } " + v + ", 1");
+        std::string r = ir_.reg();
+        emit_instr(r + " = icmp ne i64 " + n + ", 0");
+        return r;
+    }
+    return v;
+}
+
+std::string Translator::eval_cond(Expr* e) {
+    return to_bool(e, eval(e));
+}
 
 std::string Translator::eval(Expr* e) {
     if (!e) return "0";
@@ -974,12 +1014,18 @@ std::string Translator::eval_binary(Expr* e, Expr::Binary* b) {
         case OpKind::Shr:
             emit_instr(res + " = ashr " + lt + " " + lv + ", " + rv);
             break;
-        case OpKind::And:
-            emit_instr(res + " = and i1 " + lv + ", " + rv);
+        case OpKind::And: {
+            std::string l = to_bool(b->left, lv);
+            std::string rr = to_bool(b->right, rv);
+            emit_instr(res + " = and i1 " + l + ", " + rr);
             break;
-        case OpKind::Or:
-            emit_instr(res + " = or i1 " + lv + ", " + rv);
+        }
+        case OpKind::Or: {
+            std::string l = to_bool(b->left, lv);
+            std::string rr = to_bool(b->right, rv);
+            emit_instr(res + " = or i1 " + l + ", " + rr);
             break;
+        }
         default:
             emit_instr(res + " = add " + lt + " 0, 0");
             break;
@@ -1008,9 +1054,11 @@ std::string Translator::eval_unary(Expr* e, Expr::Unary* u) {
             else
                 emit_instr(res + " = sub " + ot + " 0, " + ov);
             break;
-        case OpKind::Not:
-            emit_instr(res + " = xor i1 " + ov + ", true");
+        case OpKind::Not: {
+            std::string b = to_bool(u->operand, ov);
+            emit_instr(res + " = xor i1 " + b + ", true");
             break;
+        }
         case OpKind::BitNot:
             emit_instr(res + " = xor " + ot + " " + ov + ", -1");
             break;
@@ -1033,7 +1081,13 @@ std::string Translator::eval_assign(Expr::Assign* a) {
     std::string ptr = eval_lvalue(a->target);
     if (ptr.empty()) return "0";
     std::string t = a->target && a->target->type ? map_type(a->target->type) : "i32";
-    std::string v = eval(a->value);
+    // 字符串字面量赋给切片：构造 {ptr,i64}，而非把常量指针 @.str 直接存
+    std::string v;
+    if (t == "{ ptr, i64 }" && a->value && a->value->type &&
+        a->value->type->is_string_literal_type())
+        v = build_string_slice(a->value);
+    else
+        v = eval(a->value);
     if (a->op != OpKind::Assign) {
         std::string cur = ir_.reg();
         emit_instr(cur + " = load " + t + ", ptr " + ptr);
@@ -1106,40 +1160,79 @@ std::string Translator::eval_array(Expr* e, Expr::Array* arr) {
     Expr* elem_type = nullptr;
     if (e->type && e->type->is_array_type())
         elem_type = e->type->get_array_type()->element;
-    std::string et = elem_type ? map_type(elem_type) : "i32";
+    std::string et;
+    if (elem_type && elem_type->is_string_literal_type())
+        et = "{ ptr, i64 }";
+    else
+        et = elem_type ? map_type(elem_type) : "i32";
 
+    // 长度以声明类型的编译期常量为准；否则由字面量成员数决定
     size_t n = arr->members.size();
-    // 无成员但有 fill_value：从类型取长度
-    if (n == 0 && arr->fill_value) {
-        int len = array_length_of(e->type);
-        n = len > 0 ? (size_t)len : 1;
-    }
+    int decl_len = array_length_of(e->type);
+    if (decl_len > 0) n = (size_t)decl_len;
+    else if (n == 0 && arr->fill_value) n = 1;
 
     std::string backing = ir_.reg();
     emit_instr(backing + " = alloca " + et + ", i64 " +
                std::to_string((long long)(n ? n : 1)));
 
-    if (n > 0 && arr->members.empty() && arr->fill_value) {
-        std::string v = eval(arr->fill_value);
-        for (size_t k = 0; k < n; ++k) {
-            std::string p = ir_.reg();
-            emit_instr(p + " = getelementptr " + et + ", ptr " + backing +
-                       ", i64 " + std::to_string(k));
-            emit_instr("store " + et + " " + v + ", ptr " + p);
-        }
-    } else {
-        int i = 0;
+    if (!arr->members.empty()) {
+        size_t i = 0;
         for (Expr* mem : arr->members) {
+            if (i >= n) break;
             if (!mem) { ++i; continue; }
-            std::string v = eval(mem);
+            std::string v;
+            if (mem->is_literal() && mem->get_literal()->kind == LiteralKind::String)
+                v = build_string_slice(mem);
+            else
+                v = eval(mem);
             std::string p = ir_.reg();
             emit_instr(p + " = getelementptr " + et + ", ptr " + backing +
                        ", i64 " + std::to_string(i));
             emit_instr("store " + et + " " + v + ", ptr " + p);
             ++i;
         }
+    } else if (arr->fill_value) {
+        // 字符串填充：每个元素独立构造 backing，避免写入共享数据
+        bool str_fill = arr->fill_value->is_literal() &&
+                        arr->fill_value->get_literal()->kind == LiteralKind::String;
+        std::string v;
+        if (!str_fill) v = eval(arr->fill_value);
+        for (size_t k = 0; k < n; ++k) {
+            std::string vk = str_fill ? build_string_slice(arr->fill_value) : v;
+            std::string p = ir_.reg();
+            emit_instr(p + " = getelementptr " + et + ", ptr " + backing +
+                       ", i64 " + std::to_string(k));
+            emit_instr("store " + et + " " + vk + ", ptr " + p);
+        }
     }
 
+    std::string s1 = ir_.reg();
+    emit_instr(s1 + " = insertvalue { ptr, i64 } undef, ptr " + backing + ", 0");
+    std::string s2 = ir_.reg();
+    emit_instr(s2 + " = insertvalue { ptr, i64 } " + s1 + ", i64 " +
+               std::to_string((long long)n) + ", 1");
+    return s2;
+}
+
+std::string Translator::build_string_slice(Expr* lit) {
+    auto* l = lit ? lit->get_literal() : nullptr;
+    std::string content = l ? std::string(l->value) : std::string();
+    size_t n = content.size();
+    std::string sym = ir_.string_const(content);
+    std::string backing = ir_.reg();
+    emit_instr(backing + " = alloca i8, i64 " + std::to_string(n ? n : 1));
+    for (size_t k = 0; k < n; ++k) {
+        std::string src = ir_.reg();
+        emit_instr(src + " = getelementptr i8, ptr @" + sym +
+                   ", i64 " + std::to_string(k));
+        std::string b = ir_.reg();
+        emit_instr(b + " = load i8, ptr " + src);
+        std::string dst = ir_.reg();
+        emit_instr(dst + " = getelementptr i8, ptr " + backing +
+                   ", i64 " + std::to_string(k));
+        emit_instr("store i8 " + b + ", ptr " + dst);
+    }
     std::string s1 = ir_.reg();
     emit_instr(s1 + " = insertvalue { ptr, i64 } undef, ptr " + backing + ", 0");
     std::string s2 = ir_.reg();
@@ -1172,6 +1265,13 @@ std::string Translator::cast_value(const std::string& v,
     if (dst == "i1") {
         if (is_int_n(src)) { emit_instr(r + " = icmp ne " + src + " " + v + ", 0"); return r; }
         if (is_fp(src))    { emit_instr(r + " = fcmp one " + src + " " + v + ", 0.0"); return r; }
+        if (src == "ptr")  { emit_instr(r + " = icmp ne ptr " + v + ", null"); return r; }
+        if (src == "{ ptr, i64 }") {
+            std::string n = ir_.reg();
+            emit_instr(n + " = extractvalue { ptr, i64 } " + v + ", 1");
+            emit_instr(r + " = icmp ne i64 " + n + ", 0");
+            return r;
+        }
         return v;
     }
     if (is_int_n(src) && is_int_n(dst)) {
