@@ -1525,10 +1525,27 @@ std::string Translator::eval_call(Expr* e, Expr::Call* c) {
         args.push_back("ptr sret(" + ret_t + ") " + sret_slot);
     }
     if (has_self) args.push_back("ptr " + self_arg);
-    for (Expr* a : c->args) {
-        std::string v = eval(a);
+    // 形参 IR 类型表，用于字符串字面量按切片形参构造 {ptr,i64}
+    std::vector<std::string> param_ir;
+    for (VarList* vl : fn->params) {
+        if (!vl) continue;
+        for (VarItem* vi : vl->vars) {
+            std::string pt = vi->type ? map_type(vi->type)
+                                      : (vl->type ? map_type(vl->type) : "i32");
+            param_ir.push_back(pt);
+        }
+    }
+    for (size_t ai = 0; ai < c->args.size(); ++ai) {
+        Expr* a = c->args[ai];
         std::string at = a && a->type ? map_type(a->type) : "i32";
-        args.push_back(at + " " + v);
+        std::string want = ai < param_ir.size() ? param_ir[ai] : at;
+        std::string v;
+        if (want == "{ ptr, i64 }" && a && a->type &&
+            a->type->is_string_literal_type())
+            v = build_string_slice(a);
+        else
+            v = eval(a);
+        args.push_back(want + " " + v);
     }
 
     bool is_main = (std::string(fn->name) == "main" && ctx_.current_class == nullptr);

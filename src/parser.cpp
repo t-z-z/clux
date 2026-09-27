@@ -263,9 +263,6 @@ Func* Parser::parse_func_decl(ModfList &ml, Location &loc) {
         }
     }
     Stmt* body = parse_block_stmt();
-    if (!body) {
-        add_error("expected function body");
-    }
     return cu_.add_node<Func>(
             loc, std::move(name),
             std::move(ml),

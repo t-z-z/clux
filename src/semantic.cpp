@@ -6,6 +6,11 @@
 #include <functional>
 
 namespace cx {
+/*
+semantic基础规则
+有效表达式的type和sym在解析后保证至少有一个指针非空
+检测到已有的空指针时不报错，在产生空指针时才报错
+*/
 
 // 类型名节点（Identifier / 限定名 Member 链）的完整名字
 static std::string type_name_string(Expr* t) {
@@ -614,13 +619,6 @@ void SemanticAnalyzer::visit_var_list(VarList& vl) {
             bool is_const_length = arr->length->is_literal();
             if (!is_const_length && arr->length->sym && arr->length->sym->is_const()) {
                 is_const_length = true;
-            }
-            if (!is_const_length) {
-                bool has_alloca = vl.modfs.has(ModfKind::Alloca);
-                bool has_malloc = vl.modfs.has(ModfKind::Malloc);
-                if (!has_alloca && !has_malloc) {
-                    warning(vl.loc, "array with runtime length must use 'alloca' or 'malloc' modifier");
-                }
             }
         }
     }
