@@ -356,7 +356,8 @@ void Translator::emit_func(Func& f, Class* cls) {
     std::vector<std::string> params;
     std::vector<std::tuple<VarItem*, std::string, std::string>> arg_inits;
 
-    if (ret_var && !main_with_ret) params.push_back("ptr sret(" + ret_t + ") %ret");
+    if (ret_var && !main_with_ret && !f.ret_via_reg)
+        params.push_back("ptr sret(" + ret_t + ") %ret");
     if (has_self) {
         params.push_back("ptr %self");
         ctx_.self_ptr = "%self";
@@ -374,7 +375,8 @@ void Translator::emit_func(Func& f, Class* cls) {
         }
     }
 
-    std::string ret_sig = (plain_main || main_with_ret) ? "i32" : "void";
+    std::string ret_sig = (plain_main || main_with_ret) ? "i32"
+                         : (f.ret_via_reg && ret_var ? ret_t : "void");
     ctx_.ret_type = ret_t;
     if (main_with_ret) ctx_.exit_label = "main.exit";
 
@@ -406,6 +408,10 @@ void Translator::emit_func(Func& f, Class* cls) {
         std::string slot = ir_.reg();
         emit_instr(slot + " = alloca i32");
         ctx_.slots[ret_var] = slot;
+    } else if (ret_var && f.ret_via_reg) {
+        std::string slot = ir_.reg();
+        emit_instr(slot + " = alloca " + ret_t);
+        ctx_.slots[ret_var] = slot;
     } else if (ret_var) {
         ctx_.slots[ret_var] = "%ret";
     }
@@ -421,7 +427,12 @@ void Translator::emit_func(Func& f, Class* cls) {
         emit_term("ret i32 " + r);
     } else if (!ctx_.term) {
         emit_drops_to(0);
-        if (plain_main) emit_term("ret i32 0");
+        if (f.ret_via_reg && ret_var) {
+            std::string rs = ctx_.slots.count(ret_var) ? ctx_.slots[ret_var] : "null";
+            std::string r = ir_.reg();
+            emit_instr(r + " = load " + ret_t + ", ptr " + rs);
+            emit_term("ret " + ret_t + " " + r);
+        } else if (plain_main) emit_term("ret i32 0");
         else            emit_term("ret void");
     }
     ir_.emit("}");
@@ -753,6 +764,18 @@ void Translator::emit_return(Stmt::Return&) {
         return;
     }
     emit_drops_to(0);
+    // 寄存器返回：return 前加载返回变量
+    if (ctx_.fn && ctx_.fn->ret_via_reg && !ctx_.fn->returns.empty() &&
+        ctx_.fn->returns.back() && !ctx_.fn->returns.back()->vars.empty()) {
+        VarItem* rv = ctx_.fn->returns.back()->vars.back();
+        auto it = ctx_.slots.find(rv);
+        if (it != ctx_.slots.end()) {
+            std::string r = ir_.reg();
+            emit_instr(r + " = load " + ctx_.ret_type + ", ptr " + it->second);
+            emit_term("ret " + ctx_.ret_type + " " + r);
+            return;
+        }
+    }
     emit_term("ret void");
 }
 
@@ -1410,12 +1433,14 @@ void Translator::emit_declare(Func& f) {
     VarItem* ret_var = nullptr;
     if (!f.returns.empty() && f.returns.back()) {
         VarList* rl = f.returns.back();
-        if (rl->type) ret_t = map_type(rl->type);
         if (!rl->vars.empty()) ret_var = rl->vars.back();
+        Expr* rt = (ret_var && ret_var->type) ? ret_var->type : rl->type;
+        if (rt) ret_t = map_type(rt);
     }
 
     std::vector<std::string> params;
-    if (ret_var) params.push_back("ptr sret(" + ret_t + ") %ret");
+    if (ret_var && !f.ret_via_reg)
+        params.push_back("ptr sret(" + ret_t + ") %ret");
     int idx = 0;
     for (VarList* vl : f.params) {
         if (!vl) continue;
@@ -1426,7 +1451,7 @@ void Translator::emit_declare(Func& f) {
         }
     }
 
-    std::string ret_sig = ret_var ? "void" : ret_t;
+    std::string ret_sig = (ret_var && !f.ret_via_reg) ? "void" : ret_t;
     std::string sig = "declare " + ret_sig + " @" +
                       IRWriter::quote(mangled_of(&f)) + "(";
     for (size_t i = 0; i < params.size(); ++i) {
@@ -1518,8 +1543,9 @@ std::string Translator::eval_call(Expr* e, Expr::Call* c) {
         }
     }
 
+    bool via_reg = fn->ret_via_reg && ret_var;
     std::string sret_slot;
-    if (ret_var) {
+    if (ret_var && !via_reg) {
         sret_slot = ir_.reg();
         emit_instr(sret_slot + " = alloca " + ret_t);
         args.push_back("ptr sret(" + ret_t + ") " + sret_slot);
@@ -1551,7 +1577,9 @@ std::string Translator::eval_call(Expr* e, Expr::Call* c) {
     bool is_main = (std::string(fn->name) == "main" && ctx_.current_class == nullptr);
     bool plain_main = is_main && !ret_var && ret_t == "void";
 
-    std::string call_ret = ret_var ? "void" : (plain_main ? "i32" : ret_t);
+    std::string call_ret;
+    if (via_reg) call_ret = ret_t;
+    else call_ret = ret_var ? "void" : (plain_main ? "i32" : ret_t);
     std::string sig = call_ret + " @" + IRWriter::quote(fname) + "(";
     for (size_t i = 0; i < args.size(); ++i) {
         if (i) sig += ", ";
@@ -1559,7 +1587,7 @@ std::string Translator::eval_call(Expr* e, Expr::Call* c) {
     }
     sig += ")";
 
-    if (ret_var) {
+    if (ret_var && !via_reg) {
         emit_instr("call " + sig);
         std::string r = ir_.reg();
         emit_instr(r + " = load " + ret_t + ", ptr " + sret_slot);

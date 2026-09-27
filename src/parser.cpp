@@ -185,9 +185,9 @@ Decl* Parser::parse_decl() {
     Location loc = get_loc();
     // '#mods @Class {}' 修饰注入：可逆探测，非 '@' 时退回交给类型解析
     if (curr().kind == TokenKind::Hash) {
-        std::vector<Modification*> injs;
+        std::vector<Expr*> injs;
         while (curr().kind == TokenKind::Hash) {
-            Modification* mod = parse_modification();
+            Expr* mod = parse_modification();
             if (!mod) break;
             injs.push_back(mod);
         }
@@ -227,9 +227,9 @@ ModfList Parser::parse_modfs() {
     return ml;
 }
 
-Modification* Parser::parse_modification() {
+Expr* Parser::parse_modification() {
     if (curr().kind != TokenKind::Hash) return nullptr;
-    const Location& loc = get_loc();
+    Location loc = get_loc();
     walk();
     if (!curr().is_ident()) {
         add_error("expected identifier after '#'");
@@ -238,7 +238,9 @@ Modification* Parser::parse_modification() {
     std::string_view name = curr().get_val();
     walk();
 
-    return cu_.add_node<Modification>(loc, name);
+    Expr* mod = cu_.add_node<Expr>(loc, Expr::Identifier{name});
+    mod->is_type = true;
+    return mod;
 }
 
 // 函数的识别：名称后接参数括号
@@ -253,6 +255,7 @@ Func* Parser::parse_func_decl(ModfList &ml, Location &loc) {
     admit();
     std::vector<VarList*> returns;
     for (;;) {
+        if (curr().kind == TokenKind::BraceL) break;
         ModfList ml = parse_modfs();
         Location loc = get_loc();
         VarList* r = parse_var_decl(ml, loc);
@@ -263,6 +266,7 @@ Func* Parser::parse_func_decl(ModfList &ml, Location &loc) {
         }
     }
     Stmt* body = parse_block_stmt();
+    if (!body) add_error("expected function body");
     return cu_.add_node<Func>(
             loc, std::move(name),
             std::move(ml),
@@ -312,7 +316,7 @@ VarList* Parser::parse_var_decl(ModfList &ml, Location &loc) {
     );
 }
 
-Class* Parser::parse_class_decl(ModfList &ml, Location &loc, std::vector<Modification*> injs) {
+Class* Parser::parse_class_decl(ModfList &ml, Location &loc, std::vector<Expr*> injs) {
     if (curr().kind != TokenKind::At) return nullptr;
     advance();
     std::string_view name;
@@ -326,9 +330,9 @@ Class* Parser::parse_class_decl(ModfList &ml, Location &loc, std::vector<Modific
     ModfList nml = parse_modfs();
     ml.merge(nml);
     // 尾随注入：#mod 出现在类名之后、成员之前（如 `@b #qux { }`）
-    std::vector<Modification*> trailing;
+    std::vector<Expr*> trailing;
     while (curr().kind == TokenKind::Hash) {
-        Modification* mod = parse_modification();
+        Expr* mod = parse_modification();
         if (!mod) break;
         trailing.push_back(mod);
     }
@@ -558,6 +562,14 @@ Extern* Parser::parse_extern_decl(ModfList &ml, Location &loc) {
     }
     
     std::vector<Decl*> members = parse_members();
+    for (Decl* m : members) {
+        if (!m) continue;
+        if (m->kind == DeclKind::Func ||
+            m->kind == DeclKind::Operator ||
+            m->kind == DeclKind::Conversion) {
+            static_cast<Func*>(m)->is_extern_decl = true;
+        }
+    }
     return cu_.add_node<Extern>(
         loc,
         lib_name,

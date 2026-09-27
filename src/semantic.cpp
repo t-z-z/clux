@@ -26,22 +26,28 @@ static bool ref_is_lvalue(Expr* t) {
     return t && t->is_reference();
 }
 
-// 从解析后的类型节点取成员作用域
+// 单个命名类型节点的成员作用域
+static Scope* scope_of_named_type(Expr* t) {
+    if (!t) return nullptr;
+    if (t->resolved_scope) return t->resolved_scope;
+    if (t->resolved_decl) {
+        if (Cont* cont = dynamic_cast<Cont*>(t->resolved_decl)) return cont->scope;
+    }
+    return nullptr;
+}
+
+// 从解析后的类型节点取成员作用域，组合类型逐层展开
 static Scope* named_type_scope(Expr* t) {
     if (!t) return nullptr;
     if (t->is_modifier()) {
         auto* m = t->get_modifier();
         for (size_t i = 0; i < m->layers.size(); ++i) {
             if (!m->is_mod[i]) continue;
-            if (Scope* s = named_type_scope(m->layers[i])) return s;
+            if (Scope* s = scope_of_named_type(m->layers[i])) return s;
         }
         return nullptr;
     }
-    if (t->resolved_scope) return t->resolved_scope;
-    if (t->resolved_decl) {
-        if (Cont* cont = dynamic_cast<Cont*>(t->resolved_decl)) return cont->scope;
-    }
-    return nullptr;
+    return scope_of_named_type(t);
 }
 
 // 组合类型中承载值的层（唯一的非修饰层），逐层剥去修饰
@@ -244,16 +250,13 @@ bool SemanticAnalyzer::analyze() {
 void SemanticAnalyzer::collect_only() {
     diagnostics_.clear();
     has_error_ = false;
-    bodies_.clear();
     collect();
 }
 
 void SemanticAnalyzer::analyze_rest() {
     process_using_namespaces();
+    collect_rest();
     walk(cu_);
-    // 跳转与初始化检查需要完整函数体，放在遍历之后进行
-    check_jumps();
-    check_initialization();
 }
 
 std::string SemanticAnalyzer::build_callkey(const std::string& name,
@@ -382,8 +385,6 @@ void SemanticAnalyzer::collect_decl(Decl* decl, bool default_public) {
             std::string name(cls->name);
             Symbol* existing = symbols_.current_scope()
                 ? symbols_.current_scope()->lookup_member(name) : nullptr;
-            // 在注册本类之前解析注入来源，使自注入与来源失败能正确报错
-            apply_injections(cls);
             if (existing) {
                 if (existing->kind == SymbolKind::Class || existing->kind == SymbolKind::Namespace)
                     error(cls->loc, "redefinition of class '" + name + "'");
@@ -399,10 +400,7 @@ void SemanticAnalyzer::collect_decl(Decl* decl, bool default_public) {
                 }
             }
             cls->scope = symbols_.current_scope();
-            // 类默认私有
-            for (Decl* member : cls->members) {
-                collect_decl(member, false);
-            }
+            // 类成员与注入由 P1 处理
             symbols_.pop_scope();
             break;
         }
@@ -603,11 +601,92 @@ void SemanticAnalyzer::visit(CompUnit& cu) {
 void SemanticAnalyzer::visit(Decl&) {}
 void SemanticAnalyzer::visit(Import&) {}
 void SemanticAnalyzer::visit_func(Func& f) {
-    if (f.body) bodies_.push_back({f.body, f.params, f.returns});
+    // extern 内的函数声明不检查返回值是否被赋值；标量/指针返回按 C ABI 走寄存器
+    if (f.is_extern_decl) {
+        if (!f.returns.empty() && f.returns.back()) {
+            VarList* rl = f.returns.back();
+            Expr* ty = nullptr;
+            Location ty_loc = rl->loc;
+            if (!rl->vars.empty()) {
+                VarItem* rv = rl->vars.back();
+                ty = rv->type ? rv->type : rl->type;
+                ty_loc = rv->loc;
+            } else {
+                ty = rl->type;
+            }
+            if (ty) {
+                bool ok = ty->get_primitive() || ty->get_pointer() ||
+                          ty->get_reference() || ty->get_func_ptr();
+                if (ok) f.ret_via_reg = true;
+                else error(ty_loc, "extern 函数不支持聚合返回类型");
+            }
+        }
+        return;
+    }
+    // body 为空（未写 {}）时不检查返回值是否被赋值
+    if (!f.body) return;
+    check_jumps(f.body);
+    check_initialization(f.body, f.params, f.returns);
+    if (can_use_register_ret(f)) f.ret_via_reg = true;
+}
+
+// 标量返回且每条路径末尾恰好一次赋值 → 可用寄存器 ret
+bool SemanticAnalyzer::can_use_register_ret(Func& f) {
+    if (!f.body) return false;
+    if (f.returns.empty() || !f.returns.back()) return false;
+    VarList* rl = f.returns.back();
+    if (rl->vars.empty()) return false;
+    VarItem* ret_var = rl->vars.back();
+    if (ret_var->init) return false;
+    Expr* ty = ret_var->type ? ret_var->type : rl->type;
+    if (!ty || !ty->get_primitive()) return false;
+    Symbol* sym = var_symbols_.count(ret_var) ? var_symbols_[ret_var] : nullptr;
+    if (!sym) return false;
+    std::vector<Stmt*> one = { f.body };
+    return seq_tail_assign(one, sym);
+}
+
+// 语句本身是否是"末尾恰好一次 r= X"（允许 if/else 两分支各自末尾一次）
+bool SemanticAnalyzer::stmt_tail_assign(Stmt* s, Symbol* ret) {
+    if (!s) return false;
+    if (auto* b = s->get_block()) return seq_tail_assign(b->stmts, ret);
+    if (auto* es = s->get_expr()) {
+        Expr* ex = es->expr;
+        if (!ex) return false;
+        auto* a = ex->get_assign();
+        if (!a) return false;
+        if (a->op != OpKind::Assign) return false;
+        return a->target && a->target->sym == ret;
+    }
+    if (auto* ifs = s->get_if()) {
+        if (!stmt_tail_assign(ifs->then_branch, ret)) return false;
+        if (!ifs->else_branch) return false;
+        return stmt_tail_assign(ifs->else_branch, ret);
+    }
+    return false;
+}
+
+// 语句序列：末尾必须 tail 赋值（或末尾 return 前恰好一次赋值），
+// 且更早位置不得出现对 ret 的赋值
+bool SemanticAnalyzer::seq_tail_assign(const std::vector<Stmt*>& stmts, Symbol* ret) {
+    if (stmts.empty()) return false;
+    size_t tail = stmts.size() - 1;
+    // 末尾 return 本身无副作用：允许它之前恰好一次赋值
+    if (stmts[tail]->is_return()) {
+        if (tail == 0) return false;
+        --tail;
+    }
+    if (!stmt_tail_assign(stmts[tail], ret)) return false;
+    for (size_t i = 0; i < tail; ++i) {
+        if (body_assigns_return(stmts[i], ret)) return false;
+    }
+    return true;
 }
 
 void SemanticAnalyzer::visit_special_method(SpecialMethod& sm) {
-    if (sm.body) bodies_.push_back({sm.body, sm.params, {}});
+    if (!sm.body) return;
+    check_jumps(sm.body);
+    check_initialization(sm.body, sm.params, {});
 }
 
 void SemanticAnalyzer::visit_var_list(VarList& vl) {
@@ -1583,7 +1662,10 @@ void SemanticAnalyzer::visit_expr_array(Expr::Array& arr) {
 }
 
 void SemanticAnalyzer::visit_expr_closure(Expr::Closure& clo) {
-    if (clo.body) bodies_.push_back({clo.body, clo.params, clo.returns});
+    if (clo.body) {
+        check_jumps(clo.body);
+        check_initialization(clo.body, clo.params, clo.returns);
+    }
     std::vector<Expr*> param_types;
     for (auto* p : clo.params) {
         if (p && p->type) {
@@ -1624,7 +1706,6 @@ void SemanticAnalyzer::visit_expr_ternary(Expr::Ternary& t) {
     current_expr->is_lvalue = false;
 }
 
-void SemanticAnalyzer::visit(Modification&) {}
 void SemanticAnalyzer::visit(Stmt&) {}
 void SemanticAnalyzer::visit_stmt_block(Stmt::Block&) {}
 void SemanticAnalyzer::visit_stmt_expr(Stmt::ExprStmt&) {}
@@ -1731,7 +1812,7 @@ Symbol* SemanticAnalyzer::lookup_member_on_type(Expr* type, const std::string& f
         auto* m = type->get_modifier();
         for (size_t i = 0; i < m->layers.size(); ++i) {
             if (!m->is_mod[i]) continue;
-            Scope* s = named_type_scope(m->layers[i]);
+            Scope* s = scope_of_named_type(m->layers[i]);
             if (!s) continue;
             if (Symbol* sym = s->lookup_member(field)) {
                 if (found_scope) *found_scope = s;
@@ -1943,129 +2024,142 @@ struct JumpPoint {
 };
 }
 
-void SemanticAnalyzer::check_jumps() {
-    std::unordered_set<Symbol*> init_tracked;
-    (void)init_tracked;
-    for (const BodyInfo& info : bodies_) {
-        if (!info.body) continue;
-        std::vector<JumpPoint> flags;
-        std::vector<JumpPoint> gotos;
-        int scope_counter = 0;
+void SemanticAnalyzer::check_jumps(Stmt* body) {
+    if (!body) return;
+    std::vector<JumpPoint> flags;
+    std::vector<JumpPoint> gotos;
+    int scope_counter = 0;
 
-        // 收集本体内所有 flag / toflag 及其作用域路径
-        std::function<void(Stmt*, std::vector<int>, int)> scan =
-            [&](Stmt* st, std::vector<int> path, int loops) {
-            if (!st) return;
-            if (auto* f = st->get_flag()) {
-                flags.push_back({std::string(f->label), path, loops, true, st->loc});
-                return;
-            }
-            if (auto* g = st->get_goto()) {
-                gotos.push_back({std::string(g->label), path, loops, false, st->loc});
-                return;
-            }
-            if (auto* b = st->get_block()) {
-                std::vector<int> p = path;
-                p.push_back(++scope_counter);
-                for (Stmt* x : b->stmts) scan(x, p, loops);
-                return;
-            }
-            if (auto* i = st->get_if()) {
-                scan(i->then_branch, path, loops);
-                scan(i->else_branch, path, loops);
-                return;
-            }
-            if (auto* w = st->get_while()) {
-                scan(w->body, path, loops + 1);
-                return;
-            }
-            if (auto* fo = st->get_for()) {
-                std::vector<int> p = path;
-                p.push_back(++scope_counter);
-                scan(fo->init, p, loops);
-                scan(fo->next, p, loops);
-                scan(fo->body, p, loops + 1);
-                return;
-            }
-        };
-        scan(info.body, {}, 0);
+    // 收集本体内所有 flag / toflag 及其作用域路径
+    std::function<void(Stmt*, std::vector<int>, int)> scan =
+        [&](Stmt* st, std::vector<int> path, int loops) {
+        if (!st) return;
+        if (auto* f = st->get_flag()) {
+            flags.push_back({std::string(f->label), path, loops, true, st->loc});
+            return;
+        }
+        if (auto* g = st->get_goto()) {
+            gotos.push_back({std::string(g->label), path, loops, false, st->loc});
+            return;
+        }
+        if (auto* b = st->get_block()) {
+            std::vector<int> p = path;
+            p.push_back(++scope_counter);
+            for (Stmt* x : b->stmts) scan(x, p, loops);
+            return;
+        }
+        if (auto* i = st->get_if()) {
+            scan(i->then_branch, path, loops);
+            scan(i->else_branch, path, loops);
+            return;
+        }
+        if (auto* w = st->get_while()) {
+            scan(w->body, path, loops + 1);
+            return;
+        }
+        if (auto* fo = st->get_for()) {
+            std::vector<int> p = path;
+            p.push_back(++scope_counter);
+            scan(fo->init, p, loops);
+            scan(fo->next, p, loops);
+            scan(fo->body, p, loops + 1);
+            return;
+        }
+    };
+    scan(body, {}, 0);
 
-        // 逐个检查 toflag
-        for (const JumpPoint& g : gotos) {
-            bool found = false;
-            for (const JumpPoint& f : flags) {
-                if (f.label != g.label) continue;
-                found = true;
-                // 目标作用域必须是跳转点作用域的祖先或自身
-                bool into_scope = f.scope_path.size() > g.scope_path.size();
-                if (!into_scope) {
-                    for (size_t i = 0; i < f.scope_path.size(); ++i) {
-                        if (f.scope_path[i] != g.scope_path[i]) { into_scope = true; break; }
-                    }
-                }
-                if (into_scope) {
-                    error(g.loc, "jump into the scope of label '" + g.label + "'");
-                }
-                if (f.loop_depth > g.loop_depth) {
-                    error(g.loc, "jump into a loop at label '" + g.label + "'");
+    // 逐个检查 toflag
+    for (const JumpPoint& g : gotos) {
+        bool found = false;
+        for (const JumpPoint& f : flags) {
+            if (f.label != g.label) continue;
+            found = true;
+            // 目标作用域必须是跳转点作用域的祖先或自身
+            bool into_scope = f.scope_path.size() > g.scope_path.size();
+            if (!into_scope) {
+                for (size_t i = 0; i < f.scope_path.size(); ++i) {
+                    if (f.scope_path[i] != g.scope_path[i]) { into_scope = true; break; }
                 }
             }
-            if (!found) {
-                error(g.loc, "jump to undefined label '" + g.label + "'");
+            if (into_scope) {
+                error(g.loc, "jump into the scope of label '" + g.label + "'");
             }
+            if (f.loop_depth > g.loop_depth) {
+                error(g.loc, "jump into a loop at label '" + g.label + "'");
+            }
+        }
+        if (!found) {
+            error(g.loc, "jump to undefined label '" + g.label + "'");
         }
     }
 }
 
 // 变量初始化检查：不得读取未赋值过的变量
-void SemanticAnalyzer::check_initialization() {
-    for (const BodyInfo& info : bodies_) {
-        if (!info.body) continue;
-        InitCtx ctx;
-        // 参数视为已赋值
-        for (VarList* vl : info.params) {
-            if (!vl) continue;
-            for (VarItem* vi : vl->vars) {
-                Symbol* sym = var_symbols_.count(vi) ? var_symbols_[vi] : nullptr;
-                if (sym) { ctx.declared.insert(sym); ctx.assigned.insert(sym); }
-            }
+void SemanticAnalyzer::check_initialization(
+        Stmt* body, const std::vector<VarList*>& params,
+        const std::vector<VarList*>& returns) {
+    if (!body) return;
+    InitCtx ctx;
+    // 参数视为已赋值
+    for (VarList* vl : params) {
+        if (!vl) continue;
+        for (VarItem* vi : vl->vars) {
+            Symbol* sym = var_symbols_.count(vi) ? var_symbols_[vi] : nullptr;
+            if (sym) { ctx.declared.insert(sym); ctx.assigned.insert(sym); }
         }
-        // 返回变量：声明处已赋值则跳过，否则要求函数体内至少赋值一次
-        for (VarList* vl : info.returns) {
-            if (!vl) continue;
-            for (VarItem* vi : vl->vars) {
-                Symbol* sym = var_symbols_.count(vi) ? var_symbols_[vi] : nullptr;
-                if (!sym) continue;
-                ctx.declared.insert(sym);
-                if (!vi->init && !body_assigns_return(info.body, sym)) {
-                    error(vi->loc, "return variable '" + std::string(vi->name) +
-                          "' is never assigned");
-                }
-            }
+    }
+    // 返回变量：视作普通变量，在 return 或函数末尾读取时检查是否已赋值
+    for (VarList* vl : returns) {
+        if (!vl) continue;
+        for (VarItem* vi : vl->vars) {
+            Symbol* sym = var_symbols_.count(vi) ? var_symbols_[vi] : nullptr;
+            if (!sym) continue;
+            ctx.declared.insert(sym);
+            if (vi->init) ctx.assigned.insert(sym);
+            ctx.ret_sym = sym;
         }
-        init_stmt(ctx, info.body);
+    }
+    init_stmt(ctx, body);
+    if (ctx.ret_sym && !ctx.terminated && !ctx.assigned.count(ctx.ret_sym)) {
+        error(body->loc, "return variable '" +
+              sym_display_name(ctx.ret_sym) + "' is never assigned");
     }
 }
 
 void SemanticAnalyzer::init_stmt(InitCtx& ctx, Stmt* s) {
     if (!s) return;
     if (auto* b = s->get_block()) {
-        for (Stmt* x : b->stmts) init_stmt(ctx, x);
+        for (Stmt* x : b->stmts) {
+            if (ctx.terminated) break;
+            init_stmt(ctx, x);
+        }
         return;
     }
     if (auto* e = s->get_expr()) { init_expr(ctx, e->expr); return; }
     if (auto* i = s->get_if()) {
         init_expr(ctx, i->condition);
         InitCtx then_ctx = ctx, else_ctx = ctx;
+        then_ctx.terminated = false;
+        else_ctx.terminated = false;
         init_stmt(then_ctx, i->then_branch);
         init_stmt(else_ctx, i->else_branch);
-        // 分支合并：仅在两个分支都已赋值的变量才算已赋值
-        std::unordered_set<Symbol*> merged;
-        for (Symbol* sym : then_ctx.assigned) {
-            if (else_ctx.assigned.count(sym)) merged.insert(sym);
+        if (then_ctx.terminated && else_ctx.terminated) {
+            ctx.terminated = true;
+            return;
         }
-        for (Symbol* sym : ctx.assigned) merged.insert(sym);
-        ctx.assigned = std::move(merged);
+        if (then_ctx.terminated) {
+            ctx.assigned = std::move(else_ctx.assigned);
+        } else if (else_ctx.terminated) {
+            ctx.assigned = std::move(then_ctx.assigned);
+        } else {
+            // 分支合并：仅在两个分支都已赋值的变量才算已赋值
+            std::unordered_set<Symbol*> merged;
+            for (Symbol* sym : then_ctx.assigned) {
+                if (else_ctx.assigned.count(sym)) merged.insert(sym);
+            }
+            for (Symbol* sym : ctx.assigned) merged.insert(sym);
+            ctx.assigned = std::move(merged);
+        }
         return;
     }
     if (auto* w = s->get_while()) {
@@ -2082,7 +2176,14 @@ void SemanticAnalyzer::init_stmt(InitCtx& ctx, Stmt* s) {
         init_stmt(body_ctx, f->next);
         return;
     }
-    if (s->is_return()) return;
+    if (s->is_return()) {
+        if (ctx.ret_sym && !ctx.assigned.count(ctx.ret_sym)) {
+            error(s->loc, "return variable '" +
+                  sym_display_name(ctx.ret_sym) + "' is not assigned on this path");
+        }
+        ctx.terminated = true;
+        return;
+    }
     if (auto* v = s->get_var_decl()) {
         VarList* vl = v->vars;
         if (!vl) return;
@@ -2332,18 +2433,85 @@ Decl* SemanticAnalyzer::clone_decl(Decl* d) {
     }
 }
 
-// 修饰注入：`#a @b #c` 的优先级从左到右递减（前置注入 > 基类 > 尾随注入）。
-// 高优先级来源先占用名字，低优先级同名的成员被忽略。
-void SemanticAnalyzer::apply_injections(Class* cls) {
-    if (!cls) return;
-    if (cls->injects.empty() && cls->trailing_injects.empty()) return;
+// P1：遍历顶层声明，对每个类展开注入并注册成员
+void SemanticAnalyzer::collect_rest() {
+    Scope* root = symbols_.root();
+    for (Decl* decl : cu_.top_decls) {
+        collect_rest_decl(decl, root);
+    }
+}
 
-    auto resolve = [&](Modification* mod) -> Class* {
+void SemanticAnalyzer::collect_rest_decl(Decl* decl, Scope* parent_scope) {
+    if (!decl) return;
+    switch (decl->kind) {
+        case DeclKind::Class:
+            expand_class(static_cast<Class*>(decl), parent_scope);
+            break;
+        case DeclKind::Namespace: {
+            auto* ns = static_cast<Namespace*>(decl);
+            Scope* ns_scope = ns->scope ? ns->scope : parent_scope;
+            for (Decl* m : ns->members) {
+                collect_rest_decl(m, ns_scope);
+            }
+            break;
+        }
+        case DeclKind::Extern: {
+            auto* ext = static_cast<Extern*>(decl);
+            Scope* ext_scope = ext->scope ? ext->scope : parent_scope;
+            for (Decl* m : ext->members) {
+                collect_rest_decl(m, ext_scope);
+            }
+            break;
+        }
+        default:
+            break;
+    }
+}
+
+// 展开类的修饰注入（前置 > 自身 > 尾随），再注册成员；来源必须在类所在 scope 中解析。
+// expand_state_ 兼顾缓存与环检测：1=展开中，2=已完成。
+void SemanticAnalyzer::expand_class(Class* cls, Scope* parent_scope) {
+    if (!cls) return;
+
+    auto it = expand_state_.find(cls);
+    if (it != expand_state_.end()) {
+        if (it->second == 1) {
+            error(cls->loc, "injection cycle detected involving class '" +
+                  std::string(cls->name) + "'");
+        }
+        return;
+    }
+
+    // 类内部的类未在 P0 注册，这里补注册类名与 scope
+    if (!cls->scope && parent_scope) {
+        std::string name(cls->name);
+        Symbol* existing = parent_scope->lookup_member(name);
+        Scope* cls_scope = parent_scope->get_or_create_child(name);
+        if (existing) {
+            error(cls->loc, "redefinition of class '" + name + "'");
+        } else {
+            Symbol sym(SymbolKind::Class, cls);
+            sym.modfs = &cls->modfs;
+            sym.scope = cls_scope;
+            sym.node = cls;
+            parent_scope->insert_member(name, std::move(sym));
+        }
+        cls->scope = cls_scope;
+    }
+
+    expand_state_[cls] = 1; // InProgress
+
+    // 来源解析不进入类自身 scope，从所在 scope 的父链查找
+    Scope* search_scope = cls->scope ? cls->scope->parent : nullptr;
+
+    auto resolve = [&](Expr* mod) -> Class* {
         if (!mod) return nullptr;
-        Symbol* sym = symbols_.lookup_member(std::string(mod->name));
+        auto* id = mod->get_identifier();
+        if (!id) return nullptr;
+        Symbol* sym = SymbolTable::lookup_member_up(search_scope, std::string(id->name));
         Decl* d = sym ? sym->get_decl() : nullptr;
         if (!d || d->kind != DeclKind::Class) {
-            error(mod->loc, "cannot inject from '" + std::string(mod->name) +
+            error(mod->loc, "cannot inject from '" + std::string(id->name) +
                   "': not a class");
             return nullptr;
         }
@@ -2351,14 +2519,25 @@ void SemanticAnalyzer::apply_injections(Class* cls) {
     };
 
     // 来源按优先级从高到低：前置注入（左→右）、基类自身、尾随注入（左→右）
+    std::vector<Class*> pre_sources;
+    for (Expr* mod : cls->injects) {
+        if (Class* c = resolve(mod)) {
+            expand_class(c, c->scope ? c->scope->parent : nullptr);
+            pre_sources.push_back(c);
+        }
+    }
+    std::vector<Class*> post_sources;
+    for (Expr* mod : cls->trailing_injects) {
+        if (Class* c = resolve(mod)) {
+            expand_class(c, c->scope ? c->scope->parent : nullptr);
+            post_sources.push_back(c);
+        }
+    }
+
     std::vector<Class*> sources;
-    for (Modification* mod : cls->injects) {
-        if (Class* c = resolve(mod)) sources.push_back(c);
-    }
+    for (Class* c : pre_sources) sources.push_back(c);
     sources.push_back(cls);
-    for (Modification* mod : cls->trailing_injects) {
-        if (Class* c = resolve(mod)) sources.push_back(c);
-    }
+    for (Class* c : post_sources) sources.push_back(c);
 
     std::vector<Decl*> result;
     std::unordered_map<std::string, size_t> index;
@@ -2379,6 +2558,27 @@ void SemanticAnalyzer::apply_injections(Class* cls) {
         }
     }
     cls->members = std::move(result);
+
+    if (cls->scope) {
+        symbols_.push_scope(std::string(cls->name));
+        for (Decl* m : cls->members) {
+            collect_decl(m, false);
+        }
+        symbols_.pop_scope();
+
+        // 成员里的容器递归展开
+        for (Decl* m : cls->members) {
+            if (!m) continue;
+            if (m->kind == DeclKind::Class) {
+                expand_class(static_cast<Class*>(m), cls->scope);
+            } else if (m->kind == DeclKind::Namespace ||
+                       m->kind == DeclKind::Extern) {
+                collect_rest_decl(m, cls->scope);
+            }
+        }
+    }
+
+    expand_state_[cls] = 2; // Done
 }
 
 Scope* SemanticAnalyzer::clone_scope(Scope* src) {

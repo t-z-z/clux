@@ -166,7 +166,7 @@ private:
     bool parse_modifier_directive(ModfList& defaults);
     VarList* parse_var_decl(ModfList &ml, Location &loc);
     Func* parse_func_decl(ModfList &ml, Location &loc);
-    Class* parse_class_decl(ModfList &ml, Location &loc, std::vector<Modification*> injs = {});
+    Class* parse_class_decl(ModfList &ml, Location &loc, std::vector<Expr*> injs = {});
     Namespace* parse_namespace_decl(ModfList &ml, Location &loc);
     Extern* parse_extern_decl(ModfList &ml, Location &loc);
     Operator* parse_operator_overload(ModfList &ml, Location &loc);
@@ -226,7 +226,7 @@ private:
     // 以下均可逆
     ModfList parse_modfs();
     OpKind parse_operator();
-    Modification* parse_modification();
+    Expr* parse_modification();
     template<typename T, typename F>
     std::optional<std::vector<T>> parse_list(
         TokenKind start,

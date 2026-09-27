@@ -16,7 +16,6 @@ struct ASTNode;
 struct CompUnit;
 struct Import;
 struct ModfList;
-struct Modification;
 struct Expr;
 struct Stmt;
 struct Decl;
@@ -158,14 +157,6 @@ inline ModfKind token_to_modf(TokenKind tk) {
     int offset = static_cast<int>(tk) - static_cast<int>(TokenKind::Const);
     return static_cast<ModfKind>(offset);
 }
-
-// 修饰符应用
-struct Modification : ASTNode{
-    std::string_view name;
-    Decl* decl = nullptr;
-    Modification(const Location&l, std::string_view n)
-        :ASTNode(l), name(n) {}
-};
 
 struct ModfList {
     uint32_t flags;
@@ -438,6 +429,8 @@ struct Func : Decl {
     std::vector<VarList*> params;   // 圆括号(int a, $bool cond)
     std::vector<VarList*> returns;  // 返回值声明
     Stmt* body = nullptr;           // 函数体
+    bool is_extern_decl = false;    // extern 内的声明，不检查返回值赋值
+    bool ret_via_reg = false;       // 标量返回且路径末尾恰好一次赋值：用寄存器 ret 而非 sret
     Func() = default;
     Func(const Location& loc,
         std::string_view name,
@@ -507,14 +500,14 @@ struct Extern : Cont {
 struct Class : Cont {
     // 修饰注入：`#a @b #c` 中 @ 之前的为前置注入，之后的为尾随注入。
     // 优先级从左到右递减：前置 > 基类 > 尾随。
-    std::vector<Modification*> injects;
-    std::vector<Modification*> trailing_injects;
+    std::vector<Expr*> injects;
+    std::vector<Expr*> trailing_injects;
     Class(const Location &loc,
         std::string_view name,
         ModfList ml,
         std::vector<Decl*> m,
-        std::vector<Modification*> inj = {},
-        std::vector<Modification*> tinj = {}
+        std::vector<Expr*> inj = {},
+        std::vector<Expr*> tinj = {}
     ):
         Cont(loc, name, DeclKind::Class, std::move(ml), std::move(m)),
         injects(std::move(inj)), trailing_injects(std::move(tinj)) {}
@@ -580,10 +573,10 @@ struct ASTVisitor {
     // 正在遍历调用表达式的被调用者，供标识符解析区分函数名与普通变量
     bool in_callee_ = false;
     void walk(CompUnit& cu) {
-        visit(cu);
         for (auto* d : cu.top_decls) {
             if (d) walk(*d);
         }
+        visit(cu);
     }
 
     void walk(Decl& decl) {
@@ -598,11 +591,6 @@ struct ASTVisitor {
         walk_children(stmt);
         visit(stmt);
     }
-    void walk(Modification& mod) {
-        walk_children(mod);
-        visit(mod);
-    }
-
     void walk(VarItem& vi) {
         walk_children(vi);
         visit(vi);
@@ -610,10 +598,10 @@ struct ASTVisitor {
 
     virtual void visit(CompUnit&) {}
     virtual void visit(Import&) {}
-    virtual void visit(Modification&) {}
 
     // 模板声明无实参上下文，首轮遍历只注册不检查其体，
     // 语义分析器可覆写为 false 以跳过函数体/类成员
+    // 当前完全无用，先标记，之后再删
     virtual bool should_walk(const Func&) const { return true; }
     virtual bool should_walk(const Class&) const { return true; }
 
@@ -901,7 +889,6 @@ struct ASTVisitor {
         current_stmt = pre;
     }
 
-    void walk_children(Modification&) {}
     void walk_children(VarItem& vi) {
         visit_var_item(vi);
         if (vi.init) walk(*vi.init);

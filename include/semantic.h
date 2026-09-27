@@ -301,7 +301,6 @@ public:
 
     void visit(CompUnit&) override;
     void visit(Import&) override;
-    void visit(Modification&) override;
 
     void visit(Decl&) override;
     void visit_var_list(VarList&) override;
@@ -397,7 +396,12 @@ private:
     Symbol* lookup_member_on_type(Expr* type, const std::string& field, Scope** found_scope);
 
     // 声明收集与注册
+    // P0：注册类名与类外声明，不进入类内部
     void collect();
+    // P1：处理类的修饰注入并注册类成员（含嵌套类递归）
+    void collect_rest();
+    void collect_rest_decl(Decl* decl, Scope* parent_scope);
+    void expand_class(Class* cls, Scope* parent_scope);
     void process_using_namespaces();
     void collect_decl(Decl* decl, bool default_public);
     void register_func(Func& f, bool default_public);
@@ -407,28 +411,32 @@ private:
     void check_access(Symbol* sym, const Location& loc);
     void check_write_access(Symbol* sym, const Location& loc);
 
-    // flag/toflag 的 label 检查与变量初始化检查，按函数体（含闭包体）分别进行
-    struct BodyInfo {
-        Stmt* body = nullptr;
-        std::vector<VarList*> params;
-        std::vector<VarList*> returns;
-    };
-    std::vector<BodyInfo> bodies_;
-    void check_jumps();
+    // flag/toflag 的 label 检查与变量初始化检查，逐函数体（含闭包体）就地执行
+    void check_jumps(Stmt* body);
 
     std::unordered_map<VarItem*, Symbol*> var_symbols_;
+    // 类注入展开状态：1=展开中（环检测），2=已完成（缓存）
+    std::unordered_map<Class*, uint8_t> expand_state_;
 
     struct InitCtx {
         std::unordered_set<Symbol*> declared;
         std::unordered_set<Symbol*> assigned;
+        Symbol* ret_sym = nullptr;   // 当前函数的返回变量（若有）
+        bool terminated = false;     // 当前路径是否已终止（return）
     };
-    void check_initialization();
+    void check_initialization(Stmt* body,
+                              const std::vector<VarList*>& params,
+                              const std::vector<VarList*>& returns);
     void init_stmt(InitCtx& ctx, Stmt* s);
     void init_expr(InitCtx& ctx, Expr* e);
     void init_assign_target(InitCtx& ctx, Expr* e);
     // 返回变量只在函数体内任意位置被赋值一次即可，不做流敏感检查
     bool body_assigns_return(Stmt* s, Symbol* target);
     bool expr_assigns_return(Expr* e, Symbol* target);
+    // 标量返回且每条路径末尾恰好一次赋值 → 可用寄存器 ret
+    bool can_use_register_ret(Func& f);
+    bool stmt_tail_assign(Stmt* s, Symbol* ret);
+    bool seq_tail_assign(const std::vector<Stmt*>& stmts, Symbol* ret);
 
     // 辅助：获取当前作用域的完整路径字符串（用 "::" 连接）
     std::string get_current_full_path() const;
@@ -452,8 +460,6 @@ private:
     Decl* clone_decl(Decl* d);
     Scope* clone_scope(Scope* src);
 
-    // 修饰注入：把来源类的成员合并进目标类
-    void apply_injections(Class* cls);
 };
 
 } // namespace cx
