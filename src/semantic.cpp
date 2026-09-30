@@ -916,6 +916,27 @@ bool SemanticAnalyzer::can_convert_to(Expr* src, Expr* dst) {
         return true;
     }
 
+    // 切片 → 指向元素类型的指针（元素相同，或目标为 void*）
+    if (src->is_array_type() && dst->is_pointer()) {
+        Expr* elem = src->get_array_type()->element;
+        Expr* pointee = dst->get_pointer()->pointee;
+        if (elem && pointee &&
+            (is_same_type(elem, pointee) || is_void_type(pointee)))
+            return true;
+    }
+
+    // 字符串字面量 → 字符指针（底层是带 NUL 的字符序列）
+    if (src->is_string_literal_type() && dst->is_pointer()) {
+        Expr* pointee = dst->get_pointer()->pointee;
+        if (pointee && pointee->is_primitive()) {
+            auto k = pointee->get_primitive()->kind;
+            if (k == PrimitiveTypeKind::Char || k == PrimitiveTypeKind::UChar ||
+                k == PrimitiveTypeKind::Int8 || k == PrimitiveTypeKind::UInt8 ||
+                is_void_type(pointee))
+                return true;
+        }
+    }
+
     // conversion：全局有参形式或源类无参形式
     if (find_conversion(*src, *dst)) return true;
 
@@ -1528,6 +1549,15 @@ void SemanticAnalyzer::visit_expr_member(Expr::Member& m) {
     if (m.member == "len" && m.target->type && m.target->type->is_array_type()) {
         current_expr->sym = nullptr;
         current_expr->type = typeInt;
+        current_expr->is_lvalue = false;
+        return;
+    }
+
+    // 数组的 .ptr：提取底层指针（指向元素类型）
+    if (m.member == "ptr" && m.target->type && m.target->type->is_array_type()) {
+        Expr* elem = m.target->type->get_array_type()->element;
+        current_expr->sym = nullptr;
+        current_expr->type = make_type(current_expr->loc, Expr::Pointer{elem});
         current_expr->is_lvalue = false;
         return;
     }

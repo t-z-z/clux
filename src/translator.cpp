@@ -701,9 +701,10 @@ void Translator::emit_var_decl(VarList* vl) {
             size_t n = content.size();
             std::string sym = ir_.string_const(content);
             std::string backing = ir_.reg();
+            // 多分配 1 字节存放 NUL 终止符，使 .ptr / 切片转指针可作 C 字符串
             emit_instr(backing + " = alloca i8, i64 " +
-                       std::to_string(n ? n : 1));
-            for (size_t k = 0; k < n; ++k) {
+                       std::to_string(n + 1));
+            for (size_t k = 0; k <= n; ++k) {
                 std::string src = ir_.reg();
                 emit_instr(src + " = getelementptr i8, ptr @" + sym +
                            ", i64 " + std::to_string(k));
@@ -1230,6 +1231,13 @@ std::string Translator::eval_member(Expr* e, Expr::Member* m) {
         emit_instr(len + " = extractvalue { ptr, i32 } " + s + ", 1");
         return len;
     }
+    if (m->member == "ptr" && m->target && m->target->type &&
+        m->target->type->is_array_type()) {
+        std::string s = eval(m->target);
+        std::string p = ir_.reg();
+        emit_instr(p + " = extractvalue { ptr, i32 } " + s + ", 0");
+        return p;
+    }
     // 类字段
     Expr* tgt = m->target;
     if (Class* cls = as_class(tgt ? tgt->type : nullptr)) {
@@ -1317,8 +1325,9 @@ std::string Translator::build_string_slice(Expr* lit) {
     size_t n = content.size();
     std::string sym = ir_.string_const(content);
     std::string backing = ir_.reg();
-    emit_instr(backing + " = alloca i8, i64 " + std::to_string(n ? n : 1));
-    for (size_t k = 0; k < n; ++k) {
+    // 多分配 1 字节存放 NUL 终止符
+    emit_instr(backing + " = alloca i8, i64 " + std::to_string(n + 1));
+    for (size_t k = 0; k <= n; ++k) {
         std::string src = ir_.reg();
         emit_instr(src + " = getelementptr i8, ptr @" + sym +
                    ", i64 " + std::to_string(k));
@@ -1341,6 +1350,12 @@ std::string Translator::cast_value(const std::string& v,
                                    const std::string& src,
                                    const std::string& dst) {
     if (src == dst) return v;
+    // 切片 → 指针：取底层指针域
+    if (src == "{ ptr, i32 }" && dst == "ptr") {
+        std::string r0 = ir_.reg();
+        emit_instr(r0 + " = extractvalue { ptr, i32 } " + v + ", 0");
+        return r0;
+    }
     auto is_int_n = [](const std::string& t) {
         return t.size() >= 2 && t[0] == 'i' && t != "i1";
     };
