@@ -637,11 +637,14 @@ bool SemanticAnalyzer::can_use_register_ret(Func& f) {
     VarList* rl = f.returns.back();
     if (rl->vars.empty()) return false;
     VarItem* ret_var = rl->vars.back();
-    if (ret_var->init) return false;
     Expr* ty = ret_var->type ? ret_var->type : rl->type;
     if (!ty || !ty->get_primitive()) return false;
     Symbol* sym = var_symbols_.count(ret_var) ? var_symbols_[ret_var] : nullptr;
     if (!sym) return false;
+    // 返回值声明处带初始化表达式：初始化即唯一一次写入，函数体不再改写
+    if (ret_var->init) {
+        return !body_assigns_return(f.body, sym);
+    }
     std::vector<Stmt*> one = { f.body };
     return seq_tail_assign(one, sym);
 }

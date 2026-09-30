@@ -27,3 +27,4 @@ tests/
 *.py
 tools/
 tmp*
+test*

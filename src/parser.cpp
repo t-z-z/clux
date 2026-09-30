@@ -64,17 +64,20 @@ void Parser::scan_alias_decl() {
 
 // 顶层函数不负责退回
 CompUnit* Parser::parse() {
+    bool ltu = false; // 记录上一个token是否是unexpected，如果是则不连续报token unexpected
     while(!is_eof()){
         bool u = parse_using_namespace(); // 避免namespace decl识别报错，必须在前
         if (u){
             admit();
+            ltu = false;
             continue;
         }
         if (curr().kind == TokenKind::Import ||
-            (curr().kind == TokenKind::No && peek().kind == TokenKind::Import)){
+        (curr().kind == TokenKind::No && peek().kind == TokenKind::Import)){
             Import* i = parse_import();
             if (i){
                 admit();
+                ltu = false;
                 continue;
             }
         } else {
@@ -89,18 +92,21 @@ CompUnit* Parser::parse() {
                         cu_.register_type(d->name, d);
                     }
                 }
+                ltu = false;
                 continue;
             }
         }
-
-        add_error("unexpected token " + curr().quote());
+        if (!ltu) {
+            add_error("unexpected token " + curr().quote());
+            ltu = true;
+        }
         advance();
     }
     return &cu_;
 }
 
 // using namespace <path> —— 文件顶层 using 指令（hoisted），须在 parse_decl 之前尝试，
-// 否则会被 parse_namespace_decl 误当作 brace 形式在 ':' 处报错
+// 否则会被 parse_namespace_decl 误当作 brace 报错
 bool Parser::parse_using_namespace() {
     if (curr().kind == TokenKind::Using) {
         advance();
@@ -181,7 +187,7 @@ Decl* Parser::parse_decl() {
         && curr().kind != TokenKind::BracketL
         && curr().kind != TokenKind::Hash) return nullptr;
     ModfList ml = parse_modfs();
-    size_t sp = point();
+    auto sp = point();
     Location loc = get_loc();
     // '#mods @Class {}' 修饰注入：可逆探测，非 '@' 时退回交给类型解析
     if (curr().kind == TokenKind::Hash) {
@@ -279,6 +285,7 @@ Func* Parser::parse_func_decl(ModfList &ml, Location &loc) {
 // 变量的识别：类型或推导符加标识符
 VarList* Parser::parse_var_decl(ModfList &ml, Location &loc) {
     Expr* type;
+    auto sp = point();
     if (curr().kind == TokenKind::Let) {
         type = cu_.add_node<Expr>(get_loc(), Expr::Inferred{});
         advance();
@@ -304,6 +311,7 @@ VarList* Parser::parse_var_decl(ModfList &ml, Location &loc) {
             }
             vars.push_back(cu_.add_node<VarItem>(get_loc(), name, init, type));
         } else if (vars.empty()) {
+            restore(sp);
             return nullptr;
         } else {
             break;
@@ -408,7 +416,7 @@ bool Parser::parse_modifier_directive(ModfList& defaults) {
     // modf <modf>...: 修改默认修饰符
     if (curr().kind == TokenKind::Modf) {
         advance();
-        size_t sp = point();
+        auto sp = point();
         if (curr().kind == TokenKind::Colon) {
             defaults = ModfList();
             advance();
@@ -477,7 +485,7 @@ Operator* Parser::parse_operator_overload(ModfList &ml, Location &loc) {
 }
 
 OpKind Parser::parse_operator() {
-    size_t sp = point();
+    auto sp = point();
     TokenKind tk = curr().kind;
     walk();
     switch (tk) {
@@ -695,7 +703,7 @@ Stmt* Parser::parse_stmt() {
         result = parse_keep_stmt();
     }else {
     {
-        size_t sp = point();
+        auto sp = point();
         // 变量申明语句（含元类型别名 `type T = <meta-expr>` → T 为 MetaType 值变量）
         Location loc = get_loc();
         ModfList ml = parse_modfs();

@@ -1,28 +1,14 @@
 {
-    // 使用 IntelliSense 了解相关属性。
-    // 悬停以查看现有属性的描述。
-    // 欲了解更多信息，请访问: https://go.microsoft.com/fwlink/?linkid=830387
     "version": "0.2.0",
     "configurations": [
         {
-            "name": "Debug Voice Compiler",
-            "type": "cppdbg",
+            "name": "Debug clux",
+            "type": "lldb",
             "request": "launch",
-            "program": "${workspaceFolder}/bin/clux.exe",
-            "args": ["${workspaceFolder}/test.vo", "-o", "test.exe"],
-            "stopAtEntry": false,
+            "program": "${workspaceFolder}/bin/clux",
+            "args": ["-t","${workspaceFolder}/test.cx","-o","test.ll"],
             "cwd": "${workspaceFolder}",
-            "environment": [],
-            "externalConsole": false,
-            "MIMode": "lldb",
-            "miDebuggerPath": "lldb",
-            "setupCommands": [
-                {
-                    "description": "为 lldb 启用整齐打印",
-                    "text": "settings set target.pretty-print-values true",
-                    "ignoreFailures": true
-                }
-            ]
+            "stopOnEntry": false
         }
     ]
 }

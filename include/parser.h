@@ -134,11 +134,14 @@ private:
     inline const Token& peek(){
         return peek(1);
     }
-    inline void restore(const size_t & pos) {
-        walk_pos_ = pos;
-    }
-    inline void restore(){
-        restore(0);
+    // 检查点：同时记录 token 位置与已生成节点数量，支持多层嵌套回退
+    struct Mark {
+        size_t walk_pos;
+        size_t nodes;
+    };
+    inline void restore(const Mark & m) {
+        walk_pos_ = m.walk_pos;
+        if (cu_.nodes.size() > m.nodes) cu_.nodes.resize(m.nodes);
     }
     inline void admit() {
         if(walk_pos_ > 0) {
@@ -152,8 +155,8 @@ private:
         }
         return dq_[walk_pos_];
     }
-    inline size_t point() const {
-        return walk_pos_;
+    inline Mark point() const {
+        return Mark{walk_pos_, cu_.nodes.size()};
     }
     inline bool is_eof() {
         return curr().kind == TokenKind::Eof;

@@ -423,6 +423,17 @@ void Translator::emit_func(Func& f, Class* cls) {
         ctx_.slots[ret_var] = "%ret";
     }
 
+    if (ret_var && ret_var->init && ret_t != "void") {
+        auto sit = ctx_.slots.find(ret_var);
+        if (sit != ctx_.slots.end()) {
+            std::string v = eval(ret_var->init);
+            std::string src_t = ret_var->init->type
+                ? map_type(ret_var->init->type) : ret_t;
+            if (src_t != ret_t) v = cast_value(v, src_t, ret_t);
+            emit_instr("store " + ret_t + " " + v + ", ptr " + sit->second);
+        }
+    }
+
     if (f.body) emit_stmt(f.body);
 
     if (main_with_ret) {
