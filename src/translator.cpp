@@ -7,6 +7,32 @@
 
 namespace cx {
 
+namespace {
+bool ir_is_int_type(const std::string& t) {
+    return t.size() >= 2 && t[0] == 'i' && t != "i1";
+}
+bool ir_is_fp_type(const std::string& t) {
+    return t == "float" || t == "double" || t == "half";
+}
+int ir_int_bits(const std::string& t) {
+    return std::stoi(t.substr(1));
+}
+std::string ir_common_type(const std::string& a, const std::string& b) {
+    if (a == b) return a;
+    if (ir_is_fp_type(a) && ir_is_fp_type(b)) {
+        auto bits = [](const std::string& t) {
+            return t == "half" ? 16 : (t == "float" ? 32 : 64);
+        };
+        return bits(a) >= bits(b) ? a : b;
+    }
+    if (ir_is_fp_type(a)) return a;
+    if (ir_is_fp_type(b)) return b;
+    if (ir_is_int_type(a) && ir_is_int_type(b))
+        return ir_int_bits(a) >= ir_int_bits(b) ? a : b;
+    return a;
+}
+} // namespace
+
 
 // 收集
 
@@ -423,15 +449,31 @@ void Translator::emit_func(Func& f, Class* cls) {
         ctx_.slots[ret_var] = "%ret";
     }
 
-    if (ret_var && ret_var->init && ret_t != "void") {
-        auto sit = ctx_.slots.find(ret_var);
-        if (sit != ctx_.slots.end()) {
-            std::string v = eval(ret_var->init);
-            std::string src_t = ret_var->init->type
-                ? map_type(ret_var->init->type) : ret_t;
-            if (src_t != ret_t) v = cast_value(v, src_t, ret_t);
-            emit_instr("store " + ret_t + " " + v + ", ptr " + sit->second);
-        }
+    // 返回变量按声明顺序处理：最后一个为真正的返回值，
+    // 其余按普通局部变量分配槽位并执行初始化
+    std::vector<VarItem*> ret_vars;
+    for (VarList* rl : f.returns) {
+        if (!rl) continue;
+        for (VarItem* vi : rl->vars) if (vi) ret_vars.push_back(vi);
+    }
+    for (VarItem* rv : ret_vars) {
+        if (rv == ret_var) continue;
+        std::string vt = rv->type ? map_type(rv->type) : "i32";
+        std::string slot = ir_.reg();
+        emit_instr(slot + " = alloca " + vt);
+        ctx_.slots[rv] = slot;
+    }
+    for (VarItem* rv : ret_vars) {
+        if (!rv->init) continue;
+        auto sit = ctx_.slots.find(rv);
+        if (sit == ctx_.slots.end()) continue;
+        std::string vt = (rv == ret_var)
+            ? ret_t : (rv->type ? map_type(rv->type) : "i32");
+        if (vt == "void") continue;
+        std::string v = eval(rv->init);
+        std::string src_t = rv->init->type ? map_type(rv->init->type) : vt;
+        if (src_t != vt) v = cast_value(v, src_t, vt);
+        emit_instr("store " + vt + " " + v + ", ptr " + sit->second);
     }
 
     if (f.body) emit_stmt(f.body);
@@ -1001,74 +1043,85 @@ std::string Translator::eval_binary(Expr* e, Expr::Binary* b) {
                                           b->left, b->right);
         }
     }
-    std::string lt = b->left && b->left->type ? map_type(b->left->type) : "i32";
+    std::string ltt = b->left && b->left->type ? map_type(b->left->type) : "i32";
+    std::string rtt = b->right && b->right->type ? map_type(b->right->type) : "i32";
+
+    // 逻辑与/或：两侧转 bool 后按 i1 运算
+    if (b->op == OpKind::And || b->op == OpKind::Or) {
+        std::string lv = eval(b->left);
+        std::string rv = eval(b->right);
+        std::string l = to_bool(b->left, lv);
+        std::string rr = to_bool(b->right, rv);
+        std::string res = ir_.reg();
+        emit_instr(res + " = " + (b->op == OpKind::And ? "and i1 " : "or i1 ")
+                   + l + ", " + rr);
+        return res;
+    }
+
+    // 比较运算：结果 i1，操作数提升到共同类型后比较
+    if (b->op >= OpKind::Less && b->op <= OpKind::NotEqual) {
+        std::string op_t = ir_common_type(ltt, rtt);
+        bool fp = ir_is_fp_type(op_t);
+        std::string lv = eval(b->left);
+        std::string rv = eval(b->right);
+        if (ltt != op_t) lv = cast_value(lv, ltt, op_t);
+        if (rtt != op_t) rv = cast_value(rv, rtt, op_t);
+        std::string res = ir_.reg();
+        std::string pred;
+        switch (b->op) {
+            case OpKind::Less:         pred = fp ? "fcmp olt " : "icmp slt "; break;
+            case OpKind::Greater:      pred = fp ? "fcmp ogt " : "icmp sgt "; break;
+            case OpKind::LessEqual:    pred = fp ? "fcmp ole " : "icmp sle "; break;
+            case OpKind::GreaterEqual: pred = fp ? "fcmp oge " : "icmp sge "; break;
+            case OpKind::Equal:        pred = fp ? "fcmp oeq " : "icmp eq ";  break;
+            default:                   pred = fp ? "fcmp one " : "icmp ne ";  break;
+        }
+        emit_instr(res + " = " + pred + op_t + " " + lv + ", " + rv);
+        return res;
+    }
+
+    // 算术/位运算：运算类型取语义结果类型（已做提升），操作数转换到该类型
+    std::string op_t = e->type ? map_type(e->type) : ir_common_type(ltt, rtt);
+    if (op_t == "i1" || op_t.empty()) op_t = ir_common_type(ltt, rtt);
+    bool is_fp = ir_is_fp_type(op_t);
     std::string lv = eval(b->left);
     std::string rv = eval(b->right);
+    if (ltt != op_t) lv = cast_value(lv, ltt, op_t);
+    if (rtt != op_t) rv = cast_value(rv, rtt, op_t);
     std::string res = ir_.reg();
-    bool is_fp = (lt == "float" || lt == "double" || lt == "half");
     switch (b->op) {
         case OpKind::Plus:
-            emit_instr(res + " = " + (is_fp ? "fadd " : "add ") + lt + " " + lv + ", " + rv);
+            emit_instr(res + " = " + (is_fp ? "fadd " : "add ") + op_t + " " + lv + ", " + rv);
             break;
         case OpKind::Minus:
-            emit_instr(res + " = " + (is_fp ? "fsub " : "sub ") + lt + " " + lv + ", " + rv);
+            emit_instr(res + " = " + (is_fp ? "fsub " : "sub ") + op_t + " " + lv + ", " + rv);
             break;
         case OpKind::Mul:
-            emit_instr(res + " = " + (is_fp ? "fmul " : "mul ") + lt + " " + lv + ", " + rv);
+            emit_instr(res + " = " + (is_fp ? "fmul " : "mul ") + op_t + " " + lv + ", " + rv);
             break;
         case OpKind::Div:
-            emit_instr(res + " = " + (is_fp ? "fdiv " : "sdiv ") + lt + " " + lv + ", " + rv);
+            emit_instr(res + " = " + (is_fp ? "fdiv " : "sdiv ") + op_t + " " + lv + ", " + rv);
             break;
         case OpKind::Mod:
-            emit_instr(res + " = srem " + lt + " " + lv + ", " + rv);
-            break;
-        case OpKind::Less:
-            emit_instr(res + " = " + (is_fp ? "fcmp olt " : "icmp slt ") + lt + " " + lv + ", " + rv);
-            break;
-        case OpKind::Greater:
-            emit_instr(res + " = " + (is_fp ? "fcmp ogt " : "icmp sgt ") + lt + " " + lv + ", " + rv);
-            break;
-        case OpKind::LessEqual:
-            emit_instr(res + " = " + (is_fp ? "fcmp ole " : "icmp sle ") + lt + " " + lv + ", " + rv);
-            break;
-        case OpKind::GreaterEqual:
-            emit_instr(res + " = " + (is_fp ? "fcmp oge " : "icmp sge ") + lt + " " + lv + ", " + rv);
-            break;
-        case OpKind::Equal:
-            emit_instr(res + " = " + (is_fp ? "fcmp oeq " : "icmp eq ") + lt + " " + lv + ", " + rv);
-            break;
-        case OpKind::NotEqual:
-            emit_instr(res + " = " + (is_fp ? "fcmp one " : "icmp ne ") + lt + " " + lv + ", " + rv);
+            emit_instr(res + " = srem " + op_t + " " + lv + ", " + rv);
             break;
         case OpKind::BitAnd:
-            emit_instr(res + " = and " + lt + " " + lv + ", " + rv);
+            emit_instr(res + " = and " + op_t + " " + lv + ", " + rv);
             break;
         case OpKind::BitOr:
-            emit_instr(res + " = or " + lt + " " + lv + ", " + rv);
+            emit_instr(res + " = or " + op_t + " " + lv + ", " + rv);
             break;
         case OpKind::BitXor:
-            emit_instr(res + " = xor " + lt + " " + lv + ", " + rv);
+            emit_instr(res + " = xor " + op_t + " " + lv + ", " + rv);
             break;
         case OpKind::Shl:
-            emit_instr(res + " = shl " + lt + " " + lv + ", " + rv);
+            emit_instr(res + " = shl " + op_t + " " + lv + ", " + rv);
             break;
         case OpKind::Shr:
-            emit_instr(res + " = ashr " + lt + " " + lv + ", " + rv);
+            emit_instr(res + " = ashr " + op_t + " " + lv + ", " + rv);
             break;
-        case OpKind::And: {
-            std::string l = to_bool(b->left, lv);
-            std::string rr = to_bool(b->right, rv);
-            emit_instr(res + " = and i1 " + l + ", " + rr);
-            break;
-        }
-        case OpKind::Or: {
-            std::string l = to_bool(b->left, lv);
-            std::string rr = to_bool(b->right, rv);
-            emit_instr(res + " = or i1 " + l + ", " + rr);
-            break;
-        }
         default:
-            emit_instr(res + " = add " + lt + " 0, 0");
+            emit_instr(res + " = add " + op_t + " 0, 0");
             break;
     }
     return res;
@@ -1124,11 +1177,15 @@ std::string Translator::eval_assign(Expr::Assign* a) {
     std::string t = a->target && a->target->type ? map_type(a->target->type) : "i32";
     // 字符串字面量赋给切片：构造 {ptr,i32}，而非把常量指针 @.str 直接存
     std::string v;
+    std::string vsrc = a->value && a->value->type
+        ? map_type(a->value->type) : t;
     if (t == "{ ptr, i32 }" && a->value && a->value->type &&
         a->value->type->is_string_literal_type())
         v = build_string_slice(a->value);
-    else
+    else {
         v = eval(a->value);
+        if (vsrc != t) v = cast_value(v, vsrc, t);
+    }
     if (a->op != OpKind::Assign) {
         std::string cur = ir_.reg();
         emit_instr(cur + " = load " + t + ", ptr " + ptr);
@@ -1585,8 +1642,10 @@ std::string Translator::eval_call(Expr* e, Expr::Call* c) {
         if (want == "{ ptr, i32 }" && a && a->type &&
             a->type->is_string_literal_type())
             v = build_string_slice(a);
-        else
+        else {
             v = eval(a);
+            if (at != want) v = cast_value(v, at, want);
+        }
         args.push_back(want + " " + v);
     }
 

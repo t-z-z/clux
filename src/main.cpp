@@ -278,7 +278,7 @@ int main(int argc, char** argv) {
     } else if (!default_ext.empty()) {
         out_path = replace_ext(input, default_ext);
     } else {
-        out_path = dir.empty() ? base : dir + "/" + base;
+        out_path = dir.empty() ? "./" + base : dir + "/" + base;
     }
 
     if (verbose) {
