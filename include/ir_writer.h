@@ -37,7 +37,10 @@ public:
     std::string string_const(std::string_view content);
 
     void emit_header();
+    void need_pthread() { uses_pthread_ = true; }
+    void need_malloc()  { uses_malloc_ = true; }
     void emit_type(const std::string& s) { header_ << s << '\n'; }
+    void emit_module_tail(const std::string& s) { tail_ << s << '\n'; }
     void flush();
 
 private:
@@ -46,9 +49,12 @@ private:
     std::ostringstream globals_;
     std::ostringstream body_;
     std::ostringstream late_;
+    std::ostringstream tail_;
     std::ostream* cur_ = &body_;
     int late_depth_ = 0;
     int next_reg_ = 0;
+    bool uses_pthread_ = false;
+    bool uses_malloc_ = false;
     int next_label_ = 0;
     int next_str_ = 0;
 };

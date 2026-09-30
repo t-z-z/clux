@@ -14,6 +14,8 @@ void Translator::run() {
     collect_mangled();
     collect_classes();
     for (Decl* d : cu_.top_decls) emit_decl(d);
+    if (uses_alwaysinline_)
+        ir_.emit_module_tail("attributes #0 = { alwaysinline }");
 }
 
 void Translator::emit_decl(Decl* d) {
@@ -236,7 +238,7 @@ std::string Translator::map_type(Expr* t) {
     }
     if (t->get_pointer()) return "ptr";
     if (t->get_reference()) return "ptr";
-    if (t->get_array_type()) return "{ ptr, i64 }";
+    if (t->get_array_type()) return "{ ptr, i32 }";
     if (t->get_string_literal_type()) return "ptr";
     if (t->get_func_ptr()) return "ptr";
     if (t->is_null()) return "ptr";
@@ -386,7 +388,12 @@ void Translator::emit_func(Func& f, Class* cls) {
         if (i) sig += ", ";
         sig += params[i];
     }
-    sig += ") {";
+    sig += ")";
+    if (f.modfs.has(ModfKind::Inline)) {
+        sig += " #0";
+        uses_alwaysinline_ = true;
+    }
+    sig += " {";
     ir_.emit(sig);
     open_block("entry");
 
@@ -625,12 +632,12 @@ void Translator::emit_var_decl(VarList* vl) {
                 emit_instr(backing + " = alloca " + et + ", i64 " +
                            std::to_string((long long)len));
                 std::string s1 = ir_.reg();
-                emit_instr(s1 + " = insertvalue { ptr, i64 } undef, ptr " +
+                emit_instr(s1 + " = insertvalue { ptr, i32 } undef, ptr " +
                            backing + ", 0");
                 std::string s2 = ir_.reg();
-                emit_instr(s2 + " = insertvalue { ptr, i64 } " + s1 +
-                           ", i64 " + std::to_string((long long)len) + ", 1");
-                emit_instr("store { ptr, i64 } " + s2 + ", ptr " + slot);
+                emit_instr(s2 + " = insertvalue { ptr, i32 } " + s1 +
+                           ", i32 " + std::to_string((long long)len) + ", 1");
+                emit_instr("store { ptr, i32 } " + s2 + ", ptr " + slot);
                 continue;
             }
         }
@@ -655,12 +662,12 @@ void Translator::emit_var_decl(VarList* vl) {
                 emit_instr("store i8 " + b + ", ptr " + dst);
             }
             std::string s1 = ir_.reg();
-            emit_instr(s1 + " = insertvalue { ptr, i64 } undef, ptr " +
+            emit_instr(s1 + " = insertvalue { ptr, i32 } undef, ptr " +
                        backing + ", 0");
             std::string s2 = ir_.reg();
-            emit_instr(s2 + " = insertvalue { ptr, i64 } " + s1 + ", i64 " +
+            emit_instr(s2 + " = insertvalue { ptr, i32 } " + s1 + ", i32 " +
                        std::to_string(static_cast<long long>(n)) + ", 1");
-            emit_instr("store { ptr, i64 } " + s2 + ", ptr " + slot);
+            emit_instr("store { ptr, i32 } " + s2 + ", ptr " + slot);
             continue;
         }
         if (vi->init) {
@@ -813,9 +820,9 @@ std::string Translator::to_bool(Expr* e, const std::string& v) {
     }
     if (e->type->is_array_type()) {
         std::string n = ir_.reg();
-        emit_instr(n + " = extractvalue { ptr, i64 } " + v + ", 1");
+        emit_instr(n + " = extractvalue { ptr, i32 } " + v + ", 1");
         std::string r = ir_.reg();
-        emit_instr(r + " = icmp ne i64 " + n + ", 0");
+        emit_instr(r + " = icmp ne i32 " + n + ", 0");
         return r;
     }
     return v;
@@ -913,7 +920,7 @@ std::string Translator::data_ptr_of(Expr* e) {
     if (e->type->is_array_type()) {
         std::string s = eval(e);
         std::string r = ir_.reg();
-        emit_instr(r + " = extractvalue { ptr, i64 } " + s + ", 0");
+        emit_instr(r + " = extractvalue { ptr, i32 } " + s + ", 0");
         return r;
     }
     return "null";
@@ -1104,9 +1111,9 @@ std::string Translator::eval_assign(Expr::Assign* a) {
     std::string ptr = eval_lvalue(a->target);
     if (ptr.empty()) return "0";
     std::string t = a->target && a->target->type ? map_type(a->target->type) : "i32";
-    // 字符串字面量赋给切片：构造 {ptr,i64}，而非把常量指针 @.str 直接存
+    // 字符串字面量赋给切片：构造 {ptr,i32}，而非把常量指针 @.str 直接存
     std::string v;
-    if (t == "{ ptr, i64 }" && a->value && a->value->type &&
+    if (t == "{ ptr, i32 }" && a->value && a->value->type &&
         a->value->type->is_string_literal_type())
         v = build_string_slice(a->value);
     else
@@ -1151,11 +1158,9 @@ std::string Translator::eval_member(Expr* e, Expr::Member* m) {
     if (m->member == "len" && m->target && m->target->type &&
         m->target->type->is_array_type()) {
         std::string s = eval(m->target);
-        std::string len64 = ir_.reg();
-        emit_instr(len64 + " = extractvalue { ptr, i64 } " + s + ", 1");
-        std::string len32 = ir_.reg();
-        emit_instr(len32 + " = trunc i64 " + len64 + " to i32");
-        return len32;
+        std::string len = ir_.reg();
+        emit_instr(len + " = extractvalue { ptr, i32 } " + s + ", 1");
+        return len;
     }
     // 类字段
     Expr* tgt = m->target;
@@ -1185,7 +1190,7 @@ std::string Translator::eval_array(Expr* e, Expr::Array* arr) {
         elem_type = e->type->get_array_type()->element;
     std::string et;
     if (elem_type && elem_type->is_string_literal_type())
-        et = "{ ptr, i64 }";
+        et = "{ ptr, i32 }";
     else
         et = elem_type ? map_type(elem_type) : "i32";
 
@@ -1231,9 +1236,9 @@ std::string Translator::eval_array(Expr* e, Expr::Array* arr) {
     }
 
     std::string s1 = ir_.reg();
-    emit_instr(s1 + " = insertvalue { ptr, i64 } undef, ptr " + backing + ", 0");
+    emit_instr(s1 + " = insertvalue { ptr, i32 } undef, ptr " + backing + ", 0");
     std::string s2 = ir_.reg();
-    emit_instr(s2 + " = insertvalue { ptr, i64 } " + s1 + ", i64 " +
+    emit_instr(s2 + " = insertvalue { ptr, i32 } " + s1 + ", i32 " +
                std::to_string((long long)n) + ", 1");
     return s2;
 }
@@ -1257,9 +1262,9 @@ std::string Translator::build_string_slice(Expr* lit) {
         emit_instr("store i8 " + b + ", ptr " + dst);
     }
     std::string s1 = ir_.reg();
-    emit_instr(s1 + " = insertvalue { ptr, i64 } undef, ptr " + backing + ", 0");
+    emit_instr(s1 + " = insertvalue { ptr, i32 } undef, ptr " + backing + ", 0");
     std::string s2 = ir_.reg();
-    emit_instr(s2 + " = insertvalue { ptr, i64 } " + s1 + ", i64 " +
+    emit_instr(s2 + " = insertvalue { ptr, i32 } " + s1 + ", i32 " +
                std::to_string((long long)n) + ", 1");
     return s2;
 }
@@ -1289,10 +1294,10 @@ std::string Translator::cast_value(const std::string& v,
         if (is_int_n(src)) { emit_instr(r + " = icmp ne " + src + " " + v + ", 0"); return r; }
         if (is_fp(src))    { emit_instr(r + " = fcmp one " + src + " " + v + ", 0.0"); return r; }
         if (src == "ptr")  { emit_instr(r + " = icmp ne ptr " + v + ", null"); return r; }
-        if (src == "{ ptr, i64 }") {
+        if (src == "{ ptr, i32 }") {
             std::string n = ir_.reg();
-            emit_instr(n + " = extractvalue { ptr, i64 } " + v + ", 1");
-            emit_instr(r + " = icmp ne i64 " + n + ", 0");
+            emit_instr(n + " = extractvalue { ptr, i32 } " + v + ", 1");
+            emit_instr(r + " = icmp ne i32 " + n + ", 0");
             return r;
         }
         return v;
@@ -1551,7 +1556,7 @@ std::string Translator::eval_call(Expr* e, Expr::Call* c) {
         args.push_back("ptr sret(" + ret_t + ") " + sret_slot);
     }
     if (has_self) args.push_back("ptr " + self_arg);
-    // 形参 IR 类型表，用于字符串字面量按切片形参构造 {ptr,i64}
+    // 形参 IR 类型表，用于字符串字面量按切片形参构造 {ptr,i32}
     std::vector<std::string> param_ir;
     for (VarList* vl : fn->params) {
         if (!vl) continue;
@@ -1566,7 +1571,7 @@ std::string Translator::eval_call(Expr* e, Expr::Call* c) {
         std::string at = a && a->type ? map_type(a->type) : "i32";
         std::string want = ai < param_ir.size() ? param_ir[ai] : at;
         std::string v;
-        if (want == "{ ptr, i64 }" && a && a->type &&
+        if (want == "{ ptr, i32 }" && a && a->type &&
             a->type->is_string_literal_type())
             v = build_string_slice(a);
         else
@@ -1736,6 +1741,8 @@ std::string Translator::eval_ternary(Expr* e, Expr::Ternary* t) {
 }
 
 std::string Translator::eval_spawn(Expr*, Expr::Spawn* s) {
+    ir_.need_pthread();
+    ir_.need_malloc();
     Expr* call_expr = s->call;
     if (!call_expr) return "0";
     auto* c = call_expr->get_call();

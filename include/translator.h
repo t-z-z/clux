@@ -21,6 +21,7 @@ private:
     CompUnit& cu_;
     IRWriter& ir_;
     std::unordered_map<Decl*, std::string> mangled_;
+    bool uses_alwaysinline_ = false;
 
     struct Field { VarItem* var; int index; std::string ir_type; };
     struct ClassInfo {
