@@ -1,0 +1,9 @@
+@C {
+    pub int x = 0
+    modf static:
+    pub int counter = 0
+    pub INIT() { }
+}
+main() {
+    C c = C()
+}

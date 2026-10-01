@@ -1,0 +1,11 @@
+@A {
+    pub INIT() { }
+}
+@Res {
+    pub INIT(A a) { }
+    pub INIT(int-* p) { }
+}
+main() {
+    A a = A()
+    Res r = Res(a)
+}

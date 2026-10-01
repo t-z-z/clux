@@ -122,16 +122,34 @@ std::string Translator::mangled_of(Decl* d) const {
 }
 
 std::string Translator::type_key(Expr* t) {
-    std::string s = map_type(t);
-    std::string out;
-    for (char c : s) {
-        if ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
-            (c >= '0' && c <= '9')) out += c;
-        else if (c == '*') out += "P";
-        else if (c == '%') out += "C";
-        else out += "_";
+    if (!t) return "void";
+    if (auto* m = t->get_modifier()) {
+        for (int i = (int)m->layers.size() - 1; i >= 0; --i) {
+            if (i < (int)m->is_mod.size() && m->is_mod[i]) continue;
+            Expr* layer = m->layers[i];
+            if (layer) return type_key(layer);
+        }
+        return "void";
     }
-    return out;
+    if (t->get_primitive()) return map_type(t);
+    if (auto* p = t->get_pointer())   return "P_" + type_key(p->pointee);
+    if (auto* r = t->get_reference()) return "R_" + type_key(r->target);
+    if (auto* a = t->get_array_type()) {
+        std::string lk = "x";
+        if (a->length && a->length->get_literal())
+            lk = std::string(a->length->get_literal()->value);
+        return "A_" + type_key(a->element) + "_" + lk;
+    }
+    if (t->get_string_literal_type()) return "S";
+    if (auto* fp = t->get_func_ptr()) {
+        std::string s = "F";
+        for (Expr* p : fp->params) s += "_" + type_key(p);
+        s += "_ret_" + type_key(fp->return_type);
+        return s;
+    }
+    if (t->is_null()) return "N";
+    if (Class* c = as_class(t)) return "C_" + mangled_of(c);
+    return "x";
 }
 
 std::string Translator::special_name(SpecialMethod* sm) {
@@ -194,6 +212,7 @@ void Translator::collect_classes_decl(Decl* d) {
             for (Decl* m : c->members) {
                 if (!m || m->kind != DeclKind::VarList) continue;
                 VarList* vl = static_cast<VarList*>(m);
+                if (vl->modfs.has(ModfKind::Static)) continue;
                 for (VarItem* vi : vl->vars) {
                     if (!vi) continue;
                     Field f;
@@ -374,8 +393,9 @@ void Translator::emit_func(Func& f, Class* cls) {
     VarItem* ret_var = nullptr;
     if (!f.returns.empty() && f.returns.back()) {
         VarList* rl = f.returns.back();
-        if (rl->type) ret_t = map_type(rl->type);
         if (!rl->vars.empty()) ret_var = rl->vars.back();
+        Expr* rt_ = (ret_var && ret_var->type) ? ret_var->type : rl->type;
+        if (rt_) ret_t = map_type(rt_);
     }
     // main 有返回变量：不用 sret，改为局部变量 + 统一 exit 块
     bool main_with_ret = is_main && ret_var;
@@ -1678,8 +1698,9 @@ std::string Translator::eval_call(Expr* e, Expr::Call* c) {
     VarItem* ret_var = nullptr;
     if (!fn->returns.empty() && fn->returns.back()) {
         VarList* rl = fn->returns.back();
-        if (rl->type) ret_t = map_type(rl->type);
         if (!rl->vars.empty()) ret_var = rl->vars.back();
+        Expr* rt_ = (ret_var && ret_var->type) ? ret_var->type : rl->type;
+        if (rt_) ret_t = map_type(rt_);
     }
 
     std::vector<std::string> args;
@@ -1865,32 +1886,27 @@ std::string Translator::call_func_ptr(Expr* e, Expr::Call* c, Expr::FuncPtr* fp)
 }
 
 std::string Translator::eval_ternary(Expr* e, Expr::Ternary* t) {
-    std::string cond = eval(t->cond);
+    std::string ttype = e->type ? map_type(e->type) : "i32";
+    std::string res_slot = ir_.reg();
+    emit_instr(res_slot + " = alloca " + ttype);
+
+    std::string cond = eval_cond(t->cond);
     std::string then_l = ir_.named_label("tern.then");
     std::string else_l = ir_.named_label("tern.else");
     std::string end_l  = ir_.named_label("tern.end");
     emit_term("br i1 " + cond + ", label %" + then_l + ", label %" + else_l);
 
-    std::string ttype = e->type ? map_type(e->type) : "i32";
-
     open_block(then_l);
     std::string tv = eval(t->then_expr);
-    std::string tv_slot = ir_.reg();
-    emit_instr(tv_slot + " = alloca " + ttype);
-    emit_instr("store " + ttype + " " + tv + ", ptr " + tv_slot);
+    emit_instr("store " + ttype + " " + tv + ", ptr " + res_slot);
     emit_term("br label %" + end_l);
 
     open_block(else_l);
     std::string ev = eval(t->else_expr);
-    std::string ev_slot = ir_.reg();
-    emit_instr(ev_slot + " = alloca " + ttype);
-    emit_instr("store " + ttype + " " + ev + ", ptr " + ev_slot);
+    emit_instr("store " + ttype + " " + ev + ", ptr " + res_slot);
     emit_term("br label %" + end_l);
 
     open_block(end_l);
-    std::string res_slot = ir_.reg();
-    emit_instr(res_slot + " = phi ptr [ " + tv_slot + ", %" + then_l +
-               " ], [ " + ev_slot + ", %" + else_l + " ]");
     std::string res = ir_.reg();
     emit_instr(res + " = load " + ttype + ", ptr " + res_slot);
     return res;
@@ -1946,7 +1962,7 @@ std::string Translator::eval_spawn(Expr*, Expr::Spawn* s) {
 
     // 参数打包到堆
     std::string pack = ir_.reg();
-    size_t total = field_types.empty() ? 1 : field_types.size() * 8;
+    size_t total = field_types.empty() ? 1 : field_types.size() * 16;
     emit_instr(pack + " = call ptr @malloc(i64 " + std::to_string(total) + ")");
     for (size_t i = 0; i < field_vals.size(); ++i) {
         std::string addr = ir_.reg();
