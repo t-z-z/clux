@@ -1,0 +1,7 @@
+f(int-** pp) { }
+g(char-*** ppp) { }
+main(int argc, char-** argv) int r = 0 {
+    int a = 1
+    int-* p = a-&
+    int-** pp = p-&
+}

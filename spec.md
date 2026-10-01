@@ -530,6 +530,15 @@ clux -c main.cx    // 检查
 clux -o file       // 输出位置
 ```
 
+主函数main是程序执行的入口，有四种合法签名：
+
+```cx
+main() { }
+main() int r { }
+main(int argc, char-** argv) { }
+main(int argc, char-** argv) int r { }
+```
+
 ## 十七、语法糖
 
 `modf modifier:` 声明此后的同级声明都是 modifier 修饰：

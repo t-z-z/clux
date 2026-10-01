@@ -1361,17 +1361,17 @@ Expr* Parser::parse_postfix(Expr* left, bool is_type) {
                 if (peek().kind == TokenKind::Mul || peek().kind == TokenKind::BitAnd) {
                     step();
                     if (is_type) {
-                        Location uloc = get_loc();
-                        if (curr().kind == TokenKind::Mul) {
-                            step();
-                            Expr* node = cu_.add_node<Expr>(uloc, Expr::Pointer{left});
-                            node->is_type = true;
+                        while(curr().kind == TokenKind::Mul || curr().kind == TokenKind::BitAnd) {
+                            Location uloc = get_loc();
+                            Expr* node;
+                            if (curr().kind == TokenKind::Mul) {
+                                node = cu_.add_node<Expr>(uloc, Expr::Pointer{left});
+                            } else {
+                                node = cu_.add_node<Expr>(uloc, Expr::Reference{left});
+                            }
+                            walk();
                             left = node;
-                        } else {
-                            step();
-                            Expr* node = cu_.add_node<Expr>(uloc, Expr::Reference{left});
                             node->is_type = true;
-                            left = node;
                         }
                     } else {
                         while(curr().kind == TokenKind::Mul || curr().kind == TokenKind::BitAnd) {
