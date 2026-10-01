@@ -129,6 +129,7 @@ bool SemanticAnalyzer::is_condition_type(Expr* t) {
 }
 
 bool SemanticAnalyzer::is_same_type(Expr* a, Expr* b) {
+    if (!a && !b) return true;
     if (!a || !b) return false;
     // 双方都带修饰：逐层比较；仅一方带修饰：剥离修饰层后按值类型比较
     if (a->is_modifier() && b->is_modifier()) {
@@ -1709,6 +1710,8 @@ void SemanticAnalyzer::visit_expr_closure(Expr::Closure& clo) {
     Expr* ret_type = nullptr;
     if (!clo.returns.empty() && clo.returns.back() && clo.returns.back()->type) {
         ret_type = clo.returns.back()->type;
+    } else {
+        ret_type = typeVoid;
     }
 
     current_expr->type = make_type(current_expr->loc,
