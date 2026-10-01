@@ -1,0 +1,7 @@
+foo(int c) int r {
+    if c > 0 { return }
+    r = 42
+}
+main() int r {
+    r = foo(0)
+}

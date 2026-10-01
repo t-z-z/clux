@@ -1,0 +1,4 @@
+@rc { int n = 0 }
+main() {
+    #rc int a = 1
+}

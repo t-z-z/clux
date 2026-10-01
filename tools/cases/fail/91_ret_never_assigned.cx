@@ -1,0 +1,6 @@
+foo() int r {
+    int x = 1
+}
+main() int r {
+    r = foo()
+}

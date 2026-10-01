@@ -1,0 +1,13 @@
+@a {
+    pub int v = 0
+    pub INIT() { }
+}
+@c {
+    pub INIT(int x) { }
+}
+#a @b #c {
+    pub INIT() { }
+}
+main() {
+    b obj = b()
+}

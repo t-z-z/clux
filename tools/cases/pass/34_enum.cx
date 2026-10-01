@@ -1,0 +1,6 @@
+enum Color {
+    Red Blue Green
+}
+main() {
+    Color c = Color::Red
+}

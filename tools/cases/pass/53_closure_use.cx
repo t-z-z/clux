@@ -1,0 +1,4 @@
+main() {
+    int base = 10
+    $int f = \() int r { r = base }
+}

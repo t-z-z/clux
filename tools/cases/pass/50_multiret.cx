@@ -1,0 +1,7 @@
+divmod(int a, int b) int q int m {
+    q = a / b
+    m = a % b
+}
+main() {
+    int x int y = divmod(7, 3)
+}

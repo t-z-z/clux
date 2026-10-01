@@ -1,0 +1,4 @@
+main() int r {
+    int[] a
+    r = a.len
+}

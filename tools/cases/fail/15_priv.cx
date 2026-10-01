@@ -1,0 +1,7 @@
+@Foo {
+    priv int secret = 0
+}
+main() {
+    Foo f = Foo()
+    int x = f.secret
+}

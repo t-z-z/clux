@@ -1,0 +1,4 @@
+make() char[] r {
+    r = "str"
+}
+main() int r { r = 0 }

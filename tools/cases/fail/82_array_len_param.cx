@@ -1,0 +1,2 @@
+f(char[3] s) {}
+main() int r { f("abcd") r = 0 }

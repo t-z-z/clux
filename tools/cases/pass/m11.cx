@@ -1,0 +1,9 @@
+@foo { pub int counter = 0 }
+@bar {
+    pub int value = 0
+    pub INIT(int v) { value = v }
+}
+main() {
+    bar b = bar(1)
+    #foo bar a = bar(1)
+}

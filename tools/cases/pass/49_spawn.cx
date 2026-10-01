@@ -1,0 +1,4 @@
+work(int a) int r { r = a + 1 }
+main() {
+    spawn(work(1))
+}

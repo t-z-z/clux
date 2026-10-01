@@ -1,0 +1,4 @@
+main() {
+    $(int,int)int f = \(int a, int b) int r { r = a + b }
+    int x = f(1, 2)
+}

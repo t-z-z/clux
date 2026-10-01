@@ -1,0 +1,13 @@
+extern "c" { putchar(int c) int r {} }
+main() int r {
+    char[] s
+    s = "abc"
+    putchar(int(s[0]))
+    int[] a
+    a = [1 2 3]
+    putchar(a.len + 48)
+    int[3] b
+    putchar(b.len + 48)
+    putchar(10)
+    r = 0
+}

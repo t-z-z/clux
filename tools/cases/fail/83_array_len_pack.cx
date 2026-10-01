@@ -1,0 +1,2 @@
+g(char[][3] vs) {}
+main() int r { g("a" "b" "c" "d") r = 0 }

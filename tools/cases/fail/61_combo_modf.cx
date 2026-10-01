@@ -1,0 +1,11 @@
+@foo {
+    pub int fx = 1
+    pub foo_method() int r { r = 1 }
+}
+@bar {
+    pub int bx = 2
+    pub bar_method() int r { r = 2 }
+}
+main() {
+    #foo bar a = 1
+}

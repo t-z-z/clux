@@ -1,0 +1,13 @@
+extern "c" { putchar(int c) int r {} }
+main() int r {
+    int[] a = [1 2 3]
+    if a { putchar(89) }
+    int-*p = null
+    if !p { putchar(111) }
+    int x = 5
+    int-*q = x-&
+    bool b = q
+    if b { putchar(113) }
+    putchar(10)
+    r = 0
+}

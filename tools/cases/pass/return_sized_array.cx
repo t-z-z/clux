@@ -1,0 +1,9 @@
+foo(int[] src) int[3] r {
+    int[3] x = [1 2 3]
+    r = x
+}
+main() int r {
+    int[] a = [1 2 3]
+    foo(a)
+    r = 0
+}

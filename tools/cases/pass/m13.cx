@@ -1,0 +1,9 @@
+@a { pub f() int r { r = 1 } }
+@c { pub f() int r { r = 3 } }
+#a @b #c {
+    pub INIT() { }
+}
+main() {
+    b obj = b()
+    int x = obj.f()
+}

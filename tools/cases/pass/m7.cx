@@ -1,0 +1,7 @@
+@foo {
+    pub int counter = 0
+    pub bump() { counter = counter + 1 }
+}
+main() {
+    #foo int a = 1
+}

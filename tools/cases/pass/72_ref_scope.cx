@@ -1,0 +1,12 @@
+@Res {
+    int n = 0
+    pub INIT() { }
+    pub REF { }
+    pub DEREF { }
+}
+main() {
+    Res r = Res()
+    {
+        Res-* p = r-&
+    }
+}

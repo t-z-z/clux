@@ -1,0 +1,12 @@
+extern "c" { putchar(int c) int r {} }
+print(char[][] vs) {
+    for int i = 0; i < vs.len; i += 1 {
+        for int j = 0; j < vs[i].len; j += 1 {
+            putchar(int(vs[i][j]))
+        }
+    }
+}
+main() int r {
+    print("hello" " " "world" "\n")
+    r = 0
+}

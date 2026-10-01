@@ -1,0 +1,12 @@
+@bar {
+    pub int value = 0
+    pub INIT() { }
+}
+conversion(int v) bar r {
+    r = bar()
+    r.value = v
+}
+main() {
+    bar b = 1
+    b = 2
+}

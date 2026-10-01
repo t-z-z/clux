@@ -1,0 +1,7 @@
+@Foo {
+    pub:
+    int a = 1
+    modf static:
+    int b = 2
+}
+main() { }

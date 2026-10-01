@@ -1,0 +1,2 @@
+make() int[] r = [65 66 67] {}
+main() int r { r = 0 }

@@ -1,0 +1,6 @@
+keep `
+define i32 @add(i32 %a, i32 %b) {
+    ret i32 %a
+}
+`
+main() { }

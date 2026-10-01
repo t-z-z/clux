@@ -1,0 +1,4 @@
+foo(char[] s) { s[0] }
+main() {
+    foo(['a' 'b' 'c'])
+}

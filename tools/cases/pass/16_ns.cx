@@ -1,0 +1,6 @@
+namespace math {
+    add(int a, int b) int r { r = a + b }
+}
+main() {
+    int x = math::add(1, 2)
+}

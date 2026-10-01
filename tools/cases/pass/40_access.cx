@@ -1,0 +1,9 @@
+@Box {
+    pub int value = 0
+    priv int secret = 1
+    pub INIT() { }
+}
+main() {
+    Box b = Box()
+    int v = b.value
+}

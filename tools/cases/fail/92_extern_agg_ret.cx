@@ -1,0 +1,6 @@
+extern "c" {
+    g() int[] r { }
+}
+main() int r {
+    r = 0
+}

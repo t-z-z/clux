@@ -1,0 +1,12 @@
+@A {
+    pub int v = 1
+    pub f() int r { r = 1 }
+}
+@B {
+    pub int v = 2
+    pub f() int r { r = 2 }
+}
+#A over @C {
+    pub INIT() { }
+}
+main() { }

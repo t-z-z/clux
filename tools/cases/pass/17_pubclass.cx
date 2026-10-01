@@ -1,0 +1,9 @@
+@Counter {
+    pub int value = 0
+    pub INIT() { }
+    pub increment() { value = value + 1 }
+}
+main() {
+    Counter c = Counter()
+    c.increment()
+}

@@ -1,0 +1,7 @@
+namespace math {
+    pub add(int a, int b) int r { r = a + b }
+}
+using namespace math
+main() {
+    int x = add(1, 2)
+}

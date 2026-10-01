@@ -1,0 +1,10 @@
+extern "c" { putchar(int c) int r {} }
+main() int r {
+    int[] a = [1 2 3]
+    int[] e = []
+    if a { putchar(89) } else { putchar(78) }
+    if e { putchar(78) } else { putchar(70) }
+    putchar(e.len + 48)
+    putchar(10)
+    r = 0
+}

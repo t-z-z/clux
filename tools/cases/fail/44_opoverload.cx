@@ -1,0 +1,13 @@
+@Vec2 {
+    pub int x = 0
+    pub int y = 0
+    pub INIT(int a, int b) { x = a y = b }
+    pub trait operator + (Vec2 other) Vec2 r {
+        r = Vec2(x + other.x, y + other.y)
+    }
+}
+main() {
+    Vec2 a = Vec2(1, 2)
+    Vec2 b = Vec2(3, 4)
+    Vec2 c = a + b
+}

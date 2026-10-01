@@ -1,0 +1,11 @@
+@C {
+    pub int x = 0
+    pub INIT() { }
+    pub set(int v) { self.x = v }
+    pub get() int r { r = x }
+}
+main() {
+    C c = C()
+    c.set(5)
+    int y = c.get()
+}

@@ -1,0 +1,10 @@
+@Outer {
+    @Inner {
+        pub int v = 0
+        pub INIT() { }
+    }
+    pub INIT() { }
+}
+main() {
+    Outer::Inner i = Outer::Inner()
+}

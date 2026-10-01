@@ -1,0 +1,4 @@
+foo() int r
+main() int r {
+    r = 0
+}

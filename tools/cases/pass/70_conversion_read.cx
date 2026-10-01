@@ -1,0 +1,14 @@
+@dst {
+    pub int w = 0
+}
+@src {
+    pub int v = 7
+    pub conversion() dst r {
+        r = dst()
+        r.w = v
+    }
+}
+main() {
+    src s
+    dst d = s
+}

@@ -1,0 +1,27 @@
+single() int r {
+    r = 1
+}
+branch(int c) int r {
+    if c > 0 { r = 1 } else { r = 2 }
+}
+branch_ret(int c) int r {
+    if c > 0 { r = 1
+    return } else { r = 2
+    return }
+}
+nested(int c) int r {
+    if c > 0 {
+        if c > 5 { r = 1 } else { r = 2 }
+    } else { r = 3 }
+}
+tail_after_loop(int n) int r {
+    while n > 0 { n = n - 1 }
+    r = 5
+}
+multi() int r {
+    r = 1
+    r = 2
+}
+main() int r {
+    r = 0
+}

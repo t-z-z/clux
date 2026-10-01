@@ -1,0 +1,5 @@
+main() {
+    asm `
+    mov ecx, 0
+    `
+}

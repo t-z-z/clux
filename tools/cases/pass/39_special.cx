@@ -1,0 +1,7 @@
+@Res {
+    pub INIT() { }
+    pub DROP { }
+}
+main() {
+    Res r = Res()
+}

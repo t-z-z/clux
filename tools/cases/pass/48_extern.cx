@@ -1,0 +1,4 @@
+extern "c" {
+    puts(char-* s) { }
+}
+main() { }

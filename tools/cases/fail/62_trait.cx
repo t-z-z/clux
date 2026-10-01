@@ -1,0 +1,4 @@
+@Base {
+    pub trait process(int x) { }
+}
+main() { }

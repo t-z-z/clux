@@ -1,0 +1,10 @@
+@Vec2 {
+    pub int x = 0
+    pub INIT(int a) { x = a }
+    pub operator + (Vec2 o) Vec2 r { r = Vec2(x + o.x) }
+}
+main() {
+    Vec2 a = Vec2(1)
+    Vec2 b = Vec2(2)
+    Vec2 c = a + b
+}

@@ -1,0 +1,9 @@
+extern "c" { putchar(int c) int r {} }
+main() int r {
+    char[][] x = ["hello" "world"]
+    putchar(int(x[0][0]))        // h
+    putchar(int(x[1][4]))        // d
+    putchar(int(x[1].len) + 48)  // 3
+    putchar(10)
+    r = 0
+}

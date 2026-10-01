@@ -1,0 +1,15 @@
+extern "c" { putchar(int c) int r {} }
+main() int r {
+    char[2][3] a = ["hi" ...]
+    a[0][0] = 88
+    putchar(int(a[0][0]))
+    putchar(int(a[1][0]))
+    putchar(int(a[2][1]))
+    int[3] b = [5 ...]
+    b[1] = 9
+    putchar(b[0] + 48)
+    putchar(b[1] + 48)
+    putchar(b[2] + 48)
+    putchar(10)
+    r = 0
+}

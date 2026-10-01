@@ -1,0 +1,9 @@
+@C {
+    pub int x = 0
+    pub INIT() { }
+    pub get() int r { r = self.x }
+}
+main() {
+    C c = C()
+    int y = c.get()
+}

@@ -1,0 +1,3 @@
+main() {
+    #rc int a = 1
+}
