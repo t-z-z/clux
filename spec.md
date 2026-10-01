@@ -228,15 +228,6 @@ $(int,int)int max = \(int a, int b) int r {
 }
 ```
 
-### 泛型
-
-```cx
-foo-<T>(T bar) T r=bar {}
-main(){
-    foo-<int>(1)
-}
-```
-
 ## 七、声明
 
 声明是引入名字的语法单元。一组声明构成一个作用域。
@@ -249,12 +240,6 @@ main(){
 int a = 10
 int b
 b = 0
-```
-
-`let` 推导变量类型：
-
-```cx
-let a = 1        // a 为 int
 ```
 
 ### 函数声明
@@ -386,18 +371,6 @@ conversion(Vec2 a) Vector r {
 }
 ```
 
-### 泛型
-
-```cx
-@Array-<T> {
-    T[100] data
-    int len = 0
-    op [](int index) T-& r {
-        r = data[index]-&
-    }
-}
-```
-
 ## 九、修饰
 
 ### 修饰的方向性
@@ -446,12 +419,6 @@ conversion(Vec2 a) Vector r {
 
 在以上修饰中，foo的成员覆盖了bar的，bar的覆盖了baz的，baz覆盖qux。
 
-修饰注入也支持泛型：
-
-```cx
-#foo-<int> @bar {}
-```
-
 ## 十、控制流
 
 内置控制流名称保留，不可覆盖：
@@ -487,19 +454,19 @@ main(){
 
 ## 十二、编译期反射
 
-`type` 是一种类，可以访问类型标识、字段、修饰符。
+暂缓实现，当前使用会无法识别而报错。
 
 ```cx
-@foo #bar { type a = type._foo }
-
+@foo{int a,b}
 main() {
-    type x = type._int
-    int i = sizeof(type._foo)
-    int j = offset(type._foo 1)
+    type x = type.foo
+    int i = sizeof(type.foo)
+    int j = offset(x 1)
+    type k = fieldtype(x 0)
 }
 ```
 
-`sizeof(变量)` 会生成运行时的 `sizeof` 函数，`offset` 同理。
+`sizeof(变量)` 会生成运行时的 `sizeof` 函数，`offset`,`fieldtype` 同理。
 
 ## 十三、导入系统与标准库
 

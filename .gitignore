@@ -18,6 +18,7 @@ build/
 !spec.md
 !lib.md
 !README.md
+!future.md
 .cache/
 *.py
 tmp*

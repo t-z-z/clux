@@ -63,11 +63,11 @@ import cxio
 main() {
     mt::type a = mt::struct(foo, bar)
 
-    mt::type x = type._int
+    mt::type x = type.int
     int cnt = 1
     input-<int>::read(cnt-&)
     for int i = 0; i < cnt; i += 1 {
-        x = mt::struct(x, type._int)
+        x = mt::struct(x, type.int)
     }
     for int i = 0; i < cnt; i += 1 {
         x = x[0]
@@ -79,9 +79,9 @@ main() {
 
 ```cx
 main() {
-    mt::type a = mt::ptr(type._int)
-    mt::type b = mt::arr(type._int)
-    mt::type c = mt::func(mt::params(type._int), mt::returns(type._int))
+    mt::type a = mt::ptr(type.int)
+    mt::type b = mt::arr(type.int)
+    mt::type c = mt::func(mt::params(type.int), mt::returns(type.int))
 }
 ```
 

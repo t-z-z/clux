@@ -287,6 +287,7 @@ VarList* Parser::parse_var_decl(ModfList &ml, Location &loc) {
     Expr* type;
     auto sp = point();
     if (curr().kind == TokenKind::Let) {
+        add_error("'let' is not implemented yet");
         type = cu_.add_node<Expr>(get_loc(), Expr::Inferred{});
         advance();
     } else {

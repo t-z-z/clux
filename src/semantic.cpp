@@ -580,7 +580,7 @@ std::string SemanticAnalyzer::type_to_key(Expr& t) {
     if (t.is_void()) return "void";
     if (t.is_null()) return "null";
     if (t.is_inferred()) {
-        error(t.loc, "cannot convert inferred type to unique key");
+        error(t.loc, "'let' is not implemented yet");
         return "_";
     }
     return "i8";

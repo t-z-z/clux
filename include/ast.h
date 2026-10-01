@@ -369,7 +369,7 @@ struct Stmt : ASTNode {
 
 enum class DeclKind {
     // 等级从低到高
-    Keep, VarList, SpecialMethod, Func, Compose, Operator, Conversion, Enum, Class, Extern, Namespace,
+    Keep, VarList, SpecialMethod, Func, Operator, Conversion, Enum, Class, Extern, Namespace,
 };
 
 struct Decl : ASTNode {
@@ -444,12 +444,6 @@ struct Func : Decl {
         returns(std::move(r)),
         body(b) {}
     virtual ~Func() = default;
-};
-
-struct Compose : Cont {
-    Compose() = default;
-    Compose(const Location& loc, ModfList ml, std::vector<Decl*> component):
-        Cont(loc, "co", DeclKind::Compose, std::move(ml), component) {}
 };
 
 struct Operator : Func {
