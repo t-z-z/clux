@@ -1248,6 +1248,11 @@ void SemanticAnalyzer::visit_expr_assign(Expr::Assign& a) {
     }
     // 赋值统一走 = 的转换判定
     check_array_len_fit(a.value, lt, "target", current_expr->loc);
+    // 记录隐式 conversion，供 translator 派发
+    if (rt && lt && !is_same_type(rt, lt)) {
+        if (Symbol* conv = find_conversion(*rt, *lt))
+            a.value->conv = conv->get_decl();
+    }
     check_conversion(rt, lt, "assignment", current_expr->loc);
 
     current_expr->type = lt;
@@ -1467,6 +1472,11 @@ void SemanticAnalyzer::check_call_args(const std::vector<VarList*>& params_lists
         if (!at || !params[i]) continue;
         check_array_len_fit(args[i], params[i], "parameter",
                             args[i] ? args[i]->loc : loc);
+        // 记录隐式 conversion，供 translator 派发
+        if (!is_same_type(at, params[i])) {
+            if (Symbol* conv = find_conversion(*at, *params[i]))
+                args[i]->conv = conv->get_decl();
+        }
         check_conversion(at, params[i], "argument passing",
                          args[i] ? args[i]->loc : loc);
     }

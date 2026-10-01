@@ -96,6 +96,7 @@ private:
     void emit_goto(Stmt::Goto& g);
 
     std::string eval(Expr* e);
+    std::string eval_converted(Expr* e);
     std::string eval_cond(Expr* e);
     std::string to_bool(Expr* e, const std::string& v);
     std::string eval_lvalue(Expr* e);

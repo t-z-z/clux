@@ -470,9 +470,13 @@ void Translator::emit_func(Func& f, Class* cls) {
         std::string vt = (rv == ret_var)
             ? ret_t : (rv->type ? map_type(rv->type) : "i32");
         if (vt == "void") continue;
-        std::string v = eval(rv->init);
-        std::string src_t = rv->init->type ? map_type(rv->init->type) : vt;
-        if (src_t != vt) v = cast_value(v, src_t, vt);
+        bool converted = rv->init->conv &&
+            rv->init->conv->kind == DeclKind::Conversion;
+        std::string v = converted ? eval_converted(rv->init) : eval(rv->init);
+        if (!converted) {
+            std::string src_t = rv->init->type ? map_type(rv->init->type) : vt;
+            if (src_t != vt) v = cast_value(v, src_t, vt);
+        }
         emit_instr("store " + vt + " " + v + ", ptr " + sit->second);
     }
 
@@ -641,11 +645,7 @@ void Translator::emit_var_decl(VarList* vl) {
             if (it == classes_.end()) { ctx_.slots[vi] = "null"; continue; }
             std::string inst;
             if (vi->init) {
-                Conversion* cf = nullptr;
-                if (vi->init->conv && vi->init->conv->kind == DeclKind::Conversion)
-                    cf = static_cast<Conversion*>(vi->init->conv);
-                if (cf) inst = emit_conversion_call(vi->init, cf);
-                else    inst = eval(vi->init);
+                inst = eval_converted(vi->init);
             } else {
                 inst = ir_.reg();
                 emit_instr(inst + " = alloca " + it->second.llvm_name);
@@ -725,9 +725,14 @@ void Translator::emit_var_decl(VarList* vl) {
             continue;
         }
         if (vi->init) {
-            std::string v = eval(vi->init);
-            std::string src_t = vi->init->type ? map_type(vi->init->type) : vt;
-            if (src_t != vt) v = cast_value(v, src_t, vt);
+            bool converted = vi->init->conv &&
+                vi->init->conv->kind == DeclKind::Conversion;
+            std::string v = converted ? eval_converted(vi->init)
+                                      : eval(vi->init);
+            if (!converted) {
+                std::string src_t = vi->init->type ? map_type(vi->init->type) : vt;
+                if (src_t != vt) v = cast_value(v, src_t, vt);
+            }
             emit_instr("store " + vt + " " + v + ", ptr " + slot);
             if (vt == "ptr") {
                 Class* pc = pointee_class(vtype);
@@ -903,6 +908,13 @@ std::string Translator::eval(Expr* e) {
     if (auto* cl  = e->get_closure())     return eval_closure(e, cl);
     if (auto* sp  = e->get_spawn())       return eval_spawn(e, sp);
     return "0";
+}
+
+// 值位置求值：需要隐式 conversion 时派发到转换函数，否则常规求值
+std::string Translator::eval_converted(Expr* e) {
+    if (e && e->conv && e->conv->kind == DeclKind::Conversion)
+        return emit_conversion_call(e, static_cast<Conversion*>(e->conv));
+    return eval(e);
 }
 
 std::string Translator::eval_lvalue(Expr* e) {
@@ -1180,7 +1192,11 @@ std::string Translator::eval_assign(Expr::Assign* a) {
     std::string v;
     std::string vsrc = a->value && a->value->type
         ? map_type(a->value->type) : t;
-    if (t == "{ ptr, i32 }" && a->value && a->value->type &&
+    bool converted = a->value && a->value->conv &&
+        a->value->conv->kind == DeclKind::Conversion;
+    if (converted)
+        v = eval_converted(a->value);
+    else if (t == "{ ptr, i32 }" && a->value && a->value->type &&
         a->value->type->is_string_literal_type())
         v = build_string_slice(a->value);
     else {
@@ -1429,11 +1445,15 @@ std::string Translator::emit_conversion_call(Expr* e, Conversion* cf) {
     }
     std::string ret_ir = ret_type_expr ? map_type(ret_type_expr) : "ptr";
 
-    std::string sret_slot = ir_.reg();
-    emit_instr(sret_slot + " = alloca " + ret_ir);
-
+    // 标量返回且走寄存器：无 sret，调用直接取返回值
+    bool via_reg = cf->ret_via_reg;
+    std::string sret_slot;
     std::vector<std::string> args;
-    args.push_back("ptr sret(" + ret_ir + ") " + sret_slot);
+    if (!via_reg) {
+        sret_slot = ir_.reg();
+        emit_instr(sret_slot + " = alloca " + ret_ir);
+        args.push_back("ptr sret(" + ret_ir + ") " + sret_slot);
+    }
 
     int param_count = 0;
     for (VarList* vl : cf->params) {
@@ -1463,12 +1483,19 @@ std::string Translator::emit_conversion_call(Expr* e, Conversion* cf) {
         }
     }
 
-    std::string sig = "call void @" + IRWriter::quote(mangled_of(cf)) + "(";
+    std::string call_ret = via_reg ? ret_ir : "void";
+    std::string sig = "call " + call_ret + " @" +
+                      IRWriter::quote(mangled_of(cf)) + "(";
     for (size_t k = 0; k < args.size(); ++k) {
         if (k) sig += ", ";
         sig += args[k];
     }
     sig += ")";
+    if (via_reg) {
+        std::string r = ir_.reg();
+        emit_instr(r + " = " + sig);
+        return r;
+    }
     emit_instr(sig);
     // 类返回值经 sret 传出的是实例指针，加载后返回
     if (ret_type_expr && as_class(ret_type_expr)) {
@@ -1482,11 +1509,16 @@ std::string Translator::emit_conversion_call(Expr* e, Conversion* cf) {
 std::string Translator::emit_operator_call(Expr* e, Operator* op,
                                            Expr* lhs, Expr* rhs) {
     std::string ret_t = e->type ? map_type(e->type) : "void";
-    std::string sret_slot = ir_.reg();
-    emit_instr(sret_slot + " = alloca " + ret_t);
 
+    // 标量返回且走寄存器：无 sret，调用直接取返回值
+    bool via_reg = op->ret_via_reg;
+    std::string sret_slot;
     std::vector<std::string> args;
-    args.push_back("ptr sret(" + ret_t + ") " + sret_slot);
+    if (!via_reg) {
+        sret_slot = ir_.reg();
+        emit_instr(sret_slot + " = alloca " + ret_t);
+        args.push_back("ptr sret(" + ret_t + ") " + sret_slot);
+    }
 
     std::string self_ptr = eval(lhs);
     args.push_back("ptr " + self_ptr);
@@ -1500,19 +1532,32 @@ std::string Translator::emit_operator_call(Expr* e, Operator* op,
             Expr* arg = rhs_list[i];
             Expr* pt_expr = vi->type ? vi->type : vl->type;
             std::string pt = pt_expr ? map_type(pt_expr) : "i32";
-            std::string v = eval(arg);
+            std::string v = eval_converted(arg);
             args.push_back(pt + " " + v);
             ++i;
         }
     }
 
-    std::string sig = "call void @" + IRWriter::quote(mangled_of(op)) + "(";
+    std::string call_ret = via_reg ? ret_t : "void";
+    std::string sig = "call " + call_ret + " @" +
+                      IRWriter::quote(mangled_of(op)) + "(";
     for (size_t k = 0; k < args.size(); ++k) {
         if (k) sig += ", ";
         sig += args[k];
     }
     sig += ")";
+    if (via_reg) {
+        std::string r = ir_.reg();
+        emit_instr(r + " = " + sig);
+        return r;
+    }
     emit_instr(sig);
+    // 类返回值经 sret 传出的是实例指针，加载后返回
+    if (e->type && as_class(e->type)) {
+        std::string loaded = ir_.reg();
+        emit_instr(loaded + " = load ptr, ptr " + sret_slot);
+        return loaded;
+    }
     return sret_slot;
 }
 
@@ -1584,10 +1629,32 @@ std::string Translator::eval_call(Expr* e, Expr::Call* c) {
             emit_instr(slot + " = alloca " + it->second.llvm_name);
             std::vector<std::string> args;
             args.push_back("ptr " + slot);
+            size_t ai = 0;
             for (Expr* a : c->args) {
-                std::string v = eval(a);
+                bool converted = a && a->conv &&
+                    a->conv->kind == DeclKind::Conversion;
+                std::string v = converted ? eval_converted(a) : eval(a);
                 std::string at = a && a->type ? map_type(a->type) : "i32";
+                if (converted) {
+                    // 转换后实参类型即对应形参类型
+                    size_t k = 0;
+                    for (VarList* vl : sm->params) {
+                        if (!vl) continue;
+                        bool found = false;
+                        for (VarItem* vi : vl->vars) {
+                            if (k == ai) {
+                                Expr* pte = vi->type ? vi->type : vl->type;
+                                if (pte) at = map_type(pte);
+                                found = true;
+                                break;
+                            }
+                            ++k;
+                        }
+                        if (found) break;
+                    }
+                }
                 args.push_back(at + " " + v);
+                ++ai;
             }
             std::string sig = "call void @" +
                 IRWriter::quote(mangled_of(sm)) + "(";
@@ -1654,7 +1721,11 @@ std::string Translator::eval_call(Expr* e, Expr::Call* c) {
         std::string at = a && a->type ? map_type(a->type) : "i32";
         std::string want = ai < param_ir.size() ? param_ir[ai] : at;
         std::string v;
-        if (want == "{ ptr, i32 }" && a && a->type &&
+        bool converted = a && a->conv &&
+            a->conv->kind == DeclKind::Conversion;
+        if (converted)
+            v = eval_converted(a);
+        else if (want == "{ ptr, i32 }" && a && a->type &&
             a->type->is_string_literal_type())
             v = build_string_slice(a);
         else {
@@ -1774,7 +1845,7 @@ std::string Translator::call_func_ptr(Expr* e, Expr::Call* c, Expr::FuncPtr* fp)
         Expr* a = c->args[i];
         Expr* pt_expr = i < fp->params.size() ? fp->params[i] : nullptr;
         std::string pt = pt_expr ? map_type(pt_expr) : (a && a->type ? map_type(a->type) : "i32");
-        std::string v = eval(a);
+        std::string v = eval_converted(a);
         args.push_back(pt + " " + v);
     }
 

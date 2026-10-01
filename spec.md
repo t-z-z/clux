@@ -270,7 +270,7 @@ enum Color {
     Red Blue Green
 }
 main() {
-    color = color::Red
+    Color color = Color::Red
 }
 ```
 
@@ -361,7 +361,7 @@ pointer p = pointer()
 
 ```cx
 @Vec2 {
-    int x, y
+    pub int x, y
     operator + (Vec2 other) Vec2 r {
         r = Vec2(x+other.x y+other.y)
     }
@@ -377,7 +377,7 @@ operator - (Vec2 a Vec2 b) Vec2 r {
 
 ```cx
 @Vec2 {
-    int x,y
+    pub int x,y
     conversion() Vector r=Vector(x y) {
     }
 }
