@@ -1,0 +1,6 @@
+malloc @Heap { pub int v = 0 }
+main() {
+    Heap h = Heap()
+    h.v = 1
+    h.free()
+}

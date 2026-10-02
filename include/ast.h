@@ -250,7 +250,7 @@ struct Expr : ASTNode {
     struct Binary       { Expr* left; OpKind op; Expr* right; };
     struct Unary        { OpKind op; Expr* operand; bool is_postfix = false; };
     struct Assign       { Expr* target; OpKind op; Expr* value; };
-    struct Call         { Expr* callee; std::vector<Expr*> args; Decl* resolved = nullptr; };
+    struct Call         { Expr* callee; std::vector<Expr*> args; Decl* resolved = nullptr; bool free_builtin = false; };
     struct Ternary      { Expr* cond; Expr* then_expr; Expr* else_expr; };
     struct Index        { Expr* target; Expr* index; };
     struct Member       { Expr* target; std::string_view member; };

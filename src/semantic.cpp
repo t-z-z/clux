@@ -988,6 +988,14 @@ Symbol* SemanticAnalyzer::find_conversion(Expr& src, Expr& dst) {
     return scope->lookup_member("conversion_" + dstkey);
 }
 
+Class* SemanticAnalyzer::wrap_or_plain_class(Expr* t) {
+    t = underlying_type(t);
+    if (!t || !t->is_type) return nullptr;
+    if (!t->resolved_decl || t->resolved_decl->kind != DeclKind::Class)
+        return nullptr;
+    return static_cast<Class*>(t->resolved_decl);
+}
+
 Class* SemanticAnalyzer::wrap_class_of(Expr* t) {
     t = underlying_type(t);
     if (!t || !t->is_type) return nullptr;
@@ -1443,6 +1451,19 @@ void SemanticAnalyzer::visit_expr_assign(Expr::Assign& a) {
     if (lt && lt->is_reference()) lt = lt->get_reference()->target;
     Expr* rt = a.value->type;
 
+    // 复合赋值操作符重载优先（可能具备与对应二元操作符不同的独特语义）
+    if (a.op != OpKind::Assign && lt && rt) {
+        Expr* matched = nullptr;
+        if (Symbol* s = find_operator_overload(a.op, *lt, *rt, &matched)) {
+            if (matched && !is_same_type(rt, matched))
+                record_conversion(a.value, matched);
+            current_expr->sym = s;
+            current_expr->type = lt;
+            current_expr->is_lvalue = false;
+            return;
+        }
+    }
+
     // 返回变量不接受数组/字符串字面量：字面量存储留在函数栈上，返回后指针悬垂
     bool literal_slice = a.value->is_array() ||
         (a.value->type && a.value->type->is_string_literal_type());
@@ -1590,6 +1611,21 @@ void SemanticAnalyzer::resolve_call(Expr* call_expr, Expr::Call& c) {
         call_expr->is_lvalue = false;
         c.resolved = ctor;
         return;
+    }
+
+    // 2a-f：malloc 类的内置 free()：a.free() 释放堆实例
+    if (name == "free" && c.args.empty() && c.callee) {
+        if (auto* m = c.callee->get_member()) {
+            Class* cls = m->target && m->target->type
+                ? wrap_or_plain_class(m->target->type) : nullptr;
+            if (cls && cls->specs.has(SpecKind::Malloc)) {
+                call_expr->sym = nullptr;
+                call_expr->type = typeVoid;
+                call_expr->is_lvalue = false;
+                c.free_builtin = true;
+                return;
+            }
+        }
     }
 
     // 2b：callee 已解析出函数符号（限定名/成员方法）时直接使用
@@ -1786,6 +1822,17 @@ void SemanticAnalyzer::visit_expr_member(Expr::Member& m) {
         current_expr->type = make_type(current_expr->loc, Expr::Pointer{elem});
         current_expr->is_lvalue = false;
         return;
+    }
+
+    // malloc 类的内置 free：a.free() 释放堆实例
+    if (m.member == "free" && m.target->type) {
+        Class* cls = wrap_or_plain_class(m.target->type);
+        if (cls && cls->specs.has(SpecKind::Malloc)) {
+            current_expr->sym = nullptr;
+            current_expr->type = typeVoid;
+            current_expr->is_lvalue = false;
+            return;
+        }
     }
 
     // 类型位置的限定名：A::B / A.B 按类型路径解析
@@ -2770,6 +2817,23 @@ Class* SemanticAnalyzer::make_base_source(PrimitiveTypeKind base,
             nullptr);
         op_node->synthesized = true;
         op_node->ret_via_reg = true;
+        synth->members.push_back(op_node);
+    }
+
+    // 复合赋值运算符：原地修改 self.__value，无返回值
+    static const OpKind assign_ops[] = {
+        OpKind::PlusAssign, OpKind::MinusAssign, OpKind::MulAssign,
+        OpKind::DivAssign, OpKind::ModAssign,
+        OpKind::AndAssign, OpKind::OrAssign, OpKind::XorAssign,
+        OpKind::ShlAssign, OpKind::ShrAssign,
+    };
+    for (OpKind op : assign_ops) {
+        auto* op_node = cu_.add_node<Operator>(loc, op, opkind_to_sv(op),
+            SpecList{},
+            std::vector<VarList*>{mk_param("other", mk_type())},
+            std::vector<VarList*>{},
+            nullptr);
+        op_node->synthesized = true;
         synth->members.push_back(op_node);
     }
 

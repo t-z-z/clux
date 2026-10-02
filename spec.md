@@ -390,7 +390,7 @@ conversion(Vec2 a) Vector r {
 
 两者方向相反，不可互相替代。
 
-### 字段修饰符Specifier
+### 修饰符Specifier
 
 | 关键字 | 含义 |
 | --- | --- |
@@ -401,10 +401,10 @@ conversion(Vec2 a) Vector r {
 | own | 唯一所有权 |
 | malloc | 堆分配 |
 | alloca | 栈分配 |
+| pub | 公开 |
+| priv | 私有 |
 
-### 方法修饰符Specifier
-
-访问控制：`pub` 公开，`priv` 私有（类默认私有，命名空间默认公开）。
+访问控制类默认私有，命名空间默认公开。
 
 ```cx
 @Base {
@@ -419,6 +419,25 @@ conversion(Vec2 a) Vector r {
     setup() { Child_setup() }
 }
 ```
+
+malloc的对象会有free()方法，malloc类在初始化时会额外触发REF，析构时会额外触发DEREF
+
+```cx
+@rc {
+    int cnt = 0
+    REF {
+        cnt+=1
+    }
+    DEREF {
+        cnt-=1
+        if cnt==0 free()
+    }
+    free(){}
+}
+malloc @rcInt #rc #int{}
+```
+
+malloc的rcInt覆盖了rc中的free方法，所以rc的free会触发释放。
 
 ### 修饰注入Injection
 

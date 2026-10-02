@@ -349,14 +349,14 @@ void Translator::emit_bind_ref(Class* cls, const std::string& val,
     emit_guard_call(find_special(cls, k), val);
 }
 
-void Translator::register_deref(const std::string& slot, Class* cls) {
+void Translator::register_deref(const std::string& slot, Class* cls, int depth) {
     if (!cls) return;
     if (!find_special(cls, SpecialMethod::Kind::Deref)) return;
     CleanupEntry e;
     e.kind = CleanupEntry::Deref;
     e.slot = slot;
     e.cls = cls;
-    e.scope_depth = ctx_.scope_depth;
+    e.scope_depth = depth >= 0 ? depth : ctx_.scope_depth;
     ctx_.drops.push_back(e);
 }
 
@@ -482,7 +482,7 @@ void Translator::emit_func(Func& f, Class* cls) {
             Class* pc = pointee_class(vt_expr);
             if (pc) {
                 emit_bind_ref(pc, argn, SpecialMethod::Kind::Ref);
-                register_deref(slot, pc);
+                register_deref(slot, pc, 1);
             }
         }
     }
@@ -595,7 +595,7 @@ void Translator::emit_special(SpecialMethod& sm, Class* cls) {
             Class* pc = pointee_class(vi->type);
             if (pc) {
                 emit_bind_ref(pc, argn, SpecialMethod::Kind::Ref);
-                register_deref(slot, pc);
+                register_deref(slot, pc, 1);
             }
         }
     }
@@ -664,6 +664,42 @@ void Translator::emit_synth_operator(Func& f, Class* cls, VarItem* ret_var) {
                    k == OpKind::LessEqual || k == OpKind::GreaterEqual ||
                    k == OpKind::Equal || k == OpKind::NotEqual);
     bool is_unary = op->params.empty();
+
+    bool is_compound_assign = (k == OpKind::PlusAssign || k == OpKind::MinusAssign ||
+                               k == OpKind::MulAssign || k == OpKind::DivAssign ||
+                               k == OpKind::ModAssign || k == OpKind::AndAssign ||
+                               k == OpKind::OrAssign || k == OpKind::XorAssign ||
+                               k == OpKind::ShlAssign || k == OpKind::ShrAssign);
+    if (is_compound_assign) {
+        VarItem* avi = nullptr;
+        for (auto* vl : op->params) {
+            for (auto* vi : vl->vars) { avi = vi; break; }
+            if (avi) break;
+        }
+        if (!avi) return;
+        auto sit = ctx_.slots.find(avi);
+        if (sit == ctx_.slots.end()) return;
+        std::string rv = ir_.reg();
+        emit_instr(rv + " = load " + base_ir + ", ptr " + sit->second);
+        std::string res = ir_.reg();
+        std::string opc = "add";
+        switch (k) {
+            case OpKind::PlusAssign:  opc = "add";  break;
+            case OpKind::MinusAssign: opc = "sub";  break;
+            case OpKind::MulAssign:   opc = "mul";  break;
+            case OpKind::DivAssign:   opc = "sdiv"; break;
+            case OpKind::ModAssign:   opc = "srem"; break;
+            case OpKind::AndAssign:   opc = "and";  break;
+            case OpKind::OrAssign:    opc = "or";   break;
+            case OpKind::XorAssign:   opc = "xor";  break;
+            case OpKind::ShlAssign:   opc = "shl";  break;
+            case OpKind::ShrAssign:   opc = "ashr"; break;
+            default: break;
+        }
+        emit_instr(res + " = " + opc + " " + base_ir + " " + lv + ", " + rv);
+        emit_instr("store " + base_ir + " " + res + ", ptr " + addr);
+        return;
+    }
 
     std::string result;
     if (is_unary) {
@@ -796,13 +832,23 @@ void Translator::emit_var_decl(VarList* vl) {
             auto it = classes_.find(cls);
             if (it == classes_.end()) { ctx_.slots[vi] = "null"; continue; }
             std::string inst;
+            bool is_malloc_cls = cls->specs.has(SpecKind::Malloc);
+            bool created = false;
             if (vi->init) {
+                if (vi->init->implicit_to && as_wrap_class(vi->init->implicit_to))
+                    created = true;
+                else if (auto* call = vi->init->get_call()) {
+                    if (call->resolved &&
+                        call->resolved->kind == DeclKind::SpecialMethod)
+                        created = true;
+                }
                 inst = eval_converted(vi->init);
-            } else if (cls->specs.has(SpecKind::Malloc)) {
+            } else if (is_malloc_cls) {
                 ir_.need_malloc();
                 inst = ir_.reg();
                 emit_instr(inst + " = call ptr @malloc(i64 " +
                            std::to_string(type_size(it->second.llvm_name)) + ")");
+                created = true;
             } else {
                 inst = ir_.reg();
                 emit_instr(inst + " = alloca " + it->second.llvm_name);
@@ -811,7 +857,10 @@ void Translator::emit_var_decl(VarList* vl) {
             emit_instr(slot + " = alloca ptr");
             emit_instr("store ptr " + inst + ", ptr " + slot);
             ctx_.slots[vi] = slot;
-            if (!vl->specs.has(SpecKind::Malloc)) {
+            if (is_malloc_cls) {
+                if (!created) emit_bind_ref(cls, inst, SpecialMethod::Kind::Ref);
+                register_deref(slot, cls);
+            } else if (!vl->specs.has(SpecKind::Malloc)) {
                 for (Decl* m : cls->members) {
                     if (m && m->kind == DeclKind::SpecialMethod) {
                         auto* sm = static_cast<SpecialMethod*>(m);
@@ -1055,7 +1104,7 @@ std::string Translator::eval(Expr* e) {
     if (auto* id  = e->get_identifier())  return eval_identifier(e, id);
     if (auto* b   = e->get_binary())      return eval_binary(e, b);
     if (auto* u   = e->get_unary())       return eval_unary(e, u);
-    if (auto* a   = e->get_assign())      return eval_assign(a);
+    if (auto* a   = e->get_assign())      return eval_assign(e, a);
     if (auto* c   = e->get_call())        return eval_call(e, c);
     if (auto* ix  = e->get_index())       return eval_index(e, ix);
     if (auto* m   = e->get_member())      return eval_member(e, m);
@@ -1149,8 +1198,17 @@ std::string Translator::emit_wrap_convert(Expr* e) {
             auto fi = it->second.field_index.find("__value");
             if (fi != it->second.field_index.end()) idx = fi->second;
         }
-        std::string slot = ir_.reg();
-        emit_instr(slot + " = alloca " + cls_ir);
+        std::string slot;
+        if (dw->specs.has(SpecKind::Malloc)) {
+            ir_.need_malloc();
+            slot = ir_.reg();
+            emit_instr(slot + " = call ptr @malloc(i64 " +
+                       std::to_string(type_size(cls_ir)) + ")");
+            emit_bind_ref(dw, slot, SpecialMethod::Kind::Ref);
+        } else {
+            slot = ir_.reg();
+            emit_instr(slot + " = alloca " + cls_ir);
+        }
         std::string addr = ir_.reg();
         emit_instr(addr + " = getelementptr " + cls_ir + ", ptr " + slot +
                    ", i32 0, i32 " + std::to_string(idx));
@@ -1490,6 +1548,8 @@ std::string Translator::eval_unary(Expr* e, Expr::Unary* u) {
         case OpKind::Plus:
             return ov;
         case OpKind::Mul: {
+            // 类值在 IR 中即为实例指针，解引用直接给出指针
+            if (e->type && as_class(e->type)) return ov;
             std::string t = e->type ? map_type(e->type)
                                     : (u->operand && u->operand->type
                                        ? map_type(u->operand->type) : "i32");
@@ -1502,7 +1562,16 @@ std::string Translator::eval_unary(Expr* e, Expr::Unary* u) {
     return res;
 }
 
-std::string Translator::eval_assign(Expr::Assign* a) {
+std::string Translator::eval_assign(Expr* e, Expr::Assign* a) {
+    // 复合赋值操作符重载：t += v 派发到 operator+=
+    if (a->op != OpKind::Assign && e && e->sym &&
+        e->sym->kind == SymbolKind::Function) {
+        if (Decl* d = e->sym->get_decl()) {
+            if (d->kind == DeclKind::Operator)
+                return emit_operator_call(e, static_cast<Operator*>(d),
+                                          a->target, a->value);
+        }
+    }
     // 引用首次绑定：把右值的地址存入引用槽
     if (a->target && a->target->sym) {
         if (auto* vi = dynamic_cast<VarItem*>(a->target->sym->node)) {
@@ -1856,7 +1925,40 @@ std::string Translator::emit_conversion_call(Expr* e, Conversion* cf) {
 
 std::string Translator::emit_operator_call(Expr* e, Operator* op,
                                            Expr* lhs, Expr* rhs) {
-    std::string ret_t = e->type ? map_type(e->type) : "void";
+    std::string ret_t = e && e->type ? map_type(e->type) : "void";
+
+    // 合成的复合赋值：原地修改 self，无 sret、无返回值
+    bool compound = op->synthesized &&
+        (op->op == OpKind::PlusAssign || op->op == OpKind::MinusAssign ||
+         op->op == OpKind::MulAssign  || op->op == OpKind::DivAssign ||
+         op->op == OpKind::ModAssign  || op->op == OpKind::AndAssign ||
+         op->op == OpKind::OrAssign   || op->op == OpKind::XorAssign ||
+         op->op == OpKind::ShlAssign  || op->op == OpKind::ShrAssign);
+    if (compound) {
+        std::vector<std::string> args;
+        std::string self_arg = eval(lhs);
+        args.push_back("ptr " + self_arg);
+        std::string v = eval_converted(rhs);
+        std::string pt = "i32";
+        for (VarList* vl : op->params) {
+            if (!vl) continue;
+            for (VarItem* vi : vl->vars) {
+                Expr* pte = vi->type ? vi->type : vl->type;
+                if (pte) pt = map_type(pte);
+                break;
+            }
+            break;
+        }
+        args.push_back(pt + " " + v);
+        std::string sig = "call void @" + IRWriter::quote(mangled_of(op)) + "(";
+        for (size_t k = 0; k < args.size(); ++k) {
+            if (k) sig += ", ";
+            sig += args[k];
+        }
+        sig += ")";
+        emit_instr(sig);
+        return "0";
+    }
 
     // 标量返回且走寄存器：无 sret，调用直接取返回值
     bool via_reg = op->ret_via_reg;
@@ -1944,6 +2046,24 @@ void Translator::emit_declare(Func& f) {
 }
 
 std::string Translator::eval_call(Expr* e, Expr::Call* c) {
+    // 内置 free：释放 malloc 类实例
+    if (c->free_builtin && c->callee) {
+        if (auto* m = c->callee->get_member()) {
+            std::string self = eval(m->target);
+            Class* cls = m->target && m->target->type
+                ? as_wrap_class(m->target->type) : nullptr;
+            if (!cls && m->target && m->target->type)
+                cls = as_class(m->target->type);
+            if (cls) {
+                if (SpecialMethod* drop = find_special(cls, SpecialMethod::Kind::Drop))
+                    emit_instr("call void @" + IRWriter::quote(mangled_of(drop)) +
+                               "(ptr " + self + ")");
+            }
+            ir_.need_free();
+            emit_instr("call void @free(ptr " + self + ")");
+            return "0";
+        }
+    }
     // funcptr 调用
     if (c->callee && c->callee->type && c->callee->type->is_func_ptr()) {
         auto* fp = c->callee->type->get_func_ptr();
@@ -1962,6 +2082,7 @@ std::string Translator::eval_call(Expr* e, Expr::Call* c) {
                     slot = ir_.reg();
                     emit_instr(slot + " = call ptr @malloc(i64 " +
                                std::to_string(type_size(it->second.llvm_name)) + ")");
+                    emit_bind_ref(cls, slot, SpecialMethod::Kind::Ref);
                 } else {
                     slot = ir_.reg();
                     emit_instr(slot + " = alloca " + it->second.llvm_name);
@@ -1982,7 +2103,8 @@ std::string Translator::eval_call(Expr* e, Expr::Call* c) {
             auto it = classes_.find(cls);
             if (it == classes_.end()) return "0";
             std::string slot;
-            if (cls->specs.has(SpecKind::Malloc)) {
+            bool is_malloc = cls->specs.has(SpecKind::Malloc);
+            if (is_malloc) {
                 ir_.need_malloc();
                 slot = ir_.reg();
                 emit_instr(slot + " = call ptr @malloc(i64 " +
@@ -2027,6 +2149,7 @@ std::string Translator::eval_call(Expr* e, Expr::Call* c) {
             }
             sig += ")";
             emit_instr(sig);
+            if (is_malloc) emit_bind_ref(cls, slot, SpecialMethod::Kind::Ref);
             return slot;
         }
         return "0";
