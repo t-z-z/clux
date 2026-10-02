@@ -15,7 +15,7 @@ namespace cx{
 struct ASTNode;
 struct CompUnit;
 struct Import;
-struct ModfList;
+struct SpecList;
 struct Expr;
 struct Stmt;
 struct Decl;
@@ -147,30 +147,30 @@ struct CompUnit {
     }
 };
 
-enum class ModfKind {
+enum class SpecKind {
     #define X(name,str) name,
     MODIFIER
     #undef X
 };
 
-inline ModfKind token_to_modf(TokenKind tk) {
+inline SpecKind token_to_spec(TokenKind tk) {
     int offset = static_cast<int>(tk) - static_cast<int>(TokenKind::Const);
-    return static_cast<ModfKind>(offset);
+    return static_cast<SpecKind>(offset);
 }
 
-struct ModfList {
+struct SpecList {
     uint32_t flags;
-    ModfList(): flags(0) {}
-    void set(ModfKind kind) {
+    SpecList(): flags(0) {}
+    void set(SpecKind kind) {
         flags |= (1u << static_cast<uint8_t>(kind));
     }
-    void del(ModfKind kind) {
+    void del(SpecKind kind) {
         flags &= ~(1u << static_cast<uint8_t>(kind));
     }
-    bool has(ModfKind kind) const {
+    bool has(SpecKind kind) const {
         return flags &(1u << static_cast<uint8_t>(kind));
     }
-    void merge(const ModfList& other) {
+    void merge(const SpecList& other) {
         flags |= other.flags;
     }
 };
@@ -261,7 +261,7 @@ struct Expr : ASTNode {
     struct Spawn        { Expr* call; };
     // 组合类型：层从左到右，冲突时左侧优先（左侧覆盖右侧）
     // is_mod[i] 为真表示 layers[i] 是 #修饰层（贡献成员、不承载值）
-    struct Modifier     { std::vector<Expr*> layers; std::vector<bool> is_mod; };
+    struct ModifierType     { std::vector<Expr*> layers; std::vector<bool> is_mod; };
 
     struct Primitive        { PrimitiveTypeKind kind; };
     struct Pointer          { Expr* pointee; };
@@ -277,7 +277,7 @@ struct Expr : ASTNode {
     using Variant = std::variant<
         Literal, Identifier, Binary, Unary, Assign,
         Call, Ternary, Index, Member,
-        Cast, Array, Closure, Spawn, Modifier,
+        Cast, Array, Closure, Spawn, ModifierType,
         Primitive, Pointer, ArrayType, StringLiteralType,
         FuncPtr, FuncRef, Reference, Inferred, Void, Null
     >;
@@ -310,7 +310,7 @@ struct Expr : ASTNode {
     BBB(array, Array, Expr)
     BBB(closure, Closure, Expr)
     BBB(spawn, Spawn, Expr)
-    BBB(modifier, Modifier, Expr)
+    BBB(modifier, ModifierType, Expr)
     BBB(primitive, Primitive, Expr)
     BBB(pointer, Pointer, Expr)
     BBB(array_type, ArrayType, Expr)
@@ -374,11 +374,11 @@ enum class DeclKind {
 
 struct Decl : ASTNode {
     std::string_view name;
-    ModfList modfs;
+    SpecList specs;
     DeclKind kind;
     explicit Decl( const Location &loc, std::string_view n,
-        const DeclKind &k, ModfList ml=ModfList()) :
-        ASTNode(loc), name(n), modfs(std::move(ml)), kind(k) {}
+        const DeclKind &k, SpecList ml=SpecList()) :
+        ASTNode(loc), name(n), specs(std::move(ml)), kind(k) {}
     Decl() = default;virtual ~Decl() = default;
 };
 
@@ -386,7 +386,7 @@ struct Cont : Decl { // container 容器，用于包含申明
     std::vector<Decl*> members;
     Scope* scope = nullptr;  // 符号表指针，在collect阶段写入
     explicit Cont(const Location &loc, std::string_view n, const DeclKind &k,
-        ModfList ml=ModfList(), std::vector<Decl*> m = {}) :
+        SpecList ml=SpecList(), std::vector<Decl*> m = {}) :
     Decl(loc, n, k, std::move(ml)), members(std::move(m)) {}
     Cont() = default;virtual ~Cont() = default;
     bool can_contain(const Decl *d) const {
@@ -418,7 +418,7 @@ struct VarItem : ASTNode {
 struct VarList : Decl {
     Expr* type = nullptr;
     std::vector<VarItem*> vars;
-    VarList(const Location& loc,ModfList ml,
+    VarList(const Location& loc,SpecList ml,
             Expr* t, std::vector<VarItem*> v
         ):
         Decl(loc, "", DeclKind::VarList, std::move(ml)),
@@ -434,7 +434,7 @@ struct Func : Decl {
     Func() = default;
     Func(const Location& loc,
         std::string_view name,
-        ModfList ml,
+        SpecList ml,
         std::vector<VarList*> p,
         std::vector<VarList*> r,
         Stmt* b
@@ -453,7 +453,7 @@ struct Operator : Func {
         const Location& loc, 
         OpKind a,
         std::string_view op_name,
-        ModfList ml,
+        SpecList ml,
         std::vector<VarList*> p,
         std::vector<VarList*> r,
         Stmt* b
@@ -466,7 +466,7 @@ struct Operator : Func {
 
 struct Conversion : Func {
     Conversion() = default;
-    Conversion(const Location& loc, std::string_view name, ModfList ml,
+    Conversion(const Location& loc, std::string_view name, SpecList ml,
         std::vector<VarList*> p, std::vector<VarList*> r, Stmt* b)
         : Func(loc, name, std::move(ml), std::move(p), std::move(r), b) {
         kind = DeclKind::Conversion;
@@ -477,7 +477,7 @@ struct Namespace : Cont {
     Namespace() = default;
     Namespace(
         const Location &loc, std::string_view name,
-        ModfList ml, std::vector<Decl*> members
+        SpecList ml, std::vector<Decl*> members
     ):
         Cont(loc, name, DeclKind::Namespace, std::move(ml), std::move(members)) {}
 };
@@ -486,7 +486,7 @@ struct Extern : Cont {
     Extern() = default;
     Extern(const Location& loc,
            std::string_view name,
-           ModfList ml,
+           SpecList ml,
            std::vector<Decl*> m)
         : Cont(loc, name, DeclKind::Extern, std::move(ml), std::move(m)) {}
 };
@@ -498,7 +498,7 @@ struct Class : Cont {
     std::vector<Expr*> trailing_injects;
     Class(const Location &loc,
         std::string_view name,
-        ModfList ml,
+        SpecList ml,
         std::vector<Decl*> m,
         std::vector<Expr*> inj = {},
         std::vector<Expr*> tinj = {}
@@ -521,7 +521,7 @@ struct SpecialMethod : Decl {
     SpecialMethod (
         const Location& loc,
         SpecialMethod::Kind k,
-        ModfList ml,
+        SpecList ml,
         Stmt* b,
         std::vector<VarList*> p = {}
     ):
@@ -531,7 +531,7 @@ struct SpecialMethod : Decl {
 
 struct Keep : Decl {
     std::string_view code;
-    Keep(const Location &loc, std::string_view c, ModfList ml)
+    Keep(const Location &loc, std::string_view c, SpecList ml)
         : Decl(loc, "", DeclKind::Keep, std::move(ml)), code(c) {}
 };
 
@@ -548,7 +548,7 @@ struct Enum : Decl {
     Scope* scope = nullptr;   // 枚举自身的成员作用域
     std::vector<EnumVariant*> variants;
     Enum() = default;
-    Enum(const Location& loc, std::string_view name, ModfList ml,
+    Enum(const Location& loc, std::string_view name, SpecList ml,
          std::vector<EnumVariant*> vs)
         : Decl(loc, name, DeclKind::Enum, std::move(ml)),
           variants(std::move(vs)) {}
@@ -653,7 +653,7 @@ struct ASTVisitor {
     virtual void visit_type_inferred(Expr::Inferred&) {}
     virtual void visit_type_void(Expr::Void&) {}
     virtual void visit_expr_null(Expr::Null&) {}
-    virtual void visit_type_modifier(Expr::Modifier&) {}
+    virtual void visit_type_modifier(Expr::ModifierType&) {}
 
     // 递归遍历子节点（基类驱动，结构变更只改这里）
     void walk_children(Decl& decl) {
@@ -822,7 +822,7 @@ struct ASTVisitor {
             else if constexpr (std::is_same_v<T, Expr::Inferred>) visit_type_inferred(v);
             else if constexpr (std::is_same_v<T, Expr::Void>) visit_type_void(v);
             else if constexpr (std::is_same_v<T, Expr::Null>) visit_expr_null(v);
-            else if constexpr (std::is_same_v<T, Expr::Modifier>) {
+            else if constexpr (std::is_same_v<T, Expr::ModifierType>) {
                 for (auto* l : v.layers) if (l) walk(*l);
                 visit_type_modifier(v);
             }

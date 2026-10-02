@@ -217,7 +217,7 @@ struct Token {
     inline bool is_op() const {
         return kind > TokenKind::Identifier && kind < TokenKind::Unknown;
     }
-    inline bool is_modf() const {
+    inline bool is_spec() const {
         return kind >= TokenKind::Const && kind <= TokenKind::Over;
     }
     inline bool is_type() const {

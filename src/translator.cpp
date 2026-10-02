@@ -31,6 +31,54 @@ std::string ir_common_type(const std::string& a, const std::string& b) {
         return ir_int_bits(a) >= ir_int_bits(b) ? a : b;
     return a;
 }
+
+// 剥离修饰层，取承载值的类型节点
+Expr* strip_modifiers(Expr* t) {
+    while (t && t->is_modifier()) {
+        auto* m = t->get_modifier();
+        Expr* val = nullptr;
+        for (int i = (int)m->layers.size() - 1; i >= 0; --i) {
+            if (i < (int)m->is_mod.size() && m->is_mod[i]) continue;
+            val = m->layers[i];
+            break;
+        }
+        if (!val || val == t) break;
+        t = val;
+    }
+    return t;
+}
+
+bool expr_is_unsigned(Expr* t);
+
+// 比较/算术操作数提升后的无符号性：位宽不同取宽者，相同则任一为无符号即无符号
+bool common_unsigned(const std::string& lt, const std::string& rt,
+                     Expr* l, Expr* r) {
+    if (ir_is_fp_type(lt) || ir_is_fp_type(rt)) return false;
+    int lb = ir_is_int_type(lt) ? ir_int_bits(lt) : 0;
+    int rb = ir_is_int_type(rt) ? ir_int_bits(rt) : 0;
+    bool lu = expr_is_unsigned(l), ru = expr_is_unsigned(r);
+    if (lb != rb) return lb > rb ? lu : ru;
+    return lu || ru;
+}
+
+// 表达式类型是否为无符号整数（不含 bool）
+bool expr_is_unsigned(Expr* t) {
+    t = strip_modifiers(t);
+    if (!t) return false;
+    auto* p = t->get_primitive();
+    if (!p) return false;
+    switch (p->kind) {
+        case PrimitiveTypeKind::UInt8:
+        case PrimitiveTypeKind::UShort:
+        case PrimitiveTypeKind::UInt:
+        case PrimitiveTypeKind::ULong:
+        case PrimitiveTypeKind::UInt128:
+        case PrimitiveTypeKind::UChar:
+            return true;
+        default:
+            return false;
+    }
+}
 } // namespace
 
 
@@ -212,7 +260,7 @@ void Translator::collect_classes_decl(Decl* d) {
             for (Decl* m : c->members) {
                 if (!m || m->kind != DeclKind::VarList) continue;
                 VarList* vl = static_cast<VarList*>(m);
-                if (vl->modfs.has(ModfKind::Static)) continue;
+                if (vl->specs.has(SpecKind::Static)) continue;
                 for (VarItem* vi : vl->vars) {
                     if (!vi) continue;
                     Field f;
@@ -286,6 +334,7 @@ std::string Translator::map_type(Expr* t) {
     if (t->get_array_type()) return "{ ptr, i32 }";
     if (t->get_string_literal_type()) return "ptr";
     if (t->get_func_ptr()) return "ptr";
+    if (t->get_func_ref()) return "ptr";
     if (t->is_null()) return "ptr";
     if (as_class(t)) return "ptr";
     return "i32";
@@ -360,7 +409,16 @@ void Translator::open_block(const std::string& label) {
 
 // DROP 清理
 
+void Translator::emit_scope_cleanup(int depth) {
+    // 离开作用域时遗忘引用绑定（引用变量本身不承载资源，无需释放）
+    for (auto it = ctx_.ref_slots.begin(); it != ctx_.ref_slots.end(); ) {
+        if (it->second > depth) it = ctx_.ref_slots.erase(it);
+        else ++it;
+    }
+}
+
 void Translator::emit_drops_to(int depth) {
+    emit_scope_cleanup(depth);
     while (!ctx_.drops.empty() && ctx_.drops.back().scope_depth > depth) {
         auto& d = ctx_.drops.back();
         if (!ctx_.term) {
@@ -386,7 +444,7 @@ void Translator::emit_func(Func& f, Class* cls) {
     ctx_.current_class = cls;
 
     bool is_main = (std::string(f.name) == "main" && cls == nullptr);
-    bool is_static = f.modfs.has(ModfKind::Static);
+    bool is_static = f.specs.has(SpecKind::Static);
     bool has_self = cls != nullptr && !is_static;
 
     std::string ret_t = "void";
@@ -435,7 +493,7 @@ void Translator::emit_func(Func& f, Class* cls) {
         sig += params[i];
     }
     sig += ")";
-    if (f.modfs.has(ModfKind::Inline)) {
+    if (f.specs.has(SpecKind::Inline)) {
         sig += " #0";
         uses_alwaysinline_ = true;
     }
@@ -495,7 +553,8 @@ void Translator::emit_func(Func& f, Class* cls) {
         std::string v = converted ? eval_converted(rv->init) : eval(rv->init);
         if (!converted) {
             std::string src_t = rv->init->type ? map_type(rv->init->type) : vt;
-            if (src_t != vt) v = cast_value(v, src_t, vt);
+            if (src_t != vt) v = cast_value(v, src_t, vt,
+                !expr_is_unsigned(rv->init->type), !expr_is_unsigned(rv->type));
         }
         emit_instr("store " + vt + " " + v + ", ptr " + sit->second);
     }
@@ -659,6 +718,20 @@ void Translator::emit_var_decl(VarList* vl) {
     for (VarItem* vi : vl->vars) {
         if (!vi) continue;
         Expr* vtype = vi->type ? vi->type : vl->type;
+        // 引用声明：分配槽存被引用对象地址；有初值则立即绑定
+        if (vtype && vtype->is_reference()) {
+            std::string slot = ir_.reg();
+            emit_instr(slot + " = alloca ptr");
+            ctx_.slots[vi] = slot;
+            ctx_.ref_slots[vi] = ctx_.scope_depth;
+            if (vi->init) {
+                std::string addr = eval_lvalue(vi->init);
+                if (addr.empty()) addr = eval(vi->init);
+                emit_instr("store ptr " + addr + ", ptr " + slot);
+                ctx_.ref_bound.insert(vi);
+            }
+            continue;
+        }
         Class* cls = as_class(vtype);
         if (cls) {
             auto it = classes_.find(cls);
@@ -674,7 +747,7 @@ void Translator::emit_var_decl(VarList* vl) {
             emit_instr(slot + " = alloca ptr");
             emit_instr("store ptr " + inst + ", ptr " + slot);
             ctx_.slots[vi] = slot;
-            if (!vl->modfs.has(ModfKind::Malloc)) {
+            if (!vl->specs.has(SpecKind::Malloc)) {
                 for (Decl* m : cls->members) {
                     if (m && m->kind == DeclKind::SpecialMethod) {
                         auto* sm = static_cast<SpecialMethod*>(m);
@@ -751,7 +824,8 @@ void Translator::emit_var_decl(VarList* vl) {
                                       : eval(vi->init);
             if (!converted) {
                 std::string src_t = vi->init->type ? map_type(vi->init->type) : vt;
-                if (src_t != vt) v = cast_value(v, src_t, vt);
+                if (src_t != vt) v = cast_value(v, src_t, vt,
+                    !expr_is_unsigned(vi->init->type), !expr_is_unsigned(vtype));
             }
             emit_instr("store " + vt + " " + v + ", ptr " + slot);
             if (vt == "ptr") {
@@ -927,6 +1001,8 @@ std::string Translator::eval(Expr* e) {
     if (auto* tr  = e->get_ternary())     return eval_ternary(e, tr);
     if (auto* cl  = e->get_closure())     return eval_closure(e, cl);
     if (auto* sp  = e->get_spawn())       return eval_spawn(e, sp);
+    if (auto* fr  = e->get_func_ref())
+        return "@" + IRWriter::quote(mangled_of(fr->func));
     return "0";
 }
 
@@ -945,7 +1021,15 @@ std::string Translator::eval_lvalue(Expr* e) {
         if (e->sym && e->sym->kind == SymbolKind::Variable) {
             if (auto* vi = dynamic_cast<VarItem*>(e->sym->node)) {
                 auto it = ctx_.slots.find(vi);
-                if (it != ctx_.slots.end()) return it->second;
+                if (it != ctx_.slots.end()) {
+                    // 引用变量的 lvalue 是被引用对象：槽存其地址
+                    if (ctx_.ref_bound.count(vi)) {
+                        std::string addr = ir_.reg();
+                        emit_instr(addr + " = load ptr, ptr " + it->second);
+                        return addr;
+                    }
+                    return it->second;
+                }
                 if (ctx_.current_class) {
                     auto cit = classes_.find(ctx_.current_class);
                     if (cit != classes_.end()) {
@@ -1028,13 +1112,43 @@ std::string Translator::eval_literal(Expr::Literal* lit) {
     }
 }
 
+bool Translator::is_ref_item(const VarItem* vi, Expr** target_out) const {
+    if (!vi || !vi->type) return false;
+    if (auto* r = vi->type->get_reference()) {
+        if (target_out) *target_out = r->target;
+        return true;
+    }
+    return false;
+}
+
+bool Translator::is_ref_expr(Expr* e, Expr** target_out) const {
+    if (!e) return false;
+    if (e->type && e->type->is_reference()) {
+        if (target_out) *target_out = e->type->get_reference()->target;
+        return true;
+    }
+    return false;
+}
+
 std::string Translator::eval_identifier(Expr* e, Expr::Identifier* id) {
     if (std::string(id->name) == "self" && !ctx_.self_ptr.empty())
         return ctx_.self_ptr;
+    // 函数名作为值：decay 为函数指针，取其地址
+    if (e->type && e->type->is_func_ref())
+        return "@" + IRWriter::quote(mangled_of(e->type->get_func_ref()->func));
     if (e->sym && e->sym->kind == SymbolKind::Variable) {
         if (auto* vi = dynamic_cast<VarItem*>(e->sym->node)) {
             auto it = ctx_.slots.find(vi);
             if (it != ctx_.slots.end()) {
+                // 引用变量：槽存被引用对象地址，需二次加载
+                if (ctx_.ref_bound.count(vi)) {
+                    std::string addr = ir_.reg();
+                    emit_instr(addr + " = load ptr, ptr " + it->second);
+                    std::string t = e->type ? map_type(e->type) : "i32";
+                    std::string r = ir_.reg();
+                    emit_instr(r + " = load " + t + ", ptr " + addr);
+                    return r;
+                }
                 if (as_class(e->type)) {
                     // 类实例变量：槽里存的是实例指针
                     std::string r = ir_.reg();
@@ -1095,17 +1209,20 @@ std::string Translator::eval_binary(Expr* e, Expr::Binary* b) {
     if (b->op >= OpKind::Less && b->op <= OpKind::NotEqual) {
         std::string op_t = ir_common_type(ltt, rtt);
         bool fp = ir_is_fp_type(op_t);
+        bool uns = !fp && common_unsigned(ltt, rtt, b->left->type, b->right->type);
         std::string lv = eval(b->left);
         std::string rv = eval(b->right);
-        if (ltt != op_t) lv = cast_value(lv, ltt, op_t);
-        if (rtt != op_t) rv = cast_value(rv, rtt, op_t);
+        if (ltt != op_t) lv = cast_value(lv, ltt, op_t,
+            !expr_is_unsigned(b->left->type), !uns);
+        if (rtt != op_t) rv = cast_value(rv, rtt, op_t,
+            !expr_is_unsigned(b->right->type), !uns);
         std::string res = ir_.reg();
         std::string pred;
         switch (b->op) {
-            case OpKind::Less:         pred = fp ? "fcmp olt " : "icmp slt "; break;
-            case OpKind::Greater:      pred = fp ? "fcmp ogt " : "icmp sgt "; break;
-            case OpKind::LessEqual:    pred = fp ? "fcmp ole " : "icmp sle "; break;
-            case OpKind::GreaterEqual: pred = fp ? "fcmp oge " : "icmp sge "; break;
+            case OpKind::Less:         pred = fp ? "fcmp olt " : (uns ? "icmp ult " : "icmp slt "); break;
+            case OpKind::Greater:      pred = fp ? "fcmp ogt " : (uns ? "icmp ugt " : "icmp sgt "); break;
+            case OpKind::LessEqual:    pred = fp ? "fcmp ole " : (uns ? "icmp ule " : "icmp sle "); break;
+            case OpKind::GreaterEqual: pred = fp ? "fcmp oge " : (uns ? "icmp uge " : "icmp sge "); break;
             case OpKind::Equal:        pred = fp ? "fcmp oeq " : "icmp eq ";  break;
             default:                   pred = fp ? "fcmp one " : "icmp ne ";  break;
         }
@@ -1117,10 +1234,13 @@ std::string Translator::eval_binary(Expr* e, Expr::Binary* b) {
     std::string op_t = e->type ? map_type(e->type) : ir_common_type(ltt, rtt);
     if (op_t == "i1" || op_t.empty()) op_t = ir_common_type(ltt, rtt);
     bool is_fp = ir_is_fp_type(op_t);
+    bool uns = !is_fp && common_unsigned(ltt, rtt, b->left->type, b->right->type);
     std::string lv = eval(b->left);
     std::string rv = eval(b->right);
-    if (ltt != op_t) lv = cast_value(lv, ltt, op_t);
-    if (rtt != op_t) rv = cast_value(rv, rtt, op_t);
+    if (ltt != op_t) lv = cast_value(lv, ltt, op_t,
+        !expr_is_unsigned(b->left->type), !uns);
+    if (rtt != op_t) rv = cast_value(rv, rtt, op_t,
+        !expr_is_unsigned(b->right->type), !uns);
     std::string res = ir_.reg();
     switch (b->op) {
         case OpKind::Plus:
@@ -1133,10 +1253,10 @@ std::string Translator::eval_binary(Expr* e, Expr::Binary* b) {
             emit_instr(res + " = " + (is_fp ? "fmul " : "mul ") + op_t + " " + lv + ", " + rv);
             break;
         case OpKind::Div:
-            emit_instr(res + " = " + (is_fp ? "fdiv " : "sdiv ") + op_t + " " + lv + ", " + rv);
+            emit_instr(res + " = " + (is_fp ? "fdiv " : (uns ? "udiv " : "sdiv ")) + op_t + " " + lv + ", " + rv);
             break;
         case OpKind::Mod:
-            emit_instr(res + " = srem " + op_t + " " + lv + ", " + rv);
+            emit_instr(res + " = " + (uns ? "urem " : "srem ") + op_t + " " + lv + ", " + rv);
             break;
         case OpKind::BitAnd:
             emit_instr(res + " = and " + op_t + " " + lv + ", " + rv);
@@ -1151,7 +1271,7 @@ std::string Translator::eval_binary(Expr* e, Expr::Binary* b) {
             emit_instr(res + " = shl " + op_t + " " + lv + ", " + rv);
             break;
         case OpKind::Shr:
-            emit_instr(res + " = ashr " + op_t + " " + lv + ", " + rv);
+            emit_instr(res + " = " + (uns ? "lshr " : "ashr ") + op_t + " " + lv + ", " + rv);
             break;
         default:
             emit_instr(res + " = add " + op_t + " 0, 0");
@@ -1205,6 +1325,21 @@ std::string Translator::eval_unary(Expr* e, Expr::Unary* u) {
 }
 
 std::string Translator::eval_assign(Expr::Assign* a) {
+    // 引用首次绑定：把右值的地址存入引用槽
+    if (a->target && a->target->sym) {
+        if (auto* vi = dynamic_cast<VarItem*>(a->target->sym->node)) {
+            if (is_ref_item(vi, nullptr) && !ctx_.ref_bound.count(vi)) {
+                auto it = ctx_.slots.find(vi);
+                if (it != ctx_.slots.end()) {
+                    std::string addr = eval_lvalue(a->value);
+                    if (addr.empty()) addr = eval(a->value);
+                    emit_instr("store ptr " + addr + ", ptr " + it->second);
+                    ctx_.ref_bound.insert(vi);
+                    return addr;
+                }
+            }
+        }
+    }
     std::string ptr = eval_lvalue(a->target);
     if (ptr.empty()) return "0";
     std::string t = a->target && a->target->type ? map_type(a->target->type) : "i32";
@@ -1221,7 +1356,9 @@ std::string Translator::eval_assign(Expr::Assign* a) {
         v = build_string_slice(a->value);
     else {
         v = eval(a->value);
-        if (vsrc != t) v = cast_value(v, vsrc, t);
+        if (vsrc != t) v = cast_value(v, vsrc, t,
+            !expr_is_unsigned(a->value ? a->value->type : nullptr),
+            !expr_is_unsigned(a->target ? a->target->type : nullptr));
     }
     if (a->op != OpKind::Assign) {
         std::string cur = ir_.reg();
@@ -1237,7 +1374,11 @@ std::string Translator::eval_assign(Expr::Assign* a) {
             case OpKind::OrAssign:    emit_instr(r2 + " = or " + t + " " + cur + ", " + v); break;
             case OpKind::XorAssign:   emit_instr(r2 + " = xor " + t + " " + cur + ", " + v); break;
             case OpKind::ShlAssign:   emit_instr(r2 + " = shl " + t + " " + cur + ", " + v); break;
-            case OpKind::ShrAssign:   emit_instr(r2 + " = ashr " + t + " " + cur + ", " + v); break;
+            case OpKind::ShrAssign: {
+                bool u = !ir_is_fp_type(t) && expr_is_unsigned(a->target ? a->target->type : nullptr);
+                emit_instr(r2 + " = " + (u ? "lshr " : "ashr ") + t + " " + cur + ", " + v);
+                break;
+            }
             default:                  emit_instr(r2 + " = add " + t + " " + cur + ", " + v); break;
         }
         v = r2;
@@ -1384,9 +1525,11 @@ std::string Translator::build_string_slice(Expr* lit) {
 
 std::string Translator::cast_value(const std::string& v,
                                    const std::string& src,
-                                   const std::string& dst) {
+                                   const std::string& dst,
+                                   bool src_signed,
+                                   bool dst_signed) {
     if (src == dst) return v;
-    // 切片 → 指针：取底层指针域
+    // 切片 -> 指针：取底层指针域
     if (src == "{ ptr, i32 }" && dst == "ptr") {
         std::string r0 = ir_.reg();
         emit_instr(r0 + " = extractvalue { ptr, i32 } " + v + ", 0");
@@ -1423,17 +1566,23 @@ std::string Translator::cast_value(const std::string& v,
     }
     if (is_int_n(src) && is_int_n(dst)) {
         int s = int_bits(src), d = int_bits(dst);
-        if (s < d)      emit_instr(r + " = sext " + src + " " + v + " to " + dst);
-        else if (s > d) emit_instr(r + " = trunc " + src + " " + v + " to " + dst);
-        else            return v;
+        if (s < d)
+            emit_instr(r + " = " + std::string(src_signed ? "sext " : "zext ") +
+                       src + " " + v + " to " + dst);
+        else if (s > d)
+            emit_instr(r + " = trunc " + src + " " + v + " to " + dst);
+        else
+            return v;
         return r;
     }
     if (is_int_n(src) && is_fp(dst)) {
-        emit_instr(r + " = sitofp " + src + " " + v + " to " + dst);
+        emit_instr(r + " = " + std::string(src_signed ? "sitofp " : "uitofp ") +
+                   src + " " + v + " to " + dst);
         return r;
     }
     if (is_fp(src) && is_int_n(dst)) {
-        emit_instr(r + " = fptosi " + src + " " + v + " to " + dst);
+        emit_instr(r + " = " + std::string(dst_signed ? "fptosi " : "fptoui ") +
+                   src + " " + v + " to " + dst);
         return r;
     }
     if (is_fp(src) && is_fp(dst)) {
@@ -1448,10 +1597,12 @@ std::string Translator::cast_value(const std::string& v,
 
 std::string Translator::eval_cast(Expr*, Expr::Cast* c) {
     Expr* src_expr = c->operand ? c->operand->type : nullptr;
+    Expr* dst_expr = c->target_type;
     std::string src = map_type(src_expr);
-    std::string dst = map_type(c->target_type);
+    std::string dst = map_type(dst_expr);
     std::string v = eval(c->operand);
-    return cast_value(v, src, dst);
+    return cast_value(v, src, dst,
+                      !expr_is_unsigned(src_expr), !expr_is_unsigned(dst_expr));
 }
 
 std::string Translator::emit_conversion_call(Expr* e, Conversion* cf) {
@@ -1712,7 +1863,7 @@ std::string Translator::eval_call(Expr* e, Expr::Call* c) {
         if (auto* m = callee->get_member()) {
             Expr* tgt = m->target;
             if (as_class(tgt ? tgt->type : nullptr) &&
-                !fn->modfs.has(ModfKind::Static)) {
+                !fn->specs.has(SpecKind::Static)) {
                 self_arg = eval(tgt);
                 has_self = true;
             }
@@ -1751,7 +1902,23 @@ std::string Translator::eval_call(Expr* e, Expr::Call* c) {
             v = build_string_slice(a);
         else {
             v = eval(a);
-            if (at != want) v = cast_value(v, at, want);
+            if (at != want) {
+                Expr* pt_expr = nullptr;
+                // 找到该实参对应的形参类型节点，用于取符号
+                size_t k = 0;
+                for (VarList* vl : fn->params) {
+                    if (!vl) continue;
+                    bool found = false;
+                    for (VarItem* vi : vl->vars) {
+                        if (k == ai) { pt_expr = vi->type ? vi->type : vl->type; found = true; break; }
+                        ++k;
+                    }
+                    if (found) break;
+                }
+                v = cast_value(v, at, want,
+                    !expr_is_unsigned(a ? a->type : nullptr),
+                    !expr_is_unsigned(pt_expr));
+            }
         }
         args.push_back(want + " " + v);
     }
@@ -1854,34 +2021,34 @@ std::string Translator::call_func_ptr(Expr* e, Expr::Call* c, Expr::FuncPtr* fp)
     std::string fpv = eval(c->callee);
     (void)e;
     std::string ret_t = fp->return_type ? map_type(fp->return_type) : "void";
+    bool via_reg = (ret_t != "void");
 
     std::vector<std::string> args;
-    std::string sret_slot;
-    if (ret_t != "void") {
-        sret_slot = ir_.reg();
-        emit_instr(sret_slot + " = alloca " + ret_t);
-        args.push_back("ptr sret(" + ret_t + ") " + sret_slot);
-    }
     for (size_t i = 0; i < c->args.size(); ++i) {
         Expr* a = c->args[i];
         Expr* pt_expr = i < fp->params.size() ? fp->params[i] : nullptr;
         std::string pt = pt_expr ? map_type(pt_expr) : (a && a->type ? map_type(a->type) : "i32");
         std::string v = eval_converted(a);
+        std::string at = a && a->type ? map_type(a->type) : pt;
+        bool converted = a && a->conv && a->conv->kind == DeclKind::Conversion;
+        if (!converted && at != pt)
+            v = cast_value(v, at, pt,
+                !expr_is_unsigned(a ? a->type : nullptr),
+                !expr_is_unsigned(pt_expr));
         args.push_back(pt + " " + v);
     }
 
-    std::string sig = (ret_t == "void" ? "void " : "void ") + fpv + "(";
+    std::string arglist;
     for (size_t i = 0; i < args.size(); ++i) {
-        if (i) sig += ", ";
-        sig += args[i];
+        if (i) arglist += ", ";
+        arglist += args[i];
     }
-    sig += ")";
-    emit_instr("call " + sig);
-    if (ret_t != "void") {
+    if (via_reg) {
         std::string r = ir_.reg();
-        emit_instr(r + " = load " + ret_t + ", ptr " + sret_slot);
+        emit_instr(r + " = call " + ret_t + " " + fpv + "(" + arglist + ")");
         return r;
     }
+    emit_instr("call void " + fpv + "(" + arglist + ")");
     return "0";
 }
 
@@ -1930,7 +2097,7 @@ std::string Translator::eval_spawn(Expr*, Expr::Spawn* s) {
         if (auto* m = c->callee->get_member()) {
             Expr* tgt = m->target;
             if (as_class(tgt ? tgt->type : nullptr) &&
-                !fn->modfs.has(ModfKind::Static)) {
+                !fn->specs.has(SpecKind::Static)) {
                 self_val = eval(tgt);
                 has_self = true;
             }

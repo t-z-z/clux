@@ -166,17 +166,17 @@ private:
     // 尝试分析，失败返回空指针
     Decl* parse_decl();
     std::vector<Decl*> parse_members();
-    bool parse_modifier_directive(ModfList& defaults);
-    VarList* parse_var_decl(ModfList &ml, Location &loc);
-    Func* parse_func_decl(ModfList &ml, Location &loc);
-    Class* parse_class_decl(ModfList &ml, Location &loc, std::vector<Expr*> injs = {});
-    Namespace* parse_namespace_decl(ModfList &ml, Location &loc);
-    Extern* parse_extern_decl(ModfList &ml, Location &loc);
-    Operator* parse_operator_overload(ModfList &ml, Location &loc);
-    SpecialMethod* parse_special_method_decl(ModfList &ml, Location &loc);
-    Conversion* parse_conversion_decl(ModfList &ml, Location &loc);
-    Enum* parse_enum_decl(ModfList &ml, Location &loc);
-    Keep* parse_keep_decl(ModfList &ml, Location &loc);
+    bool parse_modifier_directive(SpecList& defaults);
+    VarList* parse_var_decl(SpecList &ml, Location &loc);
+    Func* parse_func_decl(SpecList &ml, Location &loc);
+    Class* parse_class_decl(SpecList &ml, Location &loc, std::vector<Expr*> injs = {});
+    Namespace* parse_namespace_decl(SpecList &ml, Location &loc);
+    Extern* parse_extern_decl(SpecList &ml, Location &loc);
+    Operator* parse_operator_overload(SpecList &ml, Location &loc);
+    SpecialMethod* parse_special_method_decl(SpecList &ml, Location &loc);
+    Conversion* parse_conversion_decl(SpecList &ml, Location &loc);
+    Enum* parse_enum_decl(SpecList &ml, Location &loc);
+    Keep* parse_keep_decl(SpecList &ml, Location &loc);
 
     Import* parse_import();
     bool parse_using_namespace();
@@ -227,7 +227,7 @@ private:
     std::vector<Expr*> parse_type_list_in_paren();
     std::string_view parse_code();
     // 以下均可逆
-    ModfList parse_modfs();
+    SpecList parse_specs();
     OpKind parse_operator();
     Expr* parse_modification();
     template<typename T, typename F>

@@ -186,7 +186,7 @@ Decl* Parser::parse_decl() {
         && curr().kind != TokenKind::Dollar
         && curr().kind != TokenKind::BracketL
         && curr().kind != TokenKind::Hash) return nullptr;
-    ModfList ml = parse_modfs();
+    SpecList ml = parse_specs();
     auto sp = point();
     Location loc = get_loc();
     // '#mods @Class {}' 修饰注入：可逆探测，非 '@' 时退回交给类型解析
@@ -218,11 +218,11 @@ Decl* Parser::parse_decl() {
 
 // 第三层函数负责读取、确认和报错
 // 无法确认的函数只能进行可逆操作
-ModfList Parser::parse_modfs() {
-    ModfList ml;
+SpecList Parser::parse_specs() {
+    SpecList ml;
     for(;;){
-        if (curr().is_modf()) {
-            ml.set(token_to_modf(
+        if (curr().is_spec()) {
+            ml.set(token_to_spec(
                 curr().kind
             ));
             walk();
@@ -250,7 +250,7 @@ Expr* Parser::parse_modification() {
 }
 
 // 函数的识别：名称后接参数括号
-Func* Parser::parse_func_decl(ModfList &ml, Location &loc) {
+Func* Parser::parse_func_decl(SpecList &ml, Location &loc) {
     if (!curr().is_ident()) return nullptr;
     if (peek().kind != TokenKind::ParenL
         && peek().kind != TokenKind::BraceL) return nullptr;
@@ -262,7 +262,7 @@ Func* Parser::parse_func_decl(ModfList &ml, Location &loc) {
     std::vector<VarList*> returns;
     for (;;) {
         if (curr().kind == TokenKind::BraceL) break;
-        ModfList ml = parse_modfs();
+        SpecList ml = parse_specs();
         Location loc = get_loc();
         VarList* r = parse_var_decl(ml, loc);
         if (r) {
@@ -283,7 +283,7 @@ Func* Parser::parse_func_decl(ModfList &ml, Location &loc) {
 }
 
 // 变量的识别：类型或推导符加标识符
-VarList* Parser::parse_var_decl(ModfList &ml, Location &loc) {
+VarList* Parser::parse_var_decl(SpecList &ml, Location &loc) {
     Expr* type;
     auto sp = point();
     if (curr().kind == TokenKind::Let) {
@@ -325,7 +325,7 @@ VarList* Parser::parse_var_decl(ModfList &ml, Location &loc) {
     );
 }
 
-Class* Parser::parse_class_decl(ModfList &ml, Location &loc, std::vector<Expr*> injs) {
+Class* Parser::parse_class_decl(SpecList &ml, Location &loc, std::vector<Expr*> injs) {
     if (curr().kind != TokenKind::At) return nullptr;
     advance();
     std::string_view name;
@@ -336,7 +336,7 @@ Class* Parser::parse_class_decl(ModfList &ml, Location &loc, std::vector<Expr*> 
         name = curr().get_val();
         advance();
     }
-    ModfList nml = parse_modfs();
+    SpecList nml = parse_specs();
     ml.merge(nml);
     // 尾随注入：#mod 出现在类名之后、成员之前（如 `@b #qux { }`）
     std::vector<Expr*> trailing;
@@ -353,7 +353,7 @@ Class* Parser::parse_class_decl(ModfList &ml, Location &loc, std::vector<Expr*> 
     return raw;
 }
 
-Namespace* Parser::parse_namespace_decl(ModfList &ml, Location &loc) {
+Namespace* Parser::parse_namespace_decl(SpecList &ml, Location &loc) {
     if (curr().kind != TokenKind::Namespace) return nullptr;
     advance();
     if (!curr().is_ident()) {
@@ -370,17 +370,17 @@ Namespace* Parser::parse_namespace_decl(ModfList &ml, Location &loc) {
 
 std::vector<Decl*> Parser::parse_members() {
     std::vector<Decl*> members;
-    ModfList default_modfs;    // 修饰符指令（pub: / modf ...: / modf no:）作用于后续成员
+    SpecList default_specs;    // 修饰符指令（pub: / modf ...: / modf no:）作用于后续成员
     if (curr().kind == TokenKind::BraceL) {
         advance();
     }
     while (curr().kind != TokenKind::BraceR && !is_eof()) {
-        if (parse_modifier_directive(default_modfs)) {
+        if (parse_modifier_directive(default_specs)) {
             admit();
             continue;
         }
         if (Decl* d = parse_decl()) {
-            d->modfs.merge(default_modfs);
+            d->specs.merge(default_specs);
             members.push_back(d);
             admit();
         } else {
@@ -398,17 +398,17 @@ std::vector<Decl*> Parser::parse_members() {
     return members;
 }
 
-bool Parser::parse_modifier_directive(ModfList& defaults) {
+bool Parser::parse_modifier_directive(SpecList& defaults) {
     // pub:
     if (curr().kind == TokenKind::Pub && peek().kind == TokenKind::Colon) {
-        defaults.set(ModfKind::Pub);
+        defaults.set(SpecKind::Pub);
         advance(2);
         consume_statement_end();
         return true;
     }
     // priv:
     if (curr().kind == TokenKind::Priv && peek().kind == TokenKind::Colon) {
-        defaults.del(ModfKind::Pub);
+        defaults.del(SpecKind::Pub);
         advance(2);
         consume_statement_end();
         return true;
@@ -419,13 +419,13 @@ bool Parser::parse_modifier_directive(ModfList& defaults) {
         advance();
         auto sp = point();
         if (curr().kind == TokenKind::Colon) {
-            defaults = ModfList();
+            defaults = SpecList();
             advance();
             consume_statement_end();
             return true;
         }
 
-        ModfList w = parse_modfs();
+        SpecList w = parse_specs();
         if (curr().kind == TokenKind::Colon) {
             defaults = w;
             advance();
@@ -437,7 +437,7 @@ bool Parser::parse_modifier_directive(ModfList& defaults) {
     return false;
 }
 
-Operator* Parser::parse_operator_overload(ModfList &ml, Location &loc) {
+Operator* Parser::parse_operator_overload(SpecList &ml, Location &loc) {
     if (curr().kind != TokenKind::Operator) return nullptr;
     advance();
     std::string_view name = curr().get_val();
@@ -462,7 +462,7 @@ Operator* Parser::parse_operator_overload(ModfList &ml, Location &loc) {
     admit();
     std::vector<VarList*> returns;
     for (;;) {
-        ModfList ml = parse_modfs();
+        SpecList ml = parse_specs();
         Location loc = get_loc();
         VarList* r = parse_var_decl(ml, loc);
         if (r) {
@@ -500,7 +500,7 @@ OpKind Parser::parse_operator() {
     }
 }
 
-SpecialMethod* Parser::parse_special_method_decl(ModfList &ml, Location &loc) {
+SpecialMethod* Parser::parse_special_method_decl(SpecList &ml, Location &loc) {
     TokenKind tok_kind = curr().kind;
     SpecialMethod::Kind kind;
     if (tok_kind == TokenKind::Init){
@@ -532,7 +532,7 @@ SpecialMethod* Parser::parse_special_method_decl(ModfList &ml, Location &loc) {
     );
 }
 
-Conversion* Parser::parse_conversion_decl(ModfList &ml, Location &loc) {
+Conversion* Parser::parse_conversion_decl(SpecList &ml, Location &loc) {
     if (curr().kind != TokenKind::Conversion) return nullptr;
     advance();
     if (curr().kind != TokenKind::ParenL) {
@@ -543,7 +543,7 @@ Conversion* Parser::parse_conversion_decl(ModfList &ml, Location &loc) {
     admit();
     std::vector<VarList*> returns;
     for (;;) {
-        ModfList rml = parse_modfs();
+        SpecList rml = parse_specs();
         Location rloc = get_loc();
         VarList* r = parse_var_decl(rml, rloc);
         if (r) returns.push_back(r); else break;
@@ -554,7 +554,7 @@ Conversion* Parser::parse_conversion_decl(ModfList &ml, Location &loc) {
         std::move(params), std::move(returns), body);
 }
 
-Extern* Parser::parse_extern_decl(ModfList &ml, Location &loc) {
+Extern* Parser::parse_extern_decl(SpecList &ml, Location &loc) {
     if (curr().kind != TokenKind::Extern) return nullptr;
     advance();
     
@@ -587,7 +587,7 @@ Extern* Parser::parse_extern_decl(ModfList &ml, Location &loc) {
     );
 }
 
-Enum* Parser::parse_enum_decl(ModfList& ml, Location& loc) {
+Enum* Parser::parse_enum_decl(SpecList& ml, Location& loc) {
     if (curr().kind != TokenKind::Enum) return nullptr;
     advance();
     if (!curr().is_ident()) {
@@ -614,7 +614,7 @@ Enum* Parser::parse_enum_decl(ModfList& ml, Location& loc) {
     return cu_.add_node<Enum>(loc, name, std::move(ml), std::move(variants));
 }
 
-Keep* Parser::parse_keep_decl(ModfList& ml, Location& loc) {
+Keep* Parser::parse_keep_decl(SpecList& ml, Location& loc) {
     if (curr().kind != TokenKind::Keep) return nullptr;
     advance();
     std::string_view code = parse_code();
@@ -707,7 +707,7 @@ Stmt* Parser::parse_stmt() {
         auto sp = point();
         // 变量申明语句（含元类型别名 `type T = <meta-expr>` → T 为 MetaType 值变量）
         Location loc = get_loc();
-        ModfList ml = parse_modfs();
+        SpecList ml = parse_specs();
         Location l = get_loc();
         VarList* vl = parse_var_decl(ml,l);
         if (vl) {
@@ -1415,7 +1415,7 @@ Expr* Parser::parse_func_literal() {
     admit();
     std::vector<VarList*> returns;
     for (;;) {
-        ModfList ml = parse_modfs();
+        SpecList ml = parse_specs();
         Location loc = get_loc();
         VarList* r = parse_var_decl(ml, loc);
         if (r) {
@@ -1501,7 +1501,7 @@ std::vector<VarList*> Parser::parse_value_params() {
         TokenKind::ParenR,
         TokenKind::Semicolon,
         [this] {
-            ModfList ml = parse_modfs();
+            SpecList ml = parse_specs();
             Location loc = get_loc();
             return parse_var_decl(ml, loc);
         },
@@ -1594,7 +1594,7 @@ Expr* Parser::parse_type() {
         add_error("modifier type requires a value type");
         return nullptr;
     }
-    Expr* node = cu_.add_node<Expr>(loc, Expr::Modifier{std::move(layers), std::move(is_mod)});
+    Expr* node = cu_.add_node<Expr>(loc, Expr::ModifierType{std::move(layers), std::move(is_mod)});
     node->is_type = true;
     return node;
 }

@@ -2,6 +2,7 @@
 
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 #include "ast.h"
@@ -48,6 +49,10 @@ private:
         std::string ret_type;
         std::string exit_label;
         std::unordered_map<const VarItem*, std::string> slots;
+        // 已绑定的引用变量：其槽存被引用对象的地址
+        std::unordered_set<const VarItem*> ref_bound;
+        // 引用变量 → 其绑定的作用域深度，离开作用域时遗忘绑定
+        std::unordered_map<const VarItem*, int> ref_slots;
         bool term = false;
         std::vector<CleanupEntry> drops;
         int scope_depth = 0;
@@ -83,6 +88,7 @@ private:
     void emit_special(SpecialMethod& sm, Class* cls);
     void emit_class(Class* c);
     void emit_drops_to(int depth);
+    void           emit_scope_cleanup(int depth);
 
     void emit_stmt(Stmt* s);
     void emit_var_decl(VarList* vl);
@@ -119,8 +125,11 @@ private:
     int array_length_of(Expr* arrtype);
 
     std::string data_ptr_of(Expr* e);
+    bool is_ref_item(const VarItem* vi, Expr** target_out) const;
+    bool is_ref_expr(Expr* e, Expr** target_out) const;
     std::string cast_value(const std::string& v,
-                           const std::string& src, const std::string& dst);
+                           const std::string& src, const std::string& dst,
+                           bool src_signed = true, bool dst_signed = true);
     std::string emit_operator_call(Expr* e, Operator* op, Expr* lhs, Expr* rhs);
     std::string emit_conversion_call(Expr* e, Conversion* cf);
     void emit_declare(Func& f);

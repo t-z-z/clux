@@ -4,6 +4,7 @@
 #include <unordered_set>
 #include <unordered_map>
 #include <functional>
+#include <charconv>
 
 namespace cx {
 /*
@@ -62,6 +63,61 @@ static Expr* underlying_type(Expr* t) {
         t = val;
     }
     return t;
+}
+
+// 目标整数原始类型的符号性与位宽；返回 false 表示不是受检整数类型
+static bool primitive_int_range(PrimitiveTypeKind k, bool& is_signed, int& bits) {
+    switch (k) {
+        case PrimitiveTypeKind::Int8:   is_signed = true;  bits = 8;  return true;
+        case PrimitiveTypeKind::UInt8:  is_signed = false; bits = 8;  return true;
+        case PrimitiveTypeKind::Short:  is_signed = true;  bits = 16; return true;
+        case PrimitiveTypeKind::UShort: is_signed = false; bits = 16; return true;
+        case PrimitiveTypeKind::Int:    is_signed = true;  bits = 32; return true;
+        case PrimitiveTypeKind::UInt:   is_signed = false; bits = 32; return true;
+        case PrimitiveTypeKind::Long:   is_signed = true;  bits = 64; return true;
+        case PrimitiveTypeKind::ULong:  is_signed = false; bits = 64; return true;
+        default: return false;
+    }
+}
+
+// 整数字面量自身类型对应的符号性与位宽；返回 false 表示不做自身范围检查
+static bool literal_int_range(LiteralKind k, bool& is_signed, int& bits) {
+    switch (k) {
+        case LiteralKind::Int8:   is_signed = true;  bits = 8;  return true;
+        case LiteralKind::UInt8:  is_signed = false; bits = 8;  return true;
+        case LiteralKind::Short:  is_signed = true;  bits = 16; return true;
+        case LiteralKind::UShort: is_signed = false; bits = 16; return true;
+        case LiteralKind::Int:    is_signed = true;  bits = 32; return true;
+        case LiteralKind::UInt:   is_signed = false; bits = 32; return true;
+        case LiteralKind::Long:   is_signed = true;  bits = 64; return true;
+        case LiteralKind::ULong:  is_signed = false; bits = 64; return true;
+        default: return false;
+    }
+}
+
+// 解析整数字面量文本（可含进制前缀与类型后缀）为无符号值
+static bool parse_uint_literal(std::string_view text, unsigned long long& out) {
+    if (text.empty()) return false;
+    int base = 10;
+    size_t i = 0;
+    if (text.size() >= 2 && text[0] == '0') {
+        char c = text[1];
+        if      (c == 'x' || c == 'X') { base = 16; i = 2; }
+        else if (c == 'b' || c == 'B') { base = 2;  i = 2; }
+        else if (c == 'o' || c == 'O') { base = 8;  i = 2; }
+    }
+    if (i >= text.size()) return false;
+    unsigned long long v = 0;
+    auto res = std::from_chars(text.data() + i, text.data() + text.size(), v, base);
+    if (res.ec != std::errc() || res.ptr == text.data() + i) return false;
+    out = v;
+    return true;
+}
+
+// 有符号/无符号位宽可表示的最大正数值
+static unsigned long long int_max_value(bool is_signed, int bits) {
+    if (bits >= 64) return is_signed ? 0x7FFFFFFFFFFFFFFFull : 0xFFFFFFFFFFFFFFFFull;
+    return is_signed ? ((1ull << (bits - 1)) - 1) : ((1ull << bits) - 1);
 }
 
 // 浮点类型提升级：float16 < float < double
@@ -175,6 +231,9 @@ bool SemanticAnalyzer::is_same_type(Expr* a, Expr* b) {
     if (a->is_array_type() && b->is_array_type()) {
         return is_same_type(a->get_array_type()->element,
                             b->get_array_type()->element);
+    }
+    if (a->is_func_ref() && b->is_func_ref()) {
+        return a->get_func_ref()->func == b->get_func_ref()->func;
     }
     if (a->is_func_ptr() && b->is_func_ptr()) {
         auto* fa = a->get_func_ptr();
@@ -365,7 +424,7 @@ void SemanticAnalyzer::collect_decl(Decl* decl, bool default_public) {
             auto* vl = static_cast<VarList*>(decl);
             for (auto* var : vl->vars) {
                 Symbol sym(SymbolKind::Variable, var);
-                sym.modfs = &vl->modfs;
+                sym.specs = &vl->specs;
                 sym.default_public = default_public;
                 if (!symbols_.insert_member(std::string(var->name), std::move(sym))) {
                     error(vl->loc, "duplicate declaration of variable '" + std::string(var->name) + "'");
@@ -395,7 +454,7 @@ void SemanticAnalyzer::collect_decl(Decl* decl, bool default_public) {
             } else {
                 Symbol* sym = symbols_.insert_and_push(name, Symbol(SymbolKind::Class, cls));
                 if (sym) {
-                    sym->modfs = &cls->modfs;
+                    sym->specs = &cls->specs;
                     sym->default_public = default_public;
                     sym->node = cls;
                 }
@@ -420,7 +479,7 @@ void SemanticAnalyzer::collect_decl(Decl* decl, bool default_public) {
             } else {
                 Symbol* sym = symbols_.insert_and_push(name, Symbol(SymbolKind::Namespace, ns));
                 if (sym) {
-                    sym->modfs = &ns->modfs;
+                    sym->specs = &ns->specs;
                     sym->default_public = default_public;
                     sym->node = ns;
                 }
@@ -455,7 +514,7 @@ void SemanticAnalyzer::collect_decl(Decl* decl, bool default_public) {
             e->scope = enum_scope;
             if (parent && !existing) {
                 Symbol sym(SymbolKind::Enum, e, enum_scope);
-                sym.modfs = &e->modfs;
+                sym.specs = &e->specs;
                 sym.default_public = default_public;
                 symbols_.insert_member(ename, std::move(sym));
             }
@@ -496,7 +555,7 @@ void SemanticAnalyzer::register_func(Func& f, bool default_public) {
         return;
     }
     Symbol sym(SymbolKind::Function, &f);
-    sym.modfs = &f.modfs;
+    sym.specs = &f.specs;
     sym.default_public = default_public;
     symbols_.insert_member(key, std::move(sym));
 }
@@ -520,7 +579,7 @@ void SemanticAnalyzer::register_special(SpecialMethod& sm, bool default_public) 
     }
 
     Symbol sym(SymbolKind::Function, &sm);
-    sym.modfs = &sm.modfs;
+    sym.specs = &sm.specs;
     sym.default_public = default_public;
     symbols_.insert_member(internal_name, std::move(sym));
 }
@@ -562,7 +621,10 @@ std::string SemanticAnalyzer::type_to_key(Expr& t) {
     if (t.is_array_type()) {
         auto* arr = t.get_array_type();
         std::string elem_ir = arr->element ? type_to_key(*arr->element) : "i8";
-        return "[" + elem_ir + "]";
+        std::string len_ir = "x";
+        if (arr->length && arr->length->is_literal())
+            len_ir = std::string(arr->length->get_literal()->value);
+        return "[" + elem_ir + ";" + len_ir + "]";
     }
     if (t.is_func_ptr()) {
         auto* f = t.get_func_ptr();
@@ -710,6 +772,20 @@ void SemanticAnalyzer::visit_var_list(VarList& vl) {
         if (!var || !var->init || !var->init->type) continue;
         Expr* dt = var->type ? var->type : vl.type;
         if (!dt || dt->is_inferred()) continue;
+        // 引用声明：初值即绑定，绑定源必须是同目标类型的 lvalue；
+        // 无初值表示先声明后绑定。绑定不走常规值转换。
+        if (dt->is_reference()) {
+            Expr* tgt = dt->get_reference()->target;
+            if (var->init) {
+                if (!var->init->is_lvalue)
+                    error(var->init->loc,
+                          "reference must be initialized with an lvalue");
+                else if (var->init->type && tgt &&
+                         !is_same_type(var->init->type, tgt))
+                    error(var->init->loc, "reference target type mismatch");
+            }
+            continue;
+        }
         // 返回变量不接受数组/字符串字面量：栈存储返回后悬垂
         bool lit_slice = var->init->is_array() ||
             (var->init->type && var->init->type->is_string_literal_type());
@@ -730,6 +806,7 @@ void SemanticAnalyzer::visit_var_list(VarList& vl) {
             // 字符串字面量初值：只检查长度，保留其类型供 translator 生成切片
             check_array_len_fit(var->init, dt, "declared", var->init->loc);
         }
+        check_literal_range(var->init, dt, "initialization", var->init->loc);
         if (is_same_type(var->init->type, dt)) continue;
         // 隐式转换优先匹配 conversion
         if (Symbol* conv = find_conversion(*var->init->type, *dt)) {
@@ -739,8 +816,9 @@ void SemanticAnalyzer::visit_var_list(VarList& vl) {
         check_conversion(var->init->type, dt, "initialization", var->init->loc);
     }
     for (VarItem* var : vl.vars) {
+        if (!var->type) var->type = vl.type;
         Symbol sym(SymbolKind::Variable, var);
-        sym.modfs = &vl.modfs;
+        sym.specs = &vl.specs;
         sym.default_public = true;
         if (!symbols_.insert_local(var->name, std::move(sym))) {
             error(var->loc, "duplicate variable '" + std::string(var->name) + "'");
@@ -775,6 +853,21 @@ void SemanticAnalyzer::visit_expr_literal(Expr::Literal& lit) {
         #define X(l,name) case LiteralKind::name: current_expr->type = type##name; break;
         LITERAL_MAPPING
         #undef X
+    }
+    // 字面量自身类型范围检查：仅对显式带后缀的字面量（如 300i8）生效，
+    // 无后缀字面量的"自身类型"只是词法默认，其范围由目标类型的转换检查负责。
+    // IntLiteral 既可能是无后缀十进制数，也可能是显式 i32/i，靠字面量文本区分。
+    bool has_suffix = (lit.kind != LiteralKind::Int);
+    if (!has_suffix) {
+        for (char c : lit.value)
+            if (c == 'i' || c == 'I') { has_suffix = true; break; }
+    }
+    bool ls = false; int lb = 0;
+    if (has_suffix && literal_int_range(lit.kind, ls, lb)) {
+        unsigned long long v = 0;
+        if (parse_uint_literal(lit.value, v) && v > int_max_value(ls, lb))
+            error(current_expr->loc, "integer literal " + std::string(lit.value) +
+                  " is out of range for its type");
     }
     current_expr->is_lvalue = false;
 }
@@ -811,7 +904,10 @@ void SemanticAnalyzer::visit_expr_identifier(Expr::Identifier& id) {
     Symbol* sym = symbols_.lookup_local(id.name);
     if (sym) {
         current_expr->sym = sym;
-        current_expr->type = sym->get_type();
+        Expr* st = sym->get_type();
+        // 读取引用变量即读取被引用对象：隐式解引用为其目标类型
+        if (st && st->is_reference()) st = st->get_reference()->target;
+        current_expr->type = st;
         current_expr->is_lvalue = (sym->kind == SymbolKind::Variable);
         return;
     }
@@ -892,6 +988,9 @@ Symbol* SemanticAnalyzer::find_conversion(Expr& src, Expr& dst) {
 
 bool SemanticAnalyzer::can_convert_to(Expr* src, Expr* dst) {
     if (!src || !dst) return false;
+    src = underlying_type(src);
+    dst = underlying_type(dst);
+    if (!src || !dst) return false;
     if (is_same_type(src, dst)) return true;
 
     // 数值类型之间可隐式转换
@@ -933,6 +1032,36 @@ bool SemanticAnalyzer::can_convert_to(Expr* src, Expr* dst) {
                 k == PrimitiveTypeKind::Int8 || k == PrimitiveTypeKind::UInt8 ||
                 is_void_type(pointee))
                 return true;
+        }
+    }
+
+    // 函数 decay：函数引用 → 同签名函数指针
+    if (src->is_func_ref() && dst->is_func_ptr()) {
+        Func* f = src->get_func_ref()->func;
+        auto* fp = dst->get_func_ptr();
+        if (f) {
+            std::vector<Expr*> params;
+            for (VarList* vl : f->params) {
+                if (!vl) continue;
+                for (VarItem* vi : vl->vars)
+                    if (vi && vi->type) params.push_back(vi->type);
+            }
+            if (params.size() == fp->params.size()) {
+                bool ok = true;
+                for (size_t i = 0; i < params.size(); ++i)
+                    if (!is_same_type(params[i], fp->params[i])) { ok = false; break; }
+                if (ok) {
+                    Expr* ret = typeVoid;
+                    if (!f->returns.empty() && f->returns.back() &&
+                        f->returns.back()->type)
+                        ret = f->returns.back()->type;
+                    // 函数指针 ABI：void 无返回，否则寄存器返回，
+                    // 故仅 void 返回或标量寄存器返回的函数可 decay
+                    if (is_same_type(ret, fp->return_type) &&
+                        (is_void_type(ret) || f->ret_via_reg))
+                        return true;
+                }
+            }
         }
     }
 
@@ -1034,14 +1163,70 @@ void SemanticAnalyzer::check_array_len_fit(Expr* src, Expr* dst_type,
     }
 }
 
+// 整数字面量在转换到目标整数类型时是否溢出
+void SemanticAnalyzer::check_literal_range(Expr* value, Expr* dst,
+                                           const std::string& context,
+                                           const Location& loc) {
+    if (!value || !value->is_literal() || !dst) return;
+    Expr* ud = underlying_type(dst);
+    if (!ud || !ud->is_primitive()) return;
+    bool dst_signed = false; int dst_bits = 0;
+    if (!primitive_int_range(ud->get_primitive()->kind, dst_signed, dst_bits))
+        return;
+    auto* lit = value->get_literal();
+    bool lit_signed = false; int lit_bits = 0;
+    if (!literal_int_range(lit->kind, lit_signed, lit_bits)) return;
+    unsigned long long v = 0;
+    if (!parse_uint_literal(lit->value, v)) return;
+    if (v > int_max_value(dst_signed, dst_bits)) {
+        error(loc, "integer literal " + std::string(lit->value) +
+                   " is out of range for " + type_to_key(*dst) +
+                   " in " + context);
+    }
+}
+
+// 形参定长时强制实参数组长度相同；形参未定长时实参长度任意。
+// 数组字面量实参不受此限（允许按目标长度补齐）。
+void SemanticAnalyzer::check_param_array_len(Expr* arg, Expr* at, Expr* pt,
+                                             const Location& loc) {
+    if (!at || !pt) return;
+    if (!pt->is_array_type() || !at->is_array_type()) return;
+    if (arg && arg->is_array()) return;  // 字面量：按目标长度补齐
+    Expr* plen = pt->get_array_type()->length;
+    Expr* alen = at->get_array_type()->length;
+    if (!plen || !plen->is_literal()) return;  // 形参未定长
+    if (!alen || !alen->is_literal()) {
+        error(loc, "array argument length must be known when parameter "
+                   "length is fixed");
+        return;
+    }
+    if (std::string(plen->get_literal()->value) !=
+        std::string(alen->get_literal()->value)) {
+        error(loc, "array argument length " +
+              std::string(alen->get_literal()->value) +
+              " does not match parameter length " +
+              std::string(plen->get_literal()->value));
+    }
+}
+
 bool SemanticAnalyzer::check_conversion(Expr* src, Expr* dst, const std::string& context,
                                         const Location& loc, bool explicit_cast) {
     if (!src || !dst) return false;
     if (is_same_type(src, dst)) return true;
     if (has_conversion(src, dst)) return true;
     if (explicit_cast) {
-        warning(loc, "explicit cast between incompatible types in " + context);
-        return true;
+        // 仅当显式 cast 能落到确定语义时才放行；否则报错，避免生成非法 IR
+        Expr* us = underlying_type(src);
+        Expr* ud = underlying_type(dst);
+        bool base_same = us && ud && is_same_type(us, ud);
+        bool both_ptr = us && ud && (us->is_pointer() || us->is_reference()) &&
+                        (ud->is_pointer() || ud->is_reference());
+        if (base_same || both_ptr) {
+            warning(loc, "explicit cast between incompatible types in " + context);
+            return true;
+        }
+        error(loc, "cannot cast between incompatible types in " + context);
+        return false;
     }
     error(loc, "cannot implicitly convert between incompatible types in " + context);
     return false;
@@ -1217,6 +1402,12 @@ void SemanticAnalyzer::visit_expr_assign(Expr::Assign& a) {
     }
 
     Expr* lt = a.target->type;
+    // 引用目标的赋值写入被引用对象，按被引用类型判定
+    if (a.target->sym) {
+        Expr* dt = a.target->sym->get_type();
+        if (dt && dt->is_reference()) lt = dt->get_reference()->target;
+    }
+    if (lt && lt->is_reference()) lt = lt->get_reference()->target;
     Expr* rt = a.value->type;
 
     // 返回变量不接受数组/字符串字面量：字面量存储留在函数栈上，返回后指针悬垂
@@ -1232,6 +1423,7 @@ void SemanticAnalyzer::visit_expr_assign(Expr::Assign& a) {
     }
     // 赋值统一走 = 的转换判定
     check_array_len_fit(a.value, lt, "target", current_expr->loc);
+    check_literal_range(a.value, lt, "assignment", current_expr->loc);
     // 记录隐式 conversion，供 translator 派发
     if (rt && lt && !is_same_type(rt, lt)) {
         if (Symbol* conv = find_conversion(*rt, *lt))
@@ -1455,6 +1647,10 @@ void SemanticAnalyzer::check_call_args(const std::vector<VarList*>& params_lists
         Expr* at = args[i] ? args[i]->type : nullptr;
         if (!at || !params[i]) continue;
         check_array_len_fit(args[i], params[i], "parameter",
+                            args[i] ? args[i]->loc : loc);
+        check_param_array_len(args[i], at, params[i],
+                              args[i] ? args[i]->loc : loc);
+        check_literal_range(args[i], params[i], "argument passing",
                             args[i] ? args[i]->loc : loc);
         // 记录隐式 conversion，供 translator 派发
         if (!is_same_type(at, params[i])) {
@@ -1832,7 +2028,7 @@ void SemanticAnalyzer::visit_type_reference(Expr::Reference&) {}
 void SemanticAnalyzer::visit_type_string_literal(Expr::StringLiteralType&) {
     // StringLiteral is a valid type, no additional checks needed
 }
-void SemanticAnalyzer::visit_type_modifier(Expr::Modifier&) {}
+void SemanticAnalyzer::visit_type_modifier(Expr::ModifierType&) {}
 
 // 组合类型成员查找：层从左到右，左侧优先
 Symbol* SemanticAnalyzer::lookup_member_on_type(Expr* type, const std::string& field, Scope** found_scope) {
@@ -1869,7 +2065,7 @@ Expr* SemanticAnalyzer::clone_type(Expr* t) {
         std::vector<Expr*> layers;
         layers.reserve(m->layers.size());
         for (auto* l : m->layers) layers.push_back(clone_type(l));
-        Expr* n = cu_.add_node<Expr>(loc, Expr::Modifier{std::move(layers), m->is_mod});
+        Expr* n = cu_.add_node<Expr>(loc, Expr::ModifierType{std::move(layers), m->is_mod});
         n->is_type = true;
         return n;
     }
@@ -2003,7 +2199,7 @@ VarList* SemanticAnalyzer::clone_varlist(VarList* vl) {
         vars.push_back(cu_.add_node<VarItem>(
             vi->loc, vi->name, clone_expr(vi->init), t));
     }
-    return cu_.add_node<VarList>(vl->loc, vl->modfs, t, std::move(vars));
+    return cu_.add_node<VarList>(vl->loc, vl->specs, t, std::move(vars));
 }
 
 Func* SemanticAnalyzer::clone_func(Func* f) {
@@ -2013,7 +2209,7 @@ Func* SemanticAnalyzer::clone_func(Func* f) {
     std::vector<VarList*> returns;
     returns.reserve(f->returns.size());
     for (auto* r : f->returns) returns.push_back(clone_varlist(r));
-    return cu_.add_node<Func>(f->loc, f->name, f->modfs,
+    return cu_.add_node<Func>(f->loc, f->name, f->specs,
         std::move(params), std::move(returns), clone_stmt(f->body));
 }
 
@@ -2332,6 +2528,16 @@ void SemanticAnalyzer::init_expr(InitCtx& ctx, Expr* e) {
     }
     if (auto* a = e->get_assign()) {
         init_expr(ctx, a->value);
+        // 引用首次绑定：目标尚未绑定时右值必须是 lvalue
+        if (a->target && a->target->sym) {
+            Expr* tt = a->target->sym->get_type();
+            if (tt && tt->is_reference() &&
+                !ctx.assigned.count(a->target->sym)) {
+                if (!a->value || !a->value->is_lvalue)
+                    error(a->value ? a->value->loc : e->loc,
+                          "reference must be bound to an lvalue");
+            }
+        }
         init_assign_target(ctx, a->target);
         return;
     }
@@ -2418,7 +2624,7 @@ Decl* SemanticAnalyzer::clone_decl(Decl* d) {
         case DeclKind::Operator: {
             auto* op = static_cast<Operator*>(d);
             Func* f = clone_func(op);
-            return cu_.add_node<Operator>(op->loc, op->op, op->name, op->modfs,
+            return cu_.add_node<Operator>(op->loc, op->op, op->name, op->specs,
                 f->params, f->returns, f->body);
         }
         case DeclKind::SpecialMethod: {
@@ -2426,7 +2632,7 @@ Decl* SemanticAnalyzer::clone_decl(Decl* d) {
             std::vector<VarList*> params;
             params.reserve(sm->params.size());
             for (auto* p : sm->params) params.push_back(clone_varlist(p));
-            return cu_.add_node<SpecialMethod>(sm->loc, sm->kind, sm->modfs,
+            return cu_.add_node<SpecialMethod>(sm->loc, sm->kind, sm->specs,
                 clone_stmt(sm->body), std::move(params));
         }
         case DeclKind::Conversion: {
@@ -2435,19 +2641,19 @@ Decl* SemanticAnalyzer::clone_decl(Decl* d) {
             for (auto* p : cf->params) params.push_back(clone_varlist(p));
             std::vector<VarList*> returns;
             for (auto* r : cf->returns) returns.push_back(clone_varlist(r));
-            return cu_.add_node<Conversion>(cf->loc, cf->name, cf->modfs,
+            return cu_.add_node<Conversion>(cf->loc, cf->name, cf->specs,
                 std::move(params), std::move(returns), clone_stmt(cf->body));
         }
         case DeclKind::Keep: {
             auto* k = static_cast<Keep*>(d);
-            return cu_.add_node<Keep>(k->loc, k->code, k->modfs);
+            return cu_.add_node<Keep>(k->loc, k->code, k->specs);
         }
         case DeclKind::Class: {
             auto* c = static_cast<Class*>(d);
             std::vector<Decl*> members;
             members.reserve(c->members.size());
             for (auto* m : c->members) members.push_back(clone_decl(m));
-            return cu_.add_node<Class>(c->loc, c->name, c->modfs, std::move(members));
+            return cu_.add_node<Class>(c->loc, c->name, c->specs, std::move(members));
         }
         case DeclKind::Enum: {
             auto* e = static_cast<Enum*>(d);
@@ -2456,7 +2662,7 @@ Decl* SemanticAnalyzer::clone_decl(Decl* d) {
             for (auto* v : e->variants) {
                 variants.push_back(cu_.add_node<EnumVariant>(v->loc, v->name));
             }
-            return cu_.add_node<Enum>(e->loc, e->name, e->modfs, std::move(variants));
+            return cu_.add_node<Enum>(e->loc, e->name, e->specs, std::move(variants));
         }
         default:
             return d;
@@ -2521,7 +2727,7 @@ void SemanticAnalyzer::expand_class(Class* cls, Scope* parent_scope) {
             error(cls->loc, "redefinition of class '" + name + "'");
         } else {
             Symbol sym(SymbolKind::Class, cls);
-            sym.modfs = &cls->modfs;
+            sym.specs = &cls->specs;
             sym.scope = cls_scope;
             sym.node = cls;
             parent_scope->insert_member(name, std::move(sym));

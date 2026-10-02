@@ -41,7 +41,7 @@ struct Symbol {
     // 声明所在作用域；当前作用域不在 root->...->current 路径上时访问控制生效
     Scope* decl_scope = nullptr;
     // 声明的修饰符（VarItem 借其所属 VarList 的），访问控制与 const 直接查此
-    ModfList* modfs = nullptr;
+    SpecList* specs = nullptr;
     // 未显式 pub/priv 时的容器默认：类成员默认私有，其余默认公开
     bool default_public = true;
 
@@ -82,15 +82,15 @@ struct Symbol {
 
     // 有效访问级别：priv > readonly > pub > default
     Access access_level() const {
-        if (modfs) {
-            if (modfs->has(ModfKind::Priv))     return Access::Private;
-            if (modfs->has(ModfKind::Readonly)) return Access::Readonly;
-            if (modfs->has(ModfKind::Pub))      return Access::Public;
+        if (specs) {
+            if (specs->has(SpecKind::Priv))     return Access::Private;
+            if (specs->has(SpecKind::Readonly)) return Access::Readonly;
+            if (specs->has(SpecKind::Pub))      return Access::Public;
         }
         return default_public ? Access::Public : Access::Private;
     }
     bool is_const() const {
-        return modfs && modfs->has(ModfKind::Const);
+        return specs && specs->has(SpecKind::Const);
     }
 
     template<typename T>
@@ -351,7 +351,7 @@ public:
     void visit_type_reference(Expr::Reference&) override;
     void visit_type_inferred(Expr::Inferred&) override;
     void visit_type_void(Expr::Void&) override;
-    void visit_type_modifier(Expr::Modifier&) override;
+    void visit_type_modifier(Expr::ModifierType&) override;
     void visit_type_string_literal(Expr::StringLiteralType&) override;
 
 private:
@@ -380,6 +380,11 @@ private:
                          const Location& loc, bool explicit_cast = false);
     // 数组字面量/字符串字面量的编译期元素数不得超过目标数组类型的长度约束
     void check_array_len_fit(Expr* src, Expr* dst_type, const std::string& context,
+                             const Location& loc);
+    // 形参定长时强制实参数组长度相同；形参未定长时实参长度任意
+    void check_param_array_len(Expr* arg, Expr* at, Expr* pt, const Location& loc);
+    // 整数字面量在转换到目标整数类型时是否溢出
+    void check_literal_range(Expr* value, Expr* dst, const std::string& context,
                              const Location& loc);
 
     // 类型判断
