@@ -75,7 +75,7 @@ private:
     void           emit_guard_call(SpecialMethod* sm, const std::string& val);
     void           emit_bind_ref(Class* cls, const std::string& val,
                                  SpecialMethod::Kind k);
-    void           register_deref(const std::string& slot, Class* cls);
+    void           register_deref(const std::string& slot, Class* cls, int depth = -1);
 
     std::string map_type(Expr* t);
     Class* as_class(Expr* t);
@@ -121,7 +121,7 @@ private:
     std::string eval_identifier(Expr* e, Expr::Identifier* id);
     std::string eval_binary(Expr* e, Expr::Binary* b);
     std::string eval_unary(Expr* e, Expr::Unary* u);
-    std::string eval_assign(Expr::Assign* a);
+    std::string eval_assign(Expr* e, Expr::Assign* a);
     std::string eval_call(Expr* e, Expr::Call* c);
     std::string eval_index(Expr* e, Expr::Index* ix);
     std::string eval_member(Expr* e, Expr::Member* m);

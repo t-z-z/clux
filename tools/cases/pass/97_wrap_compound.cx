@@ -1,0 +1,15 @@
+@rc {
+    int cnt = 0
+    REF { }
+    DEREF { }
+}
+malloc #rc #int @rcInt{}
+bump(rcInt-* p) {
+    p-*+=1
+}
+main() {
+    rcInt a = 1
+    bump(a-&)
+    int v = a
+    a.free()
+}

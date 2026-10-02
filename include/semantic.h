@@ -374,6 +374,8 @@ private:
     bool can_convert_to(Expr* src, Expr* dst);
     // 基础类型来源的包装类判定；非包装类返回 nullptr
     Class* wrap_class_of(Expr* t);
+    // 任意类（含非包装类）的解析
+    Class* wrap_or_plain_class(Expr* t);
     // 包装类的承载类型表达式
     Expr* wrap_base_type(Class* c);
     bool has_conversion(Expr* src, Expr* dst);
