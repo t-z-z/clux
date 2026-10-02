@@ -1,0 +1,10 @@
+#int @rcInt{}
+#long @rcLong{}
+main(){
+    rcInt a = 1
+    rcLong b = 2
+    long x = a
+    int y = b
+    rcLong c = a
+    rcInt d = b
+}

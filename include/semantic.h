@@ -351,7 +351,6 @@ public:
     void visit_type_reference(Expr::Reference&) override;
     void visit_type_inferred(Expr::Inferred&) override;
     void visit_type_void(Expr::Void&) override;
-    void visit_type_modifier(Expr::ModifierType&) override;
     void visit_type_string_literal(Expr::StringLiteralType&) override;
 
 private:
@@ -369,11 +368,18 @@ private:
     std::string build_callkey(const std::string& name, const std::vector<VarList*>& params);
     std::string build_callkey(const std::string& name, const std::vector<Expr*>& args);
     
-    Symbol* find_operator_overload(OpKind op, Expr& type, Expr& other);
+    Symbol* find_operator_overload(OpKind op, Expr& type, Expr& other,
+                                   Expr** matched_param = nullptr);
     Symbol* find_operator_overload(OpKind op, Expr& type);
     bool can_convert_to(Expr* src, Expr* dst);
+    // 基础类型来源的包装类判定；非包装类返回 nullptr
+    Class* wrap_class_of(Expr* t);
+    // 包装类的承载类型表达式
+    Expr* wrap_base_type(Class* c);
     bool has_conversion(Expr* src, Expr* dst);
     Symbol* find_conversion(Expr& src, Expr& dst);
+    // 记录隐式转换（conversion 函数或包装转换）到表达式上；已处理返回 true
+    bool record_conversion(Expr* e, Expr* dst);
     std::string build_conv_key(Func& f);
     // = 赋值、() 传参、cast 转换三种情形共用的转换判定入口
     bool check_conversion(Expr* src, Expr* dst, const std::string& context,
@@ -406,6 +412,8 @@ private:
     void collect_rest();
     void collect_rest_decl(Decl* decl, Scope* parent_scope);
     void expand_class(Class* cls, Scope* parent_scope);
+    // 基础类型来源合成：返回一个仅含承载字段的临时 Class，供注入合并
+    Class* make_base_source(PrimitiveTypeKind base, const Location& loc);
     void process_using_namespaces();
     void collect_decl(Decl* decl, bool default_public);
     void register_func(Func& f, bool default_public);

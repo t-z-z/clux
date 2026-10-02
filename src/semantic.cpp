@@ -37,31 +37,11 @@ static Scope* scope_of_named_type(Expr* t) {
     return nullptr;
 }
 
-// 从解析后的类型节点取成员作用域，组合类型逐层展开
 static Scope* named_type_scope(Expr* t) {
-    if (!t) return nullptr;
-    if (t->is_modifier()) {
-        auto* m = t->get_modifier();
-        for (size_t i = 0; i < m->layers.size(); ++i) {
-            if (!m->is_mod[i]) continue;
-            if (Scope* s = scope_of_named_type(m->layers[i])) return s;
-        }
-        return nullptr;
-    }
     return scope_of_named_type(t);
 }
 
-// 组合类型中承载值的层（唯一的非修饰层），逐层剥去修饰
 static Expr* underlying_type(Expr* t) {
-    while (t && t->is_modifier()) {
-        auto* m = t->get_modifier();
-        Expr* val = nullptr;
-        for (size_t i = 0; i < m->layers.size(); ++i) {
-            if (!m->is_mod[i]) { val = m->layers[i]; break; }
-        }
-        if (!val || val == t) break;
-        t = val;
-    }
     return t;
 }
 
@@ -187,17 +167,6 @@ bool SemanticAnalyzer::is_condition_type(Expr* t) {
 bool SemanticAnalyzer::is_same_type(Expr* a, Expr* b) {
     if (!a && !b) return true;
     if (!a || !b) return false;
-    // 双方都带修饰：逐层比较；仅一方带修饰：剥离修饰层后按值类型比较
-    if (a->is_modifier() && b->is_modifier()) {
-        auto* ma = a->get_modifier();
-        auto* mb = b->get_modifier();
-        if (ma->layers.size() != mb->layers.size()) return false;
-        for (size_t i = 0; i < ma->layers.size(); ++i) {
-            if (ma->is_mod[i] != mb->is_mod[i]) return false;
-            if (!is_same_type(ma->layers[i], mb->layers[i])) return false;
-        }
-        return true;
-    }
     a = underlying_type(a);
     b = underlying_type(b);
     // StringLiteral 与 char[] 视为同类
@@ -808,11 +777,8 @@ void SemanticAnalyzer::visit_var_list(VarList& vl) {
         }
         check_literal_range(var->init, dt, "initialization", var->init->loc);
         if (is_same_type(var->init->type, dt)) continue;
-        // 隐式转换优先匹配 conversion
-        if (Symbol* conv = find_conversion(*var->init->type, *dt)) {
-            var->init->conv = conv->get_decl();
-            continue;
-        }
+        // 隐式转换优先匹配 conversion / 包装转换
+        if (record_conversion(var->init, dt)) continue;
         check_conversion(var->init->type, dt, "initialization", var->init->loc);
     }
     for (VarItem* var : vl.vars) {
@@ -952,7 +918,8 @@ void SemanticAnalyzer::visit_expr_identifier(Expr::Identifier& id) {
     error(current_expr->loc, "undefined identifier '" + std::string(id.name) + "'");
 }
 
-Symbol* SemanticAnalyzer::find_operator_overload(OpKind op, Expr& type, Expr& other) {
+Symbol* SemanticAnalyzer::find_operator_overload(OpKind op, Expr& type, Expr& other,
+                                                 Expr** matched_param) {
     std::string opstr = std::string(opkind_to_sv(op));
     std::string otherkey = type_to_key(other);
     Symbol* sym = symbols_.lookup_member(opstr + "_" + type_to_key(type) + otherkey);
@@ -961,7 +928,27 @@ Symbol* SemanticAnalyzer::find_operator_overload(OpKind op, Expr& type, Expr& ot
     Scope* scope = static_cast<Class*>(type.resolved_decl)->scope;
     if (!scope) return nullptr;
     Symbol* cls_sym = scope->lookup_member(opstr + "_" + otherkey);
-    return cls_sym;
+    if (cls_sym) return cls_sym;
+
+    // 退化匹配：精确未命中时，扫描同类操作符，找 other 可转换过去的形参
+    std::string prefix = opstr + "_";
+    for (auto& [key, member] : scope->members) {
+        if (key.size() <= prefix.size() || key.compare(0, prefix.size(), prefix) != 0)
+            continue;
+        if (member.kind != SymbolKind::Function) continue;
+        auto* opd = dynamic_cast<Operator*>(member.get_decl());
+        if (!opd || opd->op != op) continue;
+        if (opd->params.empty() || !opd->params[0]) continue;
+        VarList* pl = opd->params[0];
+        if (pl->vars.empty() || !pl->vars[0]) continue;
+        Expr* pt = pl->vars[0]->type ? pl->vars[0]->type : pl->type;
+        if (!pt) continue;
+        if (is_same_type(&other, pt) || can_convert_to(&other, pt)) {
+            if (matched_param) *matched_param = pt;
+            return &member;
+        }
+    }
+    return nullptr;
 }
 
 Symbol* SemanticAnalyzer::find_operator_overload(OpKind op, Expr& type) {
@@ -975,6 +962,21 @@ Symbol* SemanticAnalyzer::find_operator_overload(OpKind op, Expr& type) {
     return cls_sym;
 }
 
+bool SemanticAnalyzer::record_conversion(Expr* e, Expr* dst) {
+    if (!e || !e->type || !dst) return false;
+    if (is_same_type(e->type, dst)) return true;
+    if (Symbol* conv = find_conversion(*e->type, *dst)) {
+        e->conv = conv->get_decl();
+        return true;
+    }
+    // 包装类参与：记隐式转换目标，translator 走解包/打包 + 数值 cast
+    if (wrap_class_of(dst) || wrap_class_of(e->type)) {
+        e->implicit_to = dst;
+        return true;
+    }
+    return false;
+}
+
 Symbol* SemanticAnalyzer::find_conversion(Expr& src, Expr& dst) {
     std::string srckey = type_to_key(src);
     std::string dstkey = type_to_key(dst);
@@ -984,6 +986,22 @@ Symbol* SemanticAnalyzer::find_conversion(Expr& src, Expr& dst) {
     Scope* scope = static_cast<Class*>(src.resolved_decl)->scope;
     if (!scope) return nullptr;
     return scope->lookup_member("conversion_" + dstkey);
+}
+
+Class* SemanticAnalyzer::wrap_class_of(Expr* t) {
+    t = underlying_type(t);
+    if (!t || !t->is_type) return nullptr;
+    if (!t->resolved_decl || t->resolved_decl->kind != DeclKind::Class)
+        return nullptr;
+    auto* c = static_cast<Class*>(t->resolved_decl);
+    if (c->base_source == PrimitiveTypeKind::Void) return nullptr;
+    return c;
+}
+
+Expr* SemanticAnalyzer::wrap_base_type(Class* c) {
+    Expr* e = cu_.add_node<Expr>(c->loc, Expr::Primitive{c->base_source});
+    e->is_type = true;
+    return e;
 }
 
 bool SemanticAnalyzer::can_convert_to(Expr* src, Expr* dst) {
@@ -1067,6 +1085,16 @@ bool SemanticAnalyzer::can_convert_to(Expr* src, Expr* dst) {
 
     // conversion：全局有参形式或源类无参形式
     if (find_conversion(*src, *dst)) return true;
+
+    // 包装特判：目标为包装类则比承载类型；源为包装类则比承载类型
+    if (Class* dw = wrap_class_of(dst)) {
+        Expr* bt = wrap_base_type(dw);
+        if (can_convert_to(src, bt)) return true;
+    }
+    if (Class* sw = wrap_class_of(src)) {
+        Expr* bt = wrap_base_type(sw);
+        if (can_convert_to(bt, dst)) return true;
+    }
 
     return false;
 }
@@ -1237,12 +1265,17 @@ void SemanticAnalyzer::visit_expr_binary(Expr::Binary& b) {
     Expr* rt = b.right ? b.right->type : nullptr;
     if (!lt || !rt) return;
 
-    if (Symbol* s = find_operator_overload(b.op, *lt, *rt)) {
+    Expr* matched_param = nullptr;
+    if (Symbol* s = find_operator_overload(b.op, *lt, *rt, &matched_param)) {
         Expr* overload_ret = typeVoid;
         if (auto* op = s->get<Operator>()) {
             if (!op->returns.empty() && op->returns.back() && op->returns.back()->type)
                 overload_ret = op->returns.back()->type;
         }
+        // 退化匹配命中的形参类型与实参不一致时记录隐式转换
+        if (matched_param && b.right && b.right->type &&
+            !is_same_type(b.right->type, matched_param))
+            record_conversion(b.right, matched_param);
         current_expr->type = overload_ret;
         current_expr->sym = s;
         current_expr->is_lvalue = false;
@@ -1424,10 +1457,13 @@ void SemanticAnalyzer::visit_expr_assign(Expr::Assign& a) {
     // 赋值统一走 = 的转换判定
     check_array_len_fit(a.value, lt, "target", current_expr->loc);
     check_literal_range(a.value, lt, "assignment", current_expr->loc);
-    // 记录隐式 conversion，供 translator 派发
+    // 记录隐式 conversion / 包装转换，供 translator 派发
     if (rt && lt && !is_same_type(rt, lt)) {
-        if (Symbol* conv = find_conversion(*rt, *lt))
-            a.value->conv = conv->get_decl();
+        if (record_conversion(a.value, lt)) {
+            current_expr->type = lt;
+            current_expr->is_lvalue = false;
+            return;
+        }
     }
     check_conversion(rt, lt, "assignment", current_expr->loc);
 
@@ -1652,10 +1688,9 @@ void SemanticAnalyzer::check_call_args(const std::vector<VarList*>& params_lists
                               args[i] ? args[i]->loc : loc);
         check_literal_range(args[i], params[i], "argument passing",
                             args[i] ? args[i]->loc : loc);
-        // 记录隐式 conversion，供 translator 派发
+        // 记录隐式 conversion / 包装转换，供 translator 派发
         if (!is_same_type(at, params[i])) {
-            if (Symbol* conv = find_conversion(*at, *params[i]))
-                args[i]->conv = conv->get_decl();
+            if (record_conversion(args[i], params[i])) continue;
         }
         check_conversion(at, params[i], "argument passing",
                          args[i] ? args[i]->loc : loc);
@@ -1794,12 +1829,7 @@ void SemanticAnalyzer::visit_expr_member(Expr::Member& m) {
     
     std::string field = std::string(m.member);
 
-    Symbol* member = nullptr;
-    if (m.target->type && m.target->type->is_modifier()) {
-        member = lookup_member_on_type(m.target->type, field, nullptr);
-    } else {
-        member = SymbolTable::lookup_member_in(target_scope, field);
-    }
+    Symbol* member = SymbolTable::lookup_member_in(target_scope, field);
     if (member) {
         current_expr->sym = member;
         check_access(member, current_expr->loc);
@@ -2028,25 +2058,9 @@ void SemanticAnalyzer::visit_type_reference(Expr::Reference&) {}
 void SemanticAnalyzer::visit_type_string_literal(Expr::StringLiteralType&) {
     // StringLiteral is a valid type, no additional checks needed
 }
-void SemanticAnalyzer::visit_type_modifier(Expr::ModifierType&) {}
-
-// 组合类型成员查找：层从左到右，左侧优先
 Symbol* SemanticAnalyzer::lookup_member_on_type(Expr* type, const std::string& field, Scope** found_scope) {
     if (found_scope) *found_scope = nullptr;
     if (!type) return nullptr;
-    if (type->is_modifier()) {
-        auto* m = type->get_modifier();
-        for (size_t i = 0; i < m->layers.size(); ++i) {
-            if (!m->is_mod[i]) continue;
-            Scope* s = scope_of_named_type(m->layers[i]);
-            if (!s) continue;
-            if (Symbol* sym = s->lookup_member(field)) {
-                if (found_scope) *found_scope = s;
-                return sym;
-            }
-        }
-        return nullptr;
-    }
     Scope* s = named_type_scope(type);
     if (found_scope) *found_scope = s;
     return s ? s->lookup_member(field) : nullptr;
@@ -2061,14 +2075,6 @@ void SemanticAnalyzer::visit_type_inferred(Expr::Inferred&) {}
 Expr* SemanticAnalyzer::clone_type(Expr* t) {
     if (!t) return nullptr;
     Location loc = t->loc;
-    if (auto* m = t->get_modifier()) {
-        std::vector<Expr*> layers;
-        layers.reserve(m->layers.size());
-        for (auto* l : m->layers) layers.push_back(clone_type(l));
-        Expr* n = cu_.add_node<Expr>(loc, Expr::ModifierType{std::move(layers), m->is_mod});
-        n->is_type = true;
-        return n;
-    }
     if (auto* p = t->get_primitive()) return cu_.add_node<Expr>(loc, Expr::Primitive{p->kind});
     if (t->is_string_literal_type()) return cu_.add_node<Expr>(loc, Expr::StringLiteralType{});
     if (t->is_void()) return cu_.add_node<Expr>(loc, Expr::Void{});
@@ -2624,8 +2630,11 @@ Decl* SemanticAnalyzer::clone_decl(Decl* d) {
         case DeclKind::Operator: {
             auto* op = static_cast<Operator*>(d);
             Func* f = clone_func(op);
-            return cu_.add_node<Operator>(op->loc, op->op, op->name, op->specs,
-                f->params, f->returns, f->body);
+            auto* cloned = cu_.add_node<Operator>(op->loc, op->op, op->name,
+                op->specs, f->params, f->returns, f->body);
+            cloned->synthesized = op->synthesized;
+            cloned->ret_via_reg = op->ret_via_reg;
+            return cloned;
         }
         case DeclKind::SpecialMethod: {
             auto* sm = static_cast<SpecialMethod*>(d);
@@ -2706,6 +2715,84 @@ void SemanticAnalyzer::collect_rest_decl(Decl* decl, Scope* parent_scope) {
 
 // 展开类的修饰注入（前置 > 自身 > 尾随），再注册成员；来源必须在类所在 scope 中解析。
 // expand_state_ 兼顾缓存与环检测：1=展开中，2=已完成。
+Class* SemanticAnalyzer::make_base_source(PrimitiveTypeKind base,
+                                        const Location& loc) {
+    auto* synth = cu_.add_node<Class>(loc, "__base", SpecList{},
+        std::vector<Decl*>{});
+    synth->base_source = base;
+
+    auto mk_type = [&]() {
+        Expr* ty = cu_.add_node<Expr>(loc, Expr::Primitive{base});
+        ty->is_type = true;
+        return ty;
+    };
+    auto mk_param = [&](std::string_view nm, Expr* t) {
+        auto* vi = cu_.add_node<VarItem>(loc, nm, nullptr, t);
+        return cu_.add_node<VarList>(loc, SpecList{}, t,
+            std::vector<VarItem*>{vi});
+    };
+
+    // 承载字段 __value：类布局首字段，不可直接访问
+    Expr* vt = mk_type();
+    auto* vvi = cu_.add_node<VarItem>(loc, "__value", nullptr, vt);
+    synth->members.push_back(cu_.add_node<VarList>(loc, SpecList{}, vt,
+        std::vector<VarItem*>{vvi}));
+
+    // 二元算术/位运算：returns=[承载类型]
+    static const OpKind bin_ops[] = {
+        OpKind::Plus, OpKind::Minus, OpKind::Mul, OpKind::Div, OpKind::Mod,
+        OpKind::BitOr, OpKind::BitAnd, OpKind::BitXor,
+        OpKind::Shl, OpKind::Shr,
+    };
+    for (OpKind op : bin_ops) {
+        auto* op_node = cu_.add_node<Operator>(loc, op, opkind_to_sv(op),
+            SpecList{},
+            std::vector<VarList*>{mk_param("other", mk_type())},
+            std::vector<VarList*>{mk_param("r", mk_type())},
+            nullptr);
+        op_node->synthesized = true;
+        op_node->ret_via_reg = true;
+        synth->members.push_back(op_node);
+    }
+
+    // 二元比较：returns=[bool]
+    static const OpKind cmp_ops[] = {
+        OpKind::Less, OpKind::Greater, OpKind::LessEqual, OpKind::GreaterEqual,
+        OpKind::Equal, OpKind::NotEqual,
+    };
+    for (OpKind op : cmp_ops) {
+        Expr* bt = cu_.add_node<Expr>(loc, Expr::Primitive{PrimitiveTypeKind::Bool});
+        bt->is_type = true;
+        auto* op_node = cu_.add_node<Operator>(loc, op, opkind_to_sv(op),
+            SpecList{},
+            std::vector<VarList*>{mk_param("other", mk_type())},
+            std::vector<VarList*>{mk_param("r", bt)},
+            nullptr);
+        op_node->synthesized = true;
+        op_node->ret_via_reg = true;
+        synth->members.push_back(op_node);
+    }
+
+    // 一元操作符：params=[]（self 隐含）
+    auto make_unary = [&](OpKind op, PrimitiveTypeKind ret_kind) {
+        Expr* rt = cu_.add_node<Expr>(loc, Expr::Primitive{ret_kind});
+        rt->is_type = true;
+        auto* op_node = cu_.add_node<Operator>(loc, op, opkind_to_sv(op),
+            SpecList{},
+            std::vector<VarList*>{},
+            std::vector<VarList*>{mk_param("r", rt)},
+            nullptr);
+        op_node->synthesized = true;
+        op_node->ret_via_reg = true;
+        synth->members.push_back(op_node);
+    };
+    make_unary(OpKind::Minus, base);
+    make_unary(OpKind::Not, PrimitiveTypeKind::Bool);
+    make_unary(OpKind::BitNot, base);
+
+    return synth;
+}
+
 void SemanticAnalyzer::expand_class(Class* cls, Scope* parent_scope) {
     if (!cls) return;
 
@@ -2742,6 +2829,8 @@ void SemanticAnalyzer::expand_class(Class* cls, Scope* parent_scope) {
 
     auto resolve = [&](Expr* mod) -> Class* {
         if (!mod) return nullptr;
+        if (auto* p = mod->get_primitive())
+            return make_base_source(p->kind, mod->loc);
         auto* id = mod->get_identifier();
         if (!id) return nullptr;
         Symbol* sym = SymbolTable::lookup_member_up(search_scope, std::string(id->name));
@@ -2794,6 +2883,16 @@ void SemanticAnalyzer::expand_class(Class* cls, Scope* parent_scope) {
         }
     }
     cls->members = std::move(result);
+
+    // 基础类型来源标记传播：取第一个非 Void 的来源
+    if (cls->base_source == PrimitiveTypeKind::Void) {
+        for (Class* src : sources) {
+            if (src->base_source != PrimitiveTypeKind::Void) {
+                cls->base_source = src->base_source;
+                break;
+            }
+        }
+    }
 
     if (cls->scope) {
         symbols_.push_scope(std::string(cls->name));

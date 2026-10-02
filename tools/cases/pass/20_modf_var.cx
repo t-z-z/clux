@@ -1,4 +1,6 @@
 @rc { int n = 0 }
+#rc #int @Wrapped {}
 main() {
-    #rc int a = 1
+    Wrapped a = 1
+    int b = a
 }

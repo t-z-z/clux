@@ -103,6 +103,17 @@ private:
 
     std::string eval(Expr* e);
     std::string eval_converted(Expr* e);
+    // 该表达式是否需要走 eval_converted（conversion 函数或包装转换）
+    static bool needs_convert(Expr* e);
+    // 包装类隐式转换的 IR：解包 -> 数值 cast -> 打包
+    std::string emit_wrap_convert(Expr* e);
+    // 合成操作符的函数体 IR：解包 __value -> 运算 -> 打包返回
+    void emit_synth_operator(Func& f, Class* cls, VarItem* ret_var);
+    // 合成操作符的函数体 IR：解包 __value -> 运算 -> 打包返回
+    Class* as_wrap_class(Expr* t);
+    static std::string base_ir_of(PrimitiveTypeKind k);
+    // 类实例的字节大小（供 @malloc 分配）
+    size_t type_size(const std::string& llvm_name) const;
     std::string eval_cond(Expr* e);
     std::string to_bool(Expr* e, const std::string& v);
     std::string eval_lvalue(Expr* e);

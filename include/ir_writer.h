@@ -52,6 +52,7 @@ public:
     void emit_header();
     void need_pthread() { uses_pthread_ = true; }
     void need_malloc()  { uses_malloc_ = true; }
+    void need_free()    { uses_free_ = true; }
     void emit_type(const std::string& s) { header_ << s << '\n'; }
     void emit_module_tail(const std::string& s) { tail_ << s << '\n'; }
     void flush();
@@ -68,6 +69,7 @@ private:
     int next_reg_ = 0;
     bool uses_pthread_ = false;
     bool uses_malloc_ = false;
+    bool uses_free_ = false;
     int next_label_ = 0;
     int next_str_ = 0;
     std::vector<int> reg_stack_;

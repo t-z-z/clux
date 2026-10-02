@@ -32,19 +32,7 @@ std::string ir_common_type(const std::string& a, const std::string& b) {
     return a;
 }
 
-// 剥离修饰层，取承载值的类型节点
 Expr* strip_modifiers(Expr* t) {
-    while (t && t->is_modifier()) {
-        auto* m = t->get_modifier();
-        Expr* val = nullptr;
-        for (int i = (int)m->layers.size() - 1; i >= 0; --i) {
-            if (i < (int)m->is_mod.size() && m->is_mod[i]) continue;
-            val = m->layers[i];
-            break;
-        }
-        if (!val || val == t) break;
-        t = val;
-    }
     return t;
 }
 
@@ -171,13 +159,7 @@ std::string Translator::mangled_of(Decl* d) const {
 
 std::string Translator::type_key(Expr* t) {
     if (!t) return "void";
-    if (auto* m = t->get_modifier()) {
-        for (int i = (int)m->layers.size() - 1; i >= 0; --i) {
-            if (i < (int)m->is_mod.size() && m->is_mod[i]) continue;
-            Expr* layer = m->layers[i];
-            if (layer) return type_key(layer);
-        }
-        return "void";
+    {
     }
     if (t->get_primitive()) return map_type(t);
     if (auto* p = t->get_pointer())   return "P_" + type_key(p->pointee);
@@ -289,17 +271,6 @@ void Translator::collect_classes_decl(Decl* d) {
 
 Class* Translator::as_class(Expr* t) {
     if (!t) return nullptr;
-    if (auto* m = t->get_modifier()) {
-        // 承载层：最后一个非 mod 层
-        for (int i = (int)m->layers.size() - 1; i >= 0; --i) {
-            if (i < (int)m->is_mod.size() && m->is_mod[i]) continue;
-            Expr* layer = m->layers[i];
-            if (layer && layer->resolved_decl &&
-                layer->resolved_decl->kind == DeclKind::Class)
-                return static_cast<Class*>(layer->resolved_decl);
-        }
-        return nullptr;
-    }
     if (t->resolved_decl && t->resolved_decl->kind == DeclKind::Class)
         return static_cast<Class*>(t->resolved_decl);
     return nullptr;
@@ -548,8 +519,7 @@ void Translator::emit_func(Func& f, Class* cls) {
         std::string vt = (rv == ret_var)
             ? ret_t : (rv->type ? map_type(rv->type) : "i32");
         if (vt == "void") continue;
-        bool converted = rv->init->conv &&
-            rv->init->conv->kind == DeclKind::Conversion;
+        bool converted = needs_convert(rv->init);
         std::string v = converted ? eval_converted(rv->init) : eval(rv->init);
         if (!converted) {
             std::string src_t = rv->init->type ? map_type(rv->init->type) : vt;
@@ -559,6 +529,9 @@ void Translator::emit_func(Func& f, Class* cls) {
         emit_instr("store " + vt + " " + v + ", ptr " + sit->second);
     }
 
+    if (cls && f.kind == DeclKind::Operator &&
+        static_cast<Operator*>(&f)->synthesized)
+        emit_synth_operator(f, cls, ret_var);
     if (f.body) emit_stmt(f.body);
 
     if (main_with_ret) {
@@ -668,6 +641,92 @@ void Translator::emit_class(Class* c) {
 
 // 语句
 
+void Translator::emit_synth_operator(Func& f, Class* cls, VarItem* ret_var) {
+    auto* op = static_cast<Operator*>(&f);
+    std::string base_ir = base_ir_of(cls->base_source);
+    auto it = classes_.find(cls);
+    std::string cls_ir = (it != classes_.end()) ? it->second.llvm_name
+                                                 : "%" + mangled_of(cls);
+    int idx = 0;
+    if (it != classes_.end()) {
+        auto fi = it->second.field_index.find("__value");
+        if (fi != it->second.field_index.end()) idx = fi->second;
+    }
+    std::string self = ctx_.self_ptr.empty() ? "%self" : ctx_.self_ptr;
+    std::string addr = ir_.reg();
+    emit_instr(addr + " = getelementptr " + cls_ir + ", ptr " + self +
+               ", i32 0, i32 " + std::to_string(idx));
+    std::string lv = ir_.reg();
+    emit_instr(lv + " = load " + base_ir + ", ptr " + addr);
+
+    OpKind k = op->op;
+    bool is_cmp = (k == OpKind::Less || k == OpKind::Greater ||
+                   k == OpKind::LessEqual || k == OpKind::GreaterEqual ||
+                   k == OpKind::Equal || k == OpKind::NotEqual);
+    bool is_unary = op->params.empty();
+
+    std::string result;
+    if (is_unary) {
+        std::string r = ir_.reg();
+        if (k == OpKind::Minus)
+            emit_instr(r + " = sub " + base_ir + " 0, " + lv);
+        else if (k == OpKind::Not)
+            emit_instr(r + " = icmp eq " + base_ir + " " + lv + ", 0");
+        else if (k == OpKind::BitNot)
+            emit_instr(r + " = xor " + base_ir + " " + lv + ", -1");
+        result = r;
+    } else {
+        VarItem* avi = nullptr;
+        for (auto* vl : op->params) {
+            for (auto* vi : vl->vars) { avi = vi; break; }
+            if (avi) break;
+        }
+        if (!avi) return;
+        auto sit = ctx_.slots.find(avi);
+        if (sit == ctx_.slots.end()) return;
+        std::string rv = ir_.reg();
+        emit_instr(rv + " = load " + base_ir + ", ptr " + sit->second);
+        std::string res = ir_.reg();
+        if (is_cmp) {
+            std::string pred = "eq";
+            switch (k) {
+                case OpKind::Less:         pred = "slt"; break;
+                case OpKind::Greater:      pred = "sgt"; break;
+                case OpKind::LessEqual:    pred = "sle"; break;
+                case OpKind::GreaterEqual: pred = "sge"; break;
+                case OpKind::Equal:        pred = "eq";  break;
+                default:                   pred = "ne";  break;
+            }
+            emit_instr(res + " = icmp " + pred + " " + base_ir + " " + lv + ", " + rv);
+        } else {
+            std::string opc = "add";
+            switch (k) {
+                case OpKind::Plus:   opc = "add";  break;
+                case OpKind::Minus:  opc = "sub";  break;
+                case OpKind::Mul:    opc = "mul";  break;
+                case OpKind::Div:    opc = "sdiv"; break;
+                case OpKind::Mod:    opc = "srem"; break;
+                case OpKind::BitAnd: opc = "and";  break;
+                case OpKind::BitOr:  opc = "or";   break;
+                case OpKind::BitXor: opc = "xor";  break;
+                case OpKind::Shl:    opc = "shl";  break;
+                case OpKind::Shr:    opc = "ashr"; break;
+                default: break;
+            }
+            emit_instr(res + " = " + opc + " " + base_ir + " " + lv + ", " + rv);
+        }
+        result = res;
+    }
+
+    if (!result.empty() && ret_var) {
+        auto sit = ctx_.slots.find(ret_var);
+        if (sit != ctx_.slots.end()) {
+            std::string ret_ir = ret_var->type ? map_type(ret_var->type) : base_ir;
+            emit_instr("store " + ret_ir + " " + result + ", ptr " + sit->second);
+        }
+    }
+}
+
 void Translator::emit_stmt(Stmt* s) {
     if (!s) return;
     std::visit([this](auto& v) {
@@ -739,6 +798,11 @@ void Translator::emit_var_decl(VarList* vl) {
             std::string inst;
             if (vi->init) {
                 inst = eval_converted(vi->init);
+            } else if (cls->specs.has(SpecKind::Malloc)) {
+                ir_.need_malloc();
+                inst = ir_.reg();
+                emit_instr(inst + " = call ptr @malloc(i64 " +
+                           std::to_string(type_size(it->second.llvm_name)) + ")");
             } else {
                 inst = ir_.reg();
                 emit_instr(inst + " = alloca " + it->second.llvm_name);
@@ -818,8 +882,7 @@ void Translator::emit_var_decl(VarList* vl) {
             continue;
         }
         if (vi->init) {
-            bool converted = vi->init->conv &&
-                vi->init->conv->kind == DeclKind::Conversion;
+            bool converted = needs_convert(vi->init);
             std::string v = converted ? eval_converted(vi->init)
                                       : eval(vi->init);
             if (!converted) {
@@ -1007,9 +1070,124 @@ std::string Translator::eval(Expr* e) {
 }
 
 // 值位置求值：需要隐式 conversion 时派发到转换函数，否则常规求值
+std::string Translator::base_ir_of(PrimitiveTypeKind k) {
+    switch (k) {
+        case PrimitiveTypeKind::Int8:
+        case PrimitiveTypeKind::UInt8:
+        case PrimitiveTypeKind::Char:
+        case PrimitiveTypeKind::UChar:    return "i8";
+        case PrimitiveTypeKind::Short:
+        case PrimitiveTypeKind::UShort:   return "i16";
+        case PrimitiveTypeKind::Int:
+        case PrimitiveTypeKind::UInt:     return "i32";
+        case PrimitiveTypeKind::Long:
+        case PrimitiveTypeKind::ULong:    return "i64";
+        case PrimitiveTypeKind::Int128:
+        case PrimitiveTypeKind::UInt128:  return "i128";
+        case PrimitiveTypeKind::Float16:  return "half";
+        case PrimitiveTypeKind::Float:    return "float";
+        case PrimitiveTypeKind::Double:   return "double";
+        case PrimitiveTypeKind::Bool:     return "i1";
+        default:                          return "i32";
+    }
+}
+
+Class* Translator::as_wrap_class(Expr* t) {
+    Class* c = as_class(t);
+    if (!c) return nullptr;
+    if (c->base_source == PrimitiveTypeKind::Void) return nullptr;
+    return c;
+}
+
+// 隐式包装/解包：源或目标为包装类，先解包到承载类型，数值 cast，再打包
+std::string Translator::emit_wrap_convert(Expr* e) {
+    Expr* src_t = e->type;
+    Expr* dst_t = e->implicit_to;
+    Class* sw = as_wrap_class(src_t);
+    Class* dw = as_wrap_class(dst_t);
+
+    std::string v;
+    std::string src_ir;
+    if (sw) {
+        std::string inst = eval(e);
+        std::string base_ir = base_ir_of(sw->base_source);
+        auto it = classes_.find(sw);
+        std::string cls_ir = (it != classes_.end()) ? it->second.llvm_name
+                                                     : "%" + mangled_of(sw);
+        int idx = 0;
+        if (it != classes_.end()) {
+            auto fi = it->second.field_index.find("__value");
+            if (fi != it->second.field_index.end()) idx = fi->second;
+        }
+        std::string addr = ir_.reg();
+        emit_instr(addr + " = getelementptr " + cls_ir + ", ptr " + inst +
+                   ", i32 0, i32 " + std::to_string(idx));
+        v = ir_.reg();
+        emit_instr(v + " = load " + base_ir + ", ptr " + addr);
+        src_ir = base_ir;
+    } else {
+        v = eval(e);
+        src_ir = src_t ? map_type(src_t) : "i32";
+    }
+
+    Expr* target_t = dw ? nullptr : dst_t;
+    std::string dst_ir = dw ? base_ir_of(dw->base_source)
+                            : (target_t ? map_type(target_t) : src_ir);
+
+    if (src_ir != dst_ir) {
+        bool su = sw ? false : !expr_is_unsigned(src_t);
+        bool du = dw ? false : !expr_is_unsigned(dst_t);
+        v = cast_value(v, src_ir, dst_ir, su, du);
+    }
+
+    if (dw) {
+        auto it = classes_.find(dw);
+        std::string cls_ir = (it != classes_.end()) ? it->second.llvm_name
+                                                     : "%" + mangled_of(dw);
+        int idx = 0;
+        if (it != classes_.end()) {
+            auto fi = it->second.field_index.find("__value");
+            if (fi != it->second.field_index.end()) idx = fi->second;
+        }
+        std::string slot = ir_.reg();
+        emit_instr(slot + " = alloca " + cls_ir);
+        std::string addr = ir_.reg();
+        emit_instr(addr + " = getelementptr " + cls_ir + ", ptr " + slot +
+                   ", i32 0, i32 " + std::to_string(idx));
+        emit_instr("store " + dst_ir + " " + v + ", ptr " + addr);
+        return slot;
+    }
+    return v;
+}
+
+size_t Translator::type_size(const std::string& llvm_name) const {
+    for (auto& [cls, info] : classes_) {
+        if (info.llvm_name != llvm_name) continue;
+        size_t total = 0;
+        for (auto& f : info.fields) {
+            const std::string& t = f.ir_type;
+            if (t == "i1" || t == "i8") total += 1;
+            else if (t == "i16" || t == "half") total += 2;
+            else if (t == "i32" || t == "float") total += 4;
+            else if (t == "i64" || t == "double" || t == "ptr") total += 8;
+            else if (t == "i128") total += 16;
+            else total += 8;
+        }
+        return total == 0 ? 1 : total;
+    }
+    return 1;
+}
+
+bool Translator::needs_convert(Expr* e) {
+    return e && ((e->conv && e->conv->kind == DeclKind::Conversion) ||
+                 e->implicit_to);
+}
+
 std::string Translator::eval_converted(Expr* e) {
     if (e && e->conv && e->conv->kind == DeclKind::Conversion)
         return emit_conversion_call(e, static_cast<Conversion*>(e->conv));
+    if (e && e->implicit_to)
+        return emit_wrap_convert(e);
     return eval(e);
 }
 
@@ -1347,8 +1525,7 @@ std::string Translator::eval_assign(Expr::Assign* a) {
     std::string v;
     std::string vsrc = a->value && a->value->type
         ? map_type(a->value->type) : t;
-    bool converted = a->value && a->value->conv &&
-        a->value->conv->kind == DeclKind::Conversion;
+    bool converted = needs_convert(a->value);
     if (converted)
         v = eval_converted(a->value);
     else if (t == "{ ptr, i32 }" && a->value && a->value->type &&
@@ -1779,8 +1956,16 @@ std::string Translator::eval_call(Expr* e, Expr::Call* c) {
         if (cls) {
             auto it = classes_.find(cls);
             if (it != classes_.end()) {
-                std::string slot = ir_.reg();
-                emit_instr(slot + " = alloca " + it->second.llvm_name);
+                std::string slot;
+                if (cls->specs.has(SpecKind::Malloc)) {
+                    ir_.need_malloc();
+                    slot = ir_.reg();
+                    emit_instr(slot + " = call ptr @malloc(i64 " +
+                               std::to_string(type_size(it->second.llvm_name)) + ")");
+                } else {
+                    slot = ir_.reg();
+                    emit_instr(slot + " = alloca " + it->second.llvm_name);
+                }
                 return slot;
             }
         }
@@ -1796,14 +1981,21 @@ std::string Translator::eval_call(Expr* e, Expr::Call* c) {
             if (!cls) return "0";
             auto it = classes_.find(cls);
             if (it == classes_.end()) return "0";
-            std::string slot = ir_.reg();
-            emit_instr(slot + " = alloca " + it->second.llvm_name);
+            std::string slot;
+            if (cls->specs.has(SpecKind::Malloc)) {
+                ir_.need_malloc();
+                slot = ir_.reg();
+                emit_instr(slot + " = call ptr @malloc(i64 " +
+                           std::to_string(type_size(it->second.llvm_name)) + ")");
+            } else {
+                slot = ir_.reg();
+                emit_instr(slot + " = alloca " + it->second.llvm_name);
+            }
             std::vector<std::string> args;
             args.push_back("ptr " + slot);
             size_t ai = 0;
             for (Expr* a : c->args) {
-                bool converted = a && a->conv &&
-                    a->conv->kind == DeclKind::Conversion;
+                bool converted = needs_convert(a);
                 std::string v = converted ? eval_converted(a) : eval(a);
                 std::string at = a && a->type ? map_type(a->type) : "i32";
                 if (converted) {
@@ -1893,8 +2085,7 @@ std::string Translator::eval_call(Expr* e, Expr::Call* c) {
         std::string at = a && a->type ? map_type(a->type) : "i32";
         std::string want = ai < param_ir.size() ? param_ir[ai] : at;
         std::string v;
-        bool converted = a && a->conv &&
-            a->conv->kind == DeclKind::Conversion;
+        bool converted = needs_convert(a);
         if (converted)
             v = eval_converted(a);
         else if (want == "{ ptr, i32 }" && a && a->type &&
@@ -2030,7 +2221,7 @@ std::string Translator::call_func_ptr(Expr* e, Expr::Call* c, Expr::FuncPtr* fp)
         std::string pt = pt_expr ? map_type(pt_expr) : (a && a->type ? map_type(a->type) : "i32");
         std::string v = eval_converted(a);
         std::string at = a && a->type ? map_type(a->type) : pt;
-        bool converted = a && a->conv && a->conv->kind == DeclKind::Conversion;
+        bool converted = needs_convert(a);
         if (!converted && at != pt)
             v = cast_value(v, at, pt,
                 !expr_is_unsigned(a ? a->type : nullptr),

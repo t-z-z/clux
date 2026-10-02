@@ -237,8 +237,15 @@ Expr* Parser::parse_modification() {
     if (curr().kind != TokenKind::Hash) return nullptr;
     Location loc = get_loc();
     walk();
+    if (curr().is_type()) {
+        PrimitiveTypeKind kind = token_to_primitive_type(curr().kind);
+        walk();
+        Expr* mod = cu_.add_node<Expr>(loc, Expr::Primitive{kind});
+        mod->is_type = true;
+        return mod;
+    }
     if (!curr().is_ident()) {
-        add_error("expected identifier after '#'");
+        add_error("expected identifier or base type after '#'");
         return nullptr;
     }
     std::string_view name = curr().get_val();
@@ -1557,46 +1564,8 @@ Expr* Parser::parse_type_atom() {
     return parse_postfix(t, true);
 }
 
-// 类型：'#mod T' 组合类型，层从左到右，冲突时左侧优先
 Expr* Parser::parse_type() {
-    if (curr().kind != TokenKind::Hash) {
-        return parse_type_atom();
-    }
-    Location loc = get_loc();
-    std::vector<Expr*> layers;
-    std::vector<bool> is_mod;
-    bool has_value = false;
-    for (;;) {
-        if (curr().kind == TokenKind::Hash) {
-            Location hloc = get_loc();
-            walk();
-            if (!curr().is_ident()) {
-                add_error("expected modifier name after '#'");
-                return nullptr;
-            }
-            std::string_view name = curr().get_val();
-            walk();
-            Expr* mod = cu_.add_node<Expr>(hloc, Expr::Identifier{name});
-            mod->is_type = true;
-            layers.push_back(mod);
-            is_mod.push_back(true);
-            continue;
-        }
-        if (has_value) break;
-        Expr* base = parse_type_atom();
-        if (!base) break;
-        layers.push_back(base);
-        is_mod.push_back(false);
-        has_value = true;
-    }
-    if (layers.empty()) return nullptr;
-    if (!has_value) {
-        add_error("modifier type requires a value type");
-        return nullptr;
-    }
-    Expr* node = cu_.add_node<Expr>(loc, Expr::ModifierType{std::move(layers), std::move(is_mod)});
-    node->is_type = true;
-    return node;
+    return parse_type_atom();
 }
 
 Expr* Parser::parse_primitive_type() {

@@ -259,10 +259,6 @@ struct Expr : ASTNode {
     struct Closure      { std::vector<VarList*> params; std::vector<VarList*> returns;
                         Stmt* body = nullptr; };
     struct Spawn        { Expr* call; };
-    // 组合类型：层从左到右，冲突时左侧优先（左侧覆盖右侧）
-    // is_mod[i] 为真表示 layers[i] 是 #修饰层（贡献成员、不承载值）
-    struct ModifierType     { std::vector<Expr*> layers; std::vector<bool> is_mod; };
-
     struct Primitive        { PrimitiveTypeKind kind; };
     struct Pointer          { Expr* pointee; };
     struct ArrayType        { Expr* element; Expr* length; };
@@ -277,7 +273,7 @@ struct Expr : ASTNode {
     using Variant = std::variant<
         Literal, Identifier, Binary, Unary, Assign,
         Call, Ternary, Index, Member,
-        Cast, Array, Closure, Spawn, ModifierType,
+        Cast, Array, Closure, Spawn,
         Primitive, Pointer, ArrayType, StringLiteralType,
         FuncPtr, FuncRef, Reference, Inferred, Void, Null
     >;
@@ -294,6 +290,8 @@ struct Expr : ASTNode {
     Scope* resolved_scope = nullptr;
     // 该表达式需经 conversion 转换到目标类型时，指向对应的 Conversion 声明
     Decl* conv = nullptr;
+    // 隐式数值/包装转换的目标类型：translator 据此生成解包/打包与数值 cast
+    Expr* implicit_to = nullptr;
     
     Expr() = default;
     Expr(const Location& l, Variant v) : ASTNode(l), data(std::move(v))  {}
@@ -310,7 +308,6 @@ struct Expr : ASTNode {
     BBB(array, Array, Expr)
     BBB(closure, Closure, Expr)
     BBB(spawn, Spawn, Expr)
-    BBB(modifier, ModifierType, Expr)
     BBB(primitive, Primitive, Expr)
     BBB(pointer, Pointer, Expr)
     BBB(array_type, ArrayType, Expr)
@@ -326,7 +323,7 @@ struct Expr : ASTNode {
     bool is_type_node() const {
         return is_type || is_primitive() || is_pointer() || is_array_type() ||
                is_string_literal_type() || is_func_ptr() || is_func_ref() ||
-               is_reference() || is_inferred() || is_void() || is_modifier();
+               is_reference() || is_inferred() || is_void();
     }
 };
 
@@ -448,6 +445,8 @@ struct Func : Decl {
 
 struct Operator : Func {
     OpKind op;
+    // 由基础类型来源自动派发：body 置空，translator 走解包/运算/打包路径
+    bool synthesized = false;
     Operator() = default;
     Operator(
         const Location& loc, 
@@ -496,6 +495,8 @@ struct Class : Cont {
     // 优先级从左到右递减：前置 > 基类 > 尾随。
     std::vector<Expr*> injects;
     std::vector<Expr*> trailing_injects;
+    // 基础类型来源标记：#int 注入时记为 Int，非基础类型来源保持 Void
+    PrimitiveTypeKind base_source = PrimitiveTypeKind::Void;
     Class(const Location &loc,
         std::string_view name,
         SpecList ml,
@@ -653,7 +654,6 @@ struct ASTVisitor {
     virtual void visit_type_inferred(Expr::Inferred&) {}
     virtual void visit_type_void(Expr::Void&) {}
     virtual void visit_expr_null(Expr::Null&) {}
-    virtual void visit_type_modifier(Expr::ModifierType&) {}
 
     // 递归遍历子节点（基类驱动，结构变更只改这里）
     void walk_children(Decl& decl) {
@@ -822,10 +822,6 @@ struct ASTVisitor {
             else if constexpr (std::is_same_v<T, Expr::Inferred>) visit_type_inferred(v);
             else if constexpr (std::is_same_v<T, Expr::Void>) visit_type_void(v);
             else if constexpr (std::is_same_v<T, Expr::Null>) visit_expr_null(v);
-            else if constexpr (std::is_same_v<T, Expr::ModifierType>) {
-                for (auto* l : v.layers) if (l) walk(*l);
-                visit_type_modifier(v);
-            }
             else if constexpr (std::is_same_v<T, Expr::StringLiteralType>) visit_type_string_literal(v);
             else if constexpr (std::is_same_v<T, Expr::FuncRef>) visit_type_func_ref(v);
             else if constexpr (std::is_same_v<T, Expr::Literal>) visit_expr_literal(v);

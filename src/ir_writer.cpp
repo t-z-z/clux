@@ -55,6 +55,7 @@ void IRWriter::flush() {
     out_ << header_.str();
     if (uses_pthread_) out_ << "declare i32 @pthread_create(ptr, ptr, ptr, ptr)\n";
     if (uses_malloc_)   out_ << "declare ptr @malloc(i64)\n";
+    if (uses_free_)     out_ << "declare void @free(ptr)\n";
     out_ << "\n";
     out_ << globals_.str();
     if (!globals_.str().empty()) out_ << "\n";
