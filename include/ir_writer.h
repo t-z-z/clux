@@ -54,6 +54,7 @@ public:
     void need_malloc()  { uses_malloc_ = true; }
     void need_free()    { uses_free_ = true; }
     void emit_type(const std::string& s) { header_ << s << '\n'; }
+    void emit_global(const std::string& s) { globals_ << s << '\n'; }
     void emit_module_tail(const std::string& s) { tail_ << s << '\n'; }
     void flush();
 

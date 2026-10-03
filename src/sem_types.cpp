@@ -122,9 +122,19 @@ std::string sym_display_name(Symbol* sym) {
 }
 
 
+bool is_enum_type(Expr* t) {
+    if (!t) return false;
+    t = underlying_type(t);
+    return t->is_type && (t->is_identifier() || t->is_member()) &&
+           t->resolved_decl && t->resolved_decl->kind == DeclKind::Enum;
+}
+
 bool is_numeric_type(Expr* t) {
     t = underlying_type(t);
-    if (!t || !t->is_primitive()) return false;
+    if (!t) return false;
+    // 枚举底层是数字
+    if (is_enum_type(t)) return true;
+    if (!t->is_primitive()) return false;
     auto k = t->get_primitive()->kind;
     return k != PrimitiveTypeKind::Bool && k != PrimitiveTypeKind::Type && k != PrimitiveTypeKind::Void;
 }
@@ -132,6 +142,8 @@ bool is_numeric_type(Expr* t) {
 bool is_integer_type(Expr* t) {
     t = underlying_type(t);
     if (!t) return false;
+    // 枚举底层是整数
+    if (is_enum_type(t)) return true;
     if(auto* p = t->get_primitive()){
         PrimitiveTypeKind k = p->kind;
         return k == PrimitiveTypeKind::Int8 || k == PrimitiveTypeKind::Short || k == PrimitiveTypeKind::Int
@@ -176,6 +188,16 @@ bool is_same_type(Expr* a, Expr* b) {
     };
     if (a->is_string_literal_type() && is_char_array(b)) return true;
     if (b->is_string_literal_type() && is_char_array(a)) return true;
+    // 枚举底层是数字：与 int 及其他枚举等价
+    if (is_enum_type(a) || is_enum_type(b)) {
+        auto as_i32 = [](Expr* x) {
+            if (is_enum_type(x)) return true;
+            if (auto* p = x->get_primitive())
+                return p->kind == PrimitiveTypeKind::Int;
+            return false;
+        };
+        return as_i32(a) && as_i32(b);
+    }
     bool a_named = a->is_type && (a->is_identifier() || a->is_member());
     bool b_named = b->is_type && (b->is_identifier() || b->is_member());
     if (a_named && b_named) {
