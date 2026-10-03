@@ -88,6 +88,16 @@ bool SemanticAnalyzer::can_convert_to(Expr* src, Expr* dst) {
         return true;
     }
 
+    // 指针 → 定长切片：由目标类型提供长度（int[N] s = ptr）
+    if (src->is_pointer() && dst->is_array_type() &&
+        dst->get_array_type()->length) {
+        Expr* elem = dst->get_array_type()->element;
+        Expr* pointee = src->get_pointer()->pointee;
+        if (elem && pointee &&
+            (is_same_type(elem, pointee) || is_void_type(pointee)))
+            return true;
+    }
+
     // 切片 → 指向元素类型的指针（元素相同，或目标为 void*）
     if (src->is_array_type() && dst->is_pointer()) {
         Expr* elem = src->get_array_type()->element;
@@ -236,6 +246,23 @@ bool SemanticAnalyzer::check_conversion(Expr* src, Expr* dst, const std::string&
         bool base_same = us && ud && is_same_type(us, ud);
         bool both_ptr = us && ud && (us->is_pointer() || us->is_reference()) &&
                         (ud->is_pointer() || ud->is_reference());
+        // 指针 <-> 整数：底层地址值的重解释
+        bool ptr_int = us && ud &&
+            ((us->is_pointer() && is_integer_type(ud)) ||
+             (is_integer_type(us) && ud->is_pointer()));
+        if (ptr_int) {
+            // 目标平台指针 64 位：窄于 64 位的整数会截断/扩展地址
+            Expr* int_t = us->is_pointer() ? ud : us;
+            bool sign = false; int bits = 0;
+            if (int_t->is_primitive() &&
+                primitive_int_range(int_t->get_primitive()->kind, sign, bits) &&
+                bits < 64) {
+                warning(loc, "conversion between pointer and " +
+                        std::to_string(bits) + "-bit integer loses address bits in " +
+                        context);
+            }
+            return true;
+        }
         if (base_same || both_ptr) {
             warning(loc, "explicit cast between incompatible types in " + context);
             return true;

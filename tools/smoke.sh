@@ -13,6 +13,8 @@ CLUX=./bin/clux
 declare -A EXPECT=(
     [78_array_decl_len]=10
     [class_arg_pack]=1
+    [ptr_int_cast]=20
+    [ptr_to_slice]=52
 )
 
 tmp=$(mktemp -d)
