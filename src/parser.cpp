@@ -1618,7 +1618,7 @@ Expr* Parser::parse_func_type() {
 
     Expr* return_type = parse_type();
     if (!return_type) {
-        add_error("expected return type after $()");
+        add_error("expected return type after $() or $");
     }
 
     Expr* t = cu_.add_node<Expr>(loc, Expr::FuncPtr{param_types, return_type});
