@@ -163,7 +163,7 @@ int[n] b
 ```cx
 main()int r=0{
     int[100] arr=[]
-    int-* p=ulong(arr.ptr)+40
+    int-* p=int-*(ulong(arr.ptr)+40)
     int[10] c=ptr
     int-* q=arr[60]-&
     int[10] d=q
@@ -196,7 +196,6 @@ long b = long(a)
 if cond { ... } else { ... }
 while cond { ... }
 for int i = 0; i < n; i += 1 { ... }
-for item in collection { ... }
 break
 continue
 return
@@ -603,7 +602,7 @@ extern "opengl32" {
     glEnd() {}
 }
 extern "C" {
-    printf(const char-* ...) int r{}
+    printf(const char-* s ...) int r{}
 }
 ```
 
