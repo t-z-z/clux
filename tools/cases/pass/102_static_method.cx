@@ -1,0 +1,8 @@
+@C {
+    pub INIT() { }
+    modf static:
+    pub f(int a) int r { r = a + 1 }
+}
+main() {
+    int x = C::f(1)
+}

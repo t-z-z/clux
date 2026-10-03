@@ -1,0 +1,72 @@
+#pragma once
+
+#include <string>
+#include <string_view>
+
+#include "ast.h"
+
+namespace cx {
+
+struct Symbol;
+
+// 类型名节点（Identifier / 限定名 Member 链）的完整名字
+std::string type_name_string(Expr* t);
+
+// 引用类型的表达式即 lvalue
+bool ref_is_lvalue(Expr* t);
+
+// 命名类型节点的成员作用域
+Scope* named_type_scope(Expr* t);
+
+Expr* underlying_type(Expr* t);
+
+// 目标整数原始类型的符号性与位宽；返回 false 表示不是受检整数类型
+bool primitive_int_range(PrimitiveTypeKind k, bool& is_signed, int& bits);
+
+// 整数字面量自身类型对应的符号性与位宽；返回 false 表示不做自身范围检查
+bool literal_int_range(LiteralKind k, bool& is_signed, int& bits);
+
+// 解析整数字面量文本（可含进制前缀与类型后缀）为无符号值
+bool parse_uint_literal(std::string_view text, unsigned long long& out);
+
+// 有符号/无符号位宽可表示的最大正数值
+unsigned long long int_max_value(bool is_signed, int bits);
+
+// 浮点类型提升级：float16 < float < double
+int float_rank(PrimitiveTypeKind k);
+
+// 整数类型提升级：int8 < short < int < long < int128
+int integer_rank(PrimitiveTypeKind k);
+
+// 表达式的编译期数组长度：数组字面量取元素数，字符串字面量取字符数；
+// 填充形式 [x ...] 的长度由目标决定，返回 -1 表示无法静态确定
+long long const_array_len_of(Expr* e);
+
+// 数值类型（非 bool/type/void 的基础类型）
+bool is_numeric_type(Expr* t);
+
+// 整数类型（含有符号/无符号/char 系）
+bool is_integer_type(Expr* t);
+
+// 浮点类型
+bool is_float_type(Expr* t);
+
+// 布尔类型
+bool is_bool_type(Expr* t);
+
+// 条件位置允许的类型：bool、指针、切片、null
+bool is_condition_type(Expr* t);
+
+// 结构等价判定：基础类型同名，指针/引用/数组逐层递归，函数指针签名一致
+bool is_same_type(Expr* a, Expr* b);
+
+// 可整型提升的类型（窄于 int 的整数）
+bool is_integer_promotable(Expr* t);
+
+// void 类型（含源码中的 void 关键字节点）
+bool is_void_type(Expr* t);
+
+// 符号的展示名：变量取变量名，其余取声明名
+std::string sym_display_name(Symbol* sym);
+
+} // namespace cx

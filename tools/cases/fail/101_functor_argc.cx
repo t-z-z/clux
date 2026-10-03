@@ -1,0 +1,9 @@
+@Adder {
+    pub int base = 0
+    pub INIT(int a) { base = a }
+    pub operator () (int x) int r { r = base + x }
+}
+main() {
+    Adder f = Adder(10)
+    int y = f(5, 6)
+}
