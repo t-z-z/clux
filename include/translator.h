@@ -30,8 +30,14 @@ private:
         std::string llvm_name;
         std::vector<Field> fields;
         std::unordered_map<std::string, int> field_index;
+        // static 字段：存储在模块级全局变量，不进实例 layout
+        std::vector<Field> static_fields;
+        std::unordered_map<const VarItem*, std::string> static_global_of;
+        std::unordered_map<std::string, std::string> static_global_by_name;
     };
     std::unordered_map<Class*, ClassInfo> classes_;
+    // static 字段变量 → 模块级全局符号名
+    std::unordered_map<const VarItem*, std::string> static_global_;
 
     struct LoopCtx { std::string break_label, continue_label; int scope_depth; };
     struct CleanupEntry {
@@ -92,6 +98,8 @@ private:
     void emit_var_decl(VarList* vl);
     bool emit_class_var(VarList* vl, VarItem* vi, Class* cls);
     bool emit_array_noinit(VarItem* vi, Expr* vtype, const std::string& slot);
+    // 运行期长度数组声明：按长度值 alloca，构造 {ptr,len}
+    bool emit_array_rt_len(Expr* vtype, const std::string& slot);
     bool emit_array_string_init(VarItem* vi, const std::string& slot);
     void emit_if(Stmt::If& i);
     void emit_while(Stmt::While& w);
@@ -113,6 +121,10 @@ private:
     // 逐字段拷贝 src 所指对象到 dst 所指对象
     void emit_fields_copy(Class* cls, const std::string& src,
                           const std::string& dst);
+    // 构造时为实例字段写入声明处默认值（INIT body 之前）
+    void emit_field_defaults(Class* cls, const std::string& slot);
+    // 模块入口为所有 static 字段写入声明处默认值
+    void emit_static_inits();
     // 合成操作符的函数体 IR：解包 __value -> 运算 -> 打包返回
     void emit_synth_operator(Func& f, Class* cls, VarItem* ret_var);
     // 合成操作符的函数体 IR：解包 __value -> 运算 -> 打包返回

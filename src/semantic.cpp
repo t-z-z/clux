@@ -332,6 +332,8 @@ void SemanticAnalyzer::register_special(SpecialMethod& sm, bool default_public) 
 
 std::string SemanticAnalyzer::type_to_key(Expr& t) {
     if (Expr* u = underlying_type(&t); u != &t) return type_to_key(*u);
+    // 枚举底层是数字：与 int 同键
+    if (is_enum_type(&t)) return "i32";
     if (t.is_primitive()) {
         auto k = t.get_primitive()->kind;
         switch (k) {
@@ -771,6 +773,10 @@ void SemanticAnalyzer::visit_expr_binary(Expr::Binary& b) {
         }
     }
 
+    // 枚举底层是数字：参与运算时归一为 int
+    if (is_enum_type(lt)) lt = typeInt;
+    if (is_enum_type(rt)) rt = typeInt;
+
     Expr* matched_param = nullptr;
     if (Symbol* s = find_operator_overload(b.op, *lt, *rt, &matched_param)) {
         Expr* overload_ret = typeVoid;
@@ -857,6 +863,8 @@ void SemanticAnalyzer::visit_expr_unary(Expr::Unary& u) {
     Expr* ot = u.operand ? u.operand->type : nullptr;
 
     if (!ot) return;
+    // 枚举底层是数字：一元运算时归一为 int
+    if (is_enum_type(ot)) ot = typeInt;
 
     if (Symbol* s = find_operator_overload(u.op, *ot)) {
         if (auto* op = s->get<Operator>()) {
@@ -1166,7 +1174,9 @@ void SemanticAnalyzer::visit_expr_cast(Expr::Cast& cast) {
         Expr* src = cast.operand->type;
         Expr* dst = cast.target_type;
         if (is_same_type(src, dst)) {
-            warning(current_expr->loc, "unnecessary cast, types are identical");
+            // 枚举与整数等价，int(enum) 是合法写法，不算多余 cast
+            if (!is_enum_type(src) && !is_enum_type(dst))
+                warning(current_expr->loc, "unnecessary cast, types are identical");
         } else {
             // cast 是显式转换，走 cast 的转换判定
             check_conversion(src, dst, "cast", current_expr->loc, true);

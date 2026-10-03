@@ -42,6 +42,9 @@ int integer_rank(PrimitiveTypeKind k);
 // 填充形式 [x ...] 的长度由目标决定，返回 -1 表示无法静态确定
 long long const_array_len_of(Expr* e);
 
+// 枚举类型（类型位置的标识符/限定名，解析为 Enum 声明）
+bool is_enum_type(Expr* t);
+
 // 数值类型（非 bool/type/void 的基础类型）
 bool is_numeric_type(Expr* t);
 
