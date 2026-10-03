@@ -107,6 +107,8 @@ private:
     static bool needs_convert(Expr* e);
     // 包装类隐式转换的 IR：解包 -> 数值 cast -> 打包
     std::string emit_wrap_convert(Expr* e);
+    // 类拷贝构造：新建实例并逐字段复制
+    std::string emit_class_copy(Class* cls, const std::string& src);
     // 合成操作符的函数体 IR：解包 __value -> 运算 -> 打包返回
     void emit_synth_operator(Func& f, Class* cls, VarItem* ret_var);
     // 合成操作符的函数体 IR：解包 __value -> 运算 -> 打包返回
