@@ -1273,6 +1273,22 @@ void SemanticAnalyzer::visit_expr_binary(Expr::Binary& b) {
     Expr* rt = b.right ? b.right->type : nullptr;
     if (!lt || !rt) return;
 
+    // 非同包装类的混合运算：解包包装类一侧，走基础运算
+    Class* lw = wrap_class_of(lt);
+    Class* rw = wrap_class_of(rt);
+    if (!(lw && rw && lw == rw) && (lw || rw)) {
+        if (lw) {
+            Expr* base_t = wrap_base_type(lw);
+            record_conversion(b.left, base_t);
+            lt = base_t;
+        }
+        if (rw) {
+            Expr* base_t = wrap_base_type(rw);
+            record_conversion(b.right, base_t);
+            rt = base_t;
+        }
+    }
+
     Expr* matched_param = nullptr;
     if (Symbol* s = find_operator_overload(b.op, *lt, *rt, &matched_param)) {
         Expr* overload_ret = typeVoid;
@@ -2020,7 +2036,9 @@ void SemanticAnalyzer::visit_stmt_if(Stmt::If& if_stmt) {
     }
     
     Expr* cond_type = if_stmt.condition->type;
-    if (cond_type && !is_condition_type(cond_type)) {
+    if (cond_type && wrap_class_of(cond_type)) {
+        record_conversion(if_stmt.condition, typeBool);
+    } else if (cond_type && !is_condition_type(cond_type)) {
         warning(if_stmt.condition->loc, "if condition is not bool, implicit conversion");
     }
 }
@@ -2032,6 +2050,8 @@ void SemanticAnalyzer::visit_stmt_while(Stmt::While& while_stmt) {
     }
     
     Expr* cond_type = while_stmt.condition->type;
+    if (cond_type && wrap_class_of(cond_type))
+        record_conversion(while_stmt.condition, typeBool);
     if (cond_type && !is_condition_type(cond_type)) {
         warning(while_stmt.condition->loc, "while condition is not bool, implicit conversion");
     }
@@ -2472,12 +2492,8 @@ void SemanticAnalyzer::init_stmt(InitCtx& ctx, Stmt* s) {
                 init_expr(ctx, vi->init);
                 if (sym) ctx.assigned.insert(sym);
             } else {
-                // 类实例无初值时默认构造，视为已赋值
-                Expr* vt = vi->type ? vi->type : vl->type;
-                if (sym && vt && vt->resolved_decl &&
-                    vt->resolved_decl->kind == DeclKind::Class)
-                    ctx.assigned.insert(sym);
                 // 定长数组声明即分配 backing，视为已赋值；切片无长度、无 backing，未初始化
+                Expr* vt = vi->type ? vi->type : vl->type;
                 if (sym && vt && vt->is_array_type()) {
                     Expr* len = vt->get_array_type()->length;
                     if (len && len->is_literal()) ctx.assigned.insert(sym);
@@ -2785,12 +2801,18 @@ Class* SemanticAnalyzer::make_base_source(PrimitiveTypeKind base,
     synth->members.push_back(cu_.add_node<VarList>(loc, SpecList{}, vt,
         std::vector<VarItem*>{vvi}));
 
-    // 二元算术/位运算：returns=[承载类型]
-    static const OpKind bin_ops[] = {
-        OpKind::Plus, OpKind::Minus, OpKind::Mul, OpKind::Div, OpKind::Mod,
-        OpKind::BitOr, OpKind::BitAnd, OpKind::BitXor,
-        OpKind::Shl, OpKind::Shr,
-    };
+    bool is_bool = (base == PrimitiveTypeKind::Bool);
+
+    // 二元运算：bool 只派发逻辑/位逻辑，数值类型派发算术/位/移位
+    std::vector<OpKind> bin_ops;
+    if (is_bool) {
+        bin_ops = { OpKind::And, OpKind::Or,
+                    OpKind::BitAnd, OpKind::BitOr, OpKind::BitXor };
+    } else {
+        bin_ops = { OpKind::Plus, OpKind::Minus, OpKind::Mul, OpKind::Div,
+                    OpKind::Mod, OpKind::BitOr, OpKind::BitAnd, OpKind::BitXor,
+                    OpKind::Shl, OpKind::Shr };
+    }
     for (OpKind op : bin_ops) {
         auto* op_node = cu_.add_node<Operator>(loc, op, opkind_to_sv(op),
             SpecList{},
@@ -2803,10 +2825,13 @@ Class* SemanticAnalyzer::make_base_source(PrimitiveTypeKind base,
     }
 
     // 二元比较：returns=[bool]
-    static const OpKind cmp_ops[] = {
-        OpKind::Less, OpKind::Greater, OpKind::LessEqual, OpKind::GreaterEqual,
-        OpKind::Equal, OpKind::NotEqual,
-    };
+    std::vector<OpKind> cmp_ops = { OpKind::Equal, OpKind::NotEqual };
+    if (!is_bool) {
+        cmp_ops.push_back(OpKind::Less);
+        cmp_ops.push_back(OpKind::Greater);
+        cmp_ops.push_back(OpKind::LessEqual);
+        cmp_ops.push_back(OpKind::GreaterEqual);
+    }
     for (OpKind op : cmp_ops) {
         Expr* bt = cu_.add_node<Expr>(loc, Expr::Primitive{PrimitiveTypeKind::Bool});
         bt->is_type = true;
@@ -2821,12 +2846,15 @@ Class* SemanticAnalyzer::make_base_source(PrimitiveTypeKind base,
     }
 
     // 复合赋值运算符：原地修改 self.__value，无返回值
-    static const OpKind assign_ops[] = {
-        OpKind::PlusAssign, OpKind::MinusAssign, OpKind::MulAssign,
-        OpKind::DivAssign, OpKind::ModAssign,
-        OpKind::AndAssign, OpKind::OrAssign, OpKind::XorAssign,
-        OpKind::ShlAssign, OpKind::ShrAssign,
-    };
+    std::vector<OpKind> assign_ops;
+    if (is_bool) {
+        assign_ops = { OpKind::AndAssign, OpKind::OrAssign, OpKind::XorAssign };
+    } else {
+        assign_ops = { OpKind::PlusAssign, OpKind::MinusAssign, OpKind::MulAssign,
+                       OpKind::DivAssign, OpKind::ModAssign,
+                       OpKind::AndAssign, OpKind::OrAssign, OpKind::XorAssign,
+                       OpKind::ShlAssign, OpKind::ShrAssign };
+    }
     for (OpKind op : assign_ops) {
         auto* op_node = cu_.add_node<Operator>(loc, op, opkind_to_sv(op),
             SpecList{},
@@ -2850,9 +2878,13 @@ Class* SemanticAnalyzer::make_base_source(PrimitiveTypeKind base,
         op_node->ret_via_reg = true;
         synth->members.push_back(op_node);
     };
-    make_unary(OpKind::Minus, base);
-    make_unary(OpKind::Not, PrimitiveTypeKind::Bool);
-    make_unary(OpKind::BitNot, base);
+    if (is_bool) {
+        make_unary(OpKind::Not, PrimitiveTypeKind::Bool);
+    } else {
+        make_unary(OpKind::Minus, base);
+        make_unary(OpKind::Not, PrimitiveTypeKind::Bool);
+        make_unary(OpKind::BitNot, base);
+    }
 
     return synth;
 }

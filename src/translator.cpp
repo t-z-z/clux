@@ -742,6 +742,8 @@ void Translator::emit_synth_operator(Func& f, Class* cls, VarItem* ret_var) {
                 case OpKind::Mul:    opc = "mul";  break;
                 case OpKind::Div:    opc = "sdiv"; break;
                 case OpKind::Mod:    opc = "srem"; break;
+                    case OpKind::And:    opc = "and";  break;
+                case OpKind::Or:     opc = "or";   break;
                 case OpKind::BitAnd: opc = "and";  break;
                 case OpKind::BitOr:  opc = "or";   break;
                 case OpKind::BitXor: opc = "xor";  break;
@@ -835,14 +837,22 @@ void Translator::emit_var_decl(VarList* vl) {
             bool is_malloc_cls = cls->specs.has(SpecKind::Malloc);
             bool created = false;
             if (vi->init) {
-                if (vi->init->implicit_to && as_wrap_class(vi->init->implicit_to))
+                Class* src_cls = as_class(vi->init->type);
+                if (src_cls == cls && !needs_convert(vi->init)) {
+                    // 同类初始化：拷贝构造，新建实例并逐字段复制
+                    std::string src = eval(vi->init);
+                    inst = emit_class_copy(cls, src);
                     created = true;
-                else if (auto* call = vi->init->get_call()) {
-                    if (call->resolved &&
-                        call->resolved->kind == DeclKind::SpecialMethod)
+                } else {
+                    if (vi->init->implicit_to && as_wrap_class(vi->init->implicit_to))
                         created = true;
+                    else if (auto* call = vi->init->get_call()) {
+                        if (call->resolved &&
+                            call->resolved->kind == DeclKind::SpecialMethod)
+                            created = true;
+                    }
+                    inst = eval_converted(vi->init);
                 }
-                inst = eval_converted(vi->init);
             } else if (is_malloc_cls) {
                 ir_.need_malloc();
                 inst = ir_.reg();
@@ -1078,6 +1088,13 @@ void Translator::emit_goto(Stmt::Goto& g) {
 
 std::string Translator::to_bool(Expr* e, const std::string& v) {
     if (!e || !e->type) return v;
+    if (e->implicit_to) {
+        std::string b = emit_wrap_convert(e);
+        if (map_type(e->implicit_to) == "i1") return b;
+        std::string r = ir_.reg();
+        emit_instr(r + " = icmp ne i1 " + b + ", false");
+        return r;
+    }
     if (e->type->is_pointer()) {
         std::string r = ir_.reg();
         emit_instr(r + " = icmp ne ptr " + v + ", null");
@@ -1094,6 +1111,7 @@ std::string Translator::to_bool(Expr* e, const std::string& v) {
 }
 
 std::string Translator::eval_cond(Expr* e) {
+    if (needs_convert(e)) return to_bool(e, eval_converted(e));
     return to_bool(e, eval(e));
 }
 
@@ -1149,6 +1167,37 @@ Class* Translator::as_wrap_class(Expr* t) {
 }
 
 // 隐式包装/解包：源或目标为包装类，先解包到承载类型，数值 cast，再打包
+std::string Translator::emit_class_copy(Class* cls, const std::string& src) {
+    auto it = classes_.find(cls);
+    std::string cls_ir = (it != classes_.end()) ? it->second.llvm_name
+                                                 : "%" + mangled_of(cls);
+    std::string dst;
+    if (cls->specs.has(SpecKind::Malloc)) {
+        ir_.need_malloc();
+        dst = ir_.reg();
+        emit_instr(dst + " = call ptr @malloc(i64 " +
+                   std::to_string(type_size(cls_ir)) + ")");
+        emit_bind_ref(cls, dst, SpecialMethod::Kind::Ref);
+    } else {
+        dst = ir_.reg();
+        emit_instr(dst + " = alloca " + cls_ir);
+    }
+    if (it != classes_.end()) {
+        for (auto& f : it->second.fields) {
+            std::string sa = ir_.reg();
+            emit_instr(sa + " = getelementptr " + cls_ir + ", ptr " + src +
+                       ", i32 0, i32 " + std::to_string(f.index));
+            std::string sv = ir_.reg();
+            emit_instr(sv + " = load " + f.ir_type + ", ptr " + sa);
+            std::string da = ir_.reg();
+            emit_instr(da + " = getelementptr " + cls_ir + ", ptr " + dst +
+                       ", i32 0, i32 " + std::to_string(f.index));
+            emit_instr("store " + f.ir_type + " " + sv + ", ptr " + da);
+        }
+    }
+    return dst;
+}
+
 std::string Translator::emit_wrap_convert(Expr* e) {
     Expr* src_t = e->type;
     Expr* dst_t = e->implicit_to;
@@ -1426,13 +1475,22 @@ std::string Translator::eval_binary(Expr* e, Expr::Binary* b) {
                                           b->left, b->right);
         }
     }
-    std::string ltt = b->left && b->left->type ? map_type(b->left->type) : "i32";
-    std::string rtt = b->right && b->right->type ? map_type(b->right->type) : "i32";
+    auto operand_type = [this](Expr* x) -> std::string {
+        if (!x) return "i32";
+        if (x->implicit_to) return map_type(x->implicit_to);
+        return x->type ? map_type(x->type) : "i32";
+    };
+    auto eval_operand = [this](Expr* x) -> std::string {
+        if (!x) return "0";
+        return needs_convert(x) ? eval_converted(x) : eval(x);
+    };
+    std::string ltt = operand_type(b->left);
+    std::string rtt = operand_type(b->right);
 
     // 逻辑与/或：两侧转 bool 后按 i1 运算
     if (b->op == OpKind::And || b->op == OpKind::Or) {
-        std::string lv = eval(b->left);
-        std::string rv = eval(b->right);
+        std::string lv = eval_operand(b->left);
+        std::string rv = eval_operand(b->right);
         std::string l = to_bool(b->left, lv);
         std::string rr = to_bool(b->right, rv);
         std::string res = ir_.reg();
@@ -1446,8 +1504,8 @@ std::string Translator::eval_binary(Expr* e, Expr::Binary* b) {
         std::string op_t = ir_common_type(ltt, rtt);
         bool fp = ir_is_fp_type(op_t);
         bool uns = !fp && common_unsigned(ltt, rtt, b->left->type, b->right->type);
-        std::string lv = eval(b->left);
-        std::string rv = eval(b->right);
+        std::string lv = eval_operand(b->left);
+        std::string rv = eval_operand(b->right);
         if (ltt != op_t) lv = cast_value(lv, ltt, op_t,
             !expr_is_unsigned(b->left->type), !uns);
         if (rtt != op_t) rv = cast_value(rv, rtt, op_t,
@@ -1471,8 +1529,8 @@ std::string Translator::eval_binary(Expr* e, Expr::Binary* b) {
     if (op_t == "i1" || op_t.empty()) op_t = ir_common_type(ltt, rtt);
     bool is_fp = ir_is_fp_type(op_t);
     bool uns = !is_fp && common_unsigned(ltt, rtt, b->left->type, b->right->type);
-    std::string lv = eval(b->left);
-    std::string rv = eval(b->right);
+    std::string lv = eval_operand(b->left);
+    std::string rv = eval_operand(b->right);
     if (ltt != op_t) lv = cast_value(lv, ltt, op_t,
         !expr_is_unsigned(b->left->type), !uns);
     if (rtt != op_t) rv = cast_value(rv, rtt, op_t,
@@ -1517,6 +1575,14 @@ std::string Translator::eval_binary(Expr* e, Expr::Binary* b) {
 }
 
 std::string Translator::eval_unary(Expr* e, Expr::Unary* u) {
+    // 一元操作符重载派发
+    if (e->sym && e->sym->kind == SymbolKind::Function) {
+        if (Decl* d = e->sym->get_decl()) {
+            if (d->kind == DeclKind::Operator)
+                return emit_operator_call(e, static_cast<Operator*>(d),
+                                          u->operand, nullptr);
+        }
+    }
     if (u->op == OpKind::BitAnd) {
         Expr* op = u->operand;
         if (op && as_class(op->type)) {

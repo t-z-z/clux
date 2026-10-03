@@ -338,8 +338,8 @@ math::add(1, 2)
     char-* p
     INIT() { p = null }
     INIT(char c) { p = c-& }
-    REF(){}
-    DEREF(){}
+    REF{}
+    DEREF{}
 }
 
 pointer p = pointer()
@@ -379,6 +379,10 @@ operator - (Vec2 a Vec2 b) Vec2 r {
 }
 conversion(Vec2 a) Vector r {
     r=Vector(a.x a.y)
+}
+conversion(Vec2 a)Vec2 b{
+    // 复制方法，相当于COPY()
+    b=a
 }
 ```
 
