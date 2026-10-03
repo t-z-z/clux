@@ -1,0 +1,12 @@
+@Cont{
+    pub:char[] str
+    conversion()Cont r{
+        r = Cont()
+        r.str = str
+    }
+}
+main(){
+    Cont a = Cont()
+    a.str = "1234"
+    Cont b = a
+}

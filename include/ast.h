@@ -497,6 +497,7 @@ struct Func : Decl {
     std::vector<VarList*> returns;  // 返回值声明
     Stmt* body = nullptr;           // 函数体
     bool is_extern_decl = false;    // extern 内的声明，不检查返回值赋值
+    bool is_variadic = false;        // 形参表末尾有 '...'（仅 extern 支持）
     bool ret_via_reg = false;       // 标量返回且路径末尾恰好一次赋值：用寄存器 ret 而非 sret
     Func() = default;
     Func(const Location& loc,

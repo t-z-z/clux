@@ -57,6 +57,10 @@ private:
         bool term = false;
         std::vector<CleanupEntry> drops;
         int scope_depth = 0;
+        // 类返回：返回变量 r 即 sret 目标对象，r 的值是 %ret 指针
+        const VarItem* ret_obj_var = nullptr;
+        std::string ret_obj_ptr;
+        Class* ret_obj_cls = nullptr;
     };
     Ctx ctx_;
     std::vector<LoopCtx> loops_;
@@ -106,6 +110,9 @@ private:
     std::string emit_wrap_convert(Expr* e);
     // 类拷贝构造：新建实例并逐字段复制
     std::string emit_class_copy(Class* cls, const std::string& src);
+    // 逐字段拷贝 src 所指对象到 dst 所指对象
+    void emit_fields_copy(Class* cls, const std::string& src,
+                          const std::string& dst);
     // 合成操作符的函数体 IR：解包 __value -> 运算 -> 打包返回
     void emit_synth_operator(Func& f, Class* cls, VarItem* ret_var);
     // 合成操作符的函数体 IR：解包 __value -> 运算 -> 打包返回

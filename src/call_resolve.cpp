@@ -142,6 +142,46 @@ void SemanticAnalyzer::pack_slice_args(Func* func, Expr* call_expr, Expr::Call& 
     c.args = {arr};
 }
 
+// 类形参的调用点打包：foo(a b c "Hi") 等价于 foo(Param(a b c "Hi"))
+void SemanticAnalyzer::pack_class_args(Func* func, Expr* call_expr, Expr::Call& c) {
+    if (func->params.empty() || c.args.empty()) return;
+    std::vector<Expr*> params;
+    for (VarList* vl : func->params) {
+        if (!vl) continue;
+        for (VarItem* vi : vl->vars)
+            if (vi && vi->type) params.push_back(vi->type);
+    }
+    if (params.size() != 1) return;
+    Expr* pt = params[0];
+    Class* cls = as_class(pt);
+    if (!cls) return;
+    // 单个实参且已是该类，无需打包
+    if (c.args.size() == 1 && c.args[0] && c.args[0]->type &&
+        is_same_type(c.args[0]->type, pt)) return;
+    // 仅当类的某个 INIT 能匹配这组实参时才打包，否则交给常规错误报告
+    bool packable = false;
+    for (Decl* m : cls->members) {
+        if (!m || m->kind != DeclKind::SpecialMethod) continue;
+        auto* sm = static_cast<SpecialMethod*>(m);
+        if (sm->kind != SpecialMethod::Kind::Init) continue;
+        if (args_match(sm->params, c.args)) { packable = true; break; }
+    }
+    if (!packable) return;
+
+    Expr* callee = cu_.add_node<Expr>(call_expr->loc,
+        Expr::Identifier{cls->name});
+    callee->is_type = true;
+    callee->resolved_decl = cls;
+    callee->resolved_scope = cls->scope;
+    callee->sym = pt->sym ? pt->sym
+                          : symbols_.lookup_member(std::string(cls->name));
+    Expr* inner = cu_.add_node<Expr>(call_expr->loc,
+        Expr::Call{callee, c.args});
+    resolve_call(inner, *inner->get_call());
+    if (!inner->type || is_void_type(inner->type)) return;
+    c.args = {inner};
+}
+
 // 命名调用：已解析出函数符号时直接使用
 void SemanticAnalyzer::resolve_named_call(Expr* call_expr, Expr::Call& c,
                                           Symbol* callee_sym, const std::string& name) {
@@ -167,6 +207,7 @@ void SemanticAnalyzer::resolve_named_call(Expr* call_expr, Expr::Call& c,
     }
 
     pack_slice_args(func, call_expr, c);
+    pack_class_args(func, call_expr, c);
     check_call_args(func, c.args);
 
     Expr* ret = typeVoid;
@@ -240,10 +281,8 @@ void SemanticAnalyzer::check_call_args(const std::vector<VarList*>& params_lists
                               args[i] ? args[i]->loc : loc);
         check_literal_range(args[i], params[i], "argument passing",
                             args[i] ? args[i]->loc : loc);
-        // 记录隐式 conversion / 包装转换，供 translator 派发
-        if (!is_same_type(at, params[i])) {
-            if (record_conversion(args[i], params[i])) continue;
-        }
+        // 记录隐式 conversion / 包装转换，供 translator 派发；同类也允许 self->self
+        if (record_conversion(args[i], params[i])) continue;
         check_conversion(at, params[i], "argument passing",
                          args[i] ? args[i]->loc : loc);
     }
@@ -252,6 +291,16 @@ void SemanticAnalyzer::check_call_args(const std::vector<VarList*>& params_lists
 // () 传参：按形参类型逐一对实参做转换判定
 void SemanticAnalyzer::check_call_args(Func* fn, const std::vector<Expr*>& args) {
     if (!fn) return;
+    if (fn->is_variadic) {
+        // 变参调用：只检查固定形参前缀，多余实参不做转换检查
+        size_t fixed = 0;
+        for (VarList* vl : fn->params)
+            for (VarItem* vi : vl->vars) if (vi) ++fixed;
+        std::vector<Expr*> prefix(args.begin(),
+            args.begin() + std::min(args.size(), fixed));
+        check_call_args(fn->params, prefix, fn->loc);
+        return;
+    }
     check_call_args(fn->params, args, fn->loc);
 }
 

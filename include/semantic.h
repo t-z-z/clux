@@ -436,6 +436,7 @@ private:
     bool resolve_free_builtin(Expr* call_expr, Expr::Call& c,
                               const std::string& name);
     void pack_slice_args(Func* func, Expr* call_expr, Expr::Call& c);
+    void pack_class_args(Func* func, Expr* call_expr, Expr::Call& c);
     void resolve_named_call(Expr* call_expr, Expr::Call& c,
                             Symbol* callee_sym, const std::string& name);
     void check_call_args(Func* fn, const std::vector<Expr*>& args);
