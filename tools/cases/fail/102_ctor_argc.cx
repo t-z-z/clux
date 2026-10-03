@@ -1,0 +1,7 @@
+@C {
+    pub int x = 0
+    pub INIT(int a) { x = a }
+}
+main() {
+    C c = C(1, 2)
+}

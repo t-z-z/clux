@@ -6,9 +6,10 @@
 #include <string_view>
 #include <vector>
 #include <unordered_map>
-#include <unordered_set>
 
 #include "ast.h"
+#include "inject.h"
+#include "flow_check.h"
 #include "diagnostic.h"
 #include "string_view_map.h"
 
@@ -251,6 +252,9 @@ class SemanticAnalyzer : public ASTVisitor {
     // 状态
     CompUnit& cu_;
     SymbolTable symbols_;
+    std::unique_ptr<InjectionExpander> injector_;
+    std::unordered_map<VarItem*, Symbol*> var_symbols_;
+    FlowChecker flow_;
     std::vector<Diagnostic> diagnostics_;
     bool has_error_ = false;
 
@@ -265,7 +269,12 @@ class SemanticAnalyzer : public ASTVisitor {
     Expr* typeNull;   // Null
     
 public:
-    explicit SemanticAnalyzer(CompUnit& cu) : cu_(cu){
+    explicit SemanticAnalyzer(CompUnit& cu) : cu_(cu),
+        flow_(var_symbols_,
+            [this](const Location& loc, const std::string& msg) { error(loc, msg); }) {
+        injector_ = std::make_unique<InjectionExpander>(cu_, symbols_,
+            [this](const Location& loc, const std::string& msg) { error(loc, msg); },
+            [this](Decl* d, bool dp) { collect_decl(d, dp); });
         #define X(name,str) type##name = make_type(Location(), Expr::Primitive{PrimitiveTypeKind::name});
         TYPE
         #undef X
@@ -396,26 +405,12 @@ private:
                              const Location& loc);
 
     // 类型判断
-    bool is_numeric_type(Expr* t);
-    bool is_integer_type(Expr* t);
-    bool is_float_type(Expr* t);
-    bool is_bool_type(Expr* t);
-    // 条件位置允许的类型：bool、指针、切片（视图）、null
-    bool is_condition_type(Expr* t);
-    bool is_same_type(Expr* a, Expr* b);
-    bool is_integer_promotable(Expr* t);
-    bool is_void_type(Expr* t);
     Symbol* lookup_member_on_type(Expr* type, const std::string& field, Scope** found_scope);
 
     // 声明收集与注册
     // P0：注册类名与类外声明，不进入类内部
     void collect();
     // P1：处理类的修饰注入并注册类成员（含嵌套类递归）
-    void collect_rest();
-    void collect_rest_decl(Decl* decl, Scope* parent_scope);
-    void expand_class(Class* cls, Scope* parent_scope);
-    // 基础类型来源合成：返回一个仅含承载字段的临时 Class，供注入合并
-    Class* make_base_source(PrimitiveTypeKind base, const Location& loc);
     void process_using_namespaces();
     void collect_decl(Decl* decl, bool default_public);
     void register_func(Func& f, bool default_public);
@@ -425,38 +420,24 @@ private:
     void check_access(Symbol* sym, const Location& loc);
     void check_write_access(Symbol* sym, const Location& loc);
 
-    // flag/toflag 的 label 检查与变量初始化检查，逐函数体（含闭包体）就地执行
-    void check_jumps(Stmt* body);
 
-    std::unordered_map<VarItem*, Symbol*> var_symbols_;
-    // 类注入展开状态：1=展开中（环检测），2=已完成（缓存）
-    std::unordered_map<Class*, uint8_t> expand_state_;
 
-    struct InitCtx {
-        std::unordered_set<Symbol*> declared;
-        std::unordered_set<Symbol*> assigned;
-        Symbol* ret_sym = nullptr;   // 当前函数的返回变量（若有）
-        bool terminated = false;     // 当前路径是否已终止（return）
-    };
-    void check_initialization(Stmt* body,
-                              const std::vector<VarList*>& params,
-                              const std::vector<VarList*>& returns);
-    void init_stmt(InitCtx& ctx, Stmt* s);
-    void init_expr(InitCtx& ctx, Expr* e);
-    void init_assign_target(InitCtx& ctx, Expr* e);
-    // 返回变量只在函数体内任意位置被赋值一次即可，不做流敏感检查
-    bool body_assigns_return(Stmt* s, Symbol* target);
-    bool expr_assigns_return(Expr* e, Symbol* target);
-    // 标量返回且每条路径末尾恰好一次赋值 → 可用寄存器 ret
-    bool can_use_register_ret(Func& f);
-    bool stmt_tail_assign(Stmt* s, Symbol* ret);
-    bool seq_tail_assign(const std::vector<Stmt*>& stmts, Symbol* ret);
 
     // 辅助：获取当前作用域的完整路径字符串（用 "::" 连接）
     std::string get_current_full_path() const;
 
     // 调用解析
     void resolve_call(Expr* call, Expr::Call& c);
+    void call_fail(Expr* call_expr, const std::string& msg);
+    bool resolve_funcptr_call(Expr* call_expr, Expr::Call& c);
+    bool resolve_functor_call(Expr* call_expr, Expr::Call& c);
+    bool resolve_ctor_call(Expr* call_expr, Expr::Call& c,
+                           Symbol* callee_sym, const std::string& name);
+    bool resolve_free_builtin(Expr* call_expr, Expr::Call& c,
+                              const std::string& name);
+    void pack_slice_args(Func* func, Expr* call_expr, Expr::Call& c);
+    void resolve_named_call(Expr* call_expr, Expr::Call& c,
+                            Symbol* callee_sym, const std::string& name);
     void check_call_args(Func* fn, const std::vector<Expr*>& args);
     void check_call_args(const std::vector<VarList*>& params,
                          const std::vector<Expr*>& args, const Location& loc);
@@ -466,13 +447,6 @@ private:
     bool is_return_var_item(VarItem* vi) const;
 
     // 克隆辅助（深拷贝，新节点统一登记到 cu_）
-    Expr* clone_type(Expr* t);
-    Expr* clone_expr(Expr* e);
-    Stmt* clone_stmt(Stmt* s);
-    VarList* clone_varlist(VarList* vl);
-    Func* clone_func(Func* f);
-    Decl* clone_decl(Decl* d);
-    Scope* clone_scope(Scope* src);
 
 };
 

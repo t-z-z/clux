@@ -1,0 +1,4 @@
+apply($(int)int g, int v) int r { r = g(v) }
+main() {
+    int x = apply(\(int a) int r { r = a }, 3)
+}

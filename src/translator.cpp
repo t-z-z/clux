@@ -1,6 +1,7 @@
 #include "../include/translator.h"
 #include "../include/ir_writer.h"
 #include "../include/semantic.h"
+#include "../include/translator_mangle.h"
 
 #include <type_traits>
 #include <unordered_set>
@@ -73,7 +74,7 @@ bool expr_is_unsigned(Expr* t) {
 // 收集
 
 void Translator::run() {
-    collect_mangled();
+    mangler_.collect(cu_);
     collect_classes();
     for (Decl* d : cu_.top_decls) emit_decl(d);
     if (uses_alwaysinline_)
@@ -107,126 +108,6 @@ void Translator::emit_decl(Decl* d) {
     }
 }
 
-void Translator::collect_mangled() {
-    for (Decl* d : cu_.top_decls) if (d) walk_mangled(d, "");
-}
-
-void Translator::walk_mangled(Decl* d, const std::string& prefix) {
-    if (!d) return;
-    std::string here = prefix.empty()
-        ? std::string(d->name) : prefix + "_" + std::string(d->name);
-    switch (d->kind) {
-        case DeclKind::Namespace:
-            for (Decl* m : static_cast<Namespace*>(d)->members) walk_mangled(m, here);
-            break;
-        case DeclKind::Class: {
-            mangled_[d] = here;
-            for (Decl* m : static_cast<Class*>(d)->members) {
-                if (!m) continue;
-                if (m->kind == DeclKind::SpecialMethod) {
-                    mangled_[m] = here + "_" +
-                        special_name(static_cast<SpecialMethod*>(m));
-                } else if (m->kind == DeclKind::Conversion) {
-                    mangled_[m] = here + "_" +
-                        conversion_name(static_cast<Conversion*>(m));
-                } else {
-                    walk_mangled(m, here);
-                }
-            }
-            break;
-        }
-        case DeclKind::Func:
-        case DeclKind::Operator:
-            mangled_[d] = here;
-            break;
-        case DeclKind::Conversion:
-            mangled_[d] = conversion_name(static_cast<Conversion*>(d));
-            break;
-        case DeclKind::Extern:
-            for (Decl* m : static_cast<Extern*>(d)->members)
-                walk_mangled(m, "");  // extern 内符号名保持原样
-            break;
-        default: break;
-    }
-}
-
-std::string Translator::mangled_of(Decl* d) const {
-    if (!d) return "";
-    auto it = mangled_.find(d);
-    if (it != mangled_.end()) return it->second;
-    return std::string(d->name);
-}
-
-std::string Translator::type_key(Expr* t) {
-    if (!t) return "void";
-    {
-    }
-    if (t->get_primitive()) return map_type(t);
-    if (auto* p = t->get_pointer())   return "P_" + type_key(p->pointee);
-    if (auto* r = t->get_reference()) return "R_" + type_key(r->target);
-    if (auto* a = t->get_array_type()) {
-        std::string lk = "x";
-        if (a->length && a->length->get_literal())
-            lk = std::string(a->length->get_literal()->value);
-        return "A_" + type_key(a->element) + "_" + lk;
-    }
-    if (t->get_string_literal_type()) return "S";
-    if (auto* fp = t->get_func_ptr()) {
-        std::string s = "F";
-        for (Expr* p : fp->params) s += "_" + type_key(p);
-        s += "_ret_" + type_key(fp->return_type);
-        return s;
-    }
-    if (t->is_null()) return "N";
-    if (Class* c = as_class(t)) return "C_" + mangled_of(c);
-    return "x";
-}
-
-std::string Translator::special_name(SpecialMethod* sm) {
-    std::string base;
-    switch (sm->kind) {
-        case SpecialMethod::Kind::Init:       base = "INIT"; break;
-        case SpecialMethod::Kind::Drop:       base = "DROP"; break;
-        case SpecialMethod::Kind::Ref:        base = "REF"; break;
-        case SpecialMethod::Kind::Deref:      base = "DEREF"; break;
-        default: break;
-    }
-    if (sm->kind == SpecialMethod::Kind::Init) {
-        for (VarList* vl : sm->params) {
-            if (!vl) continue;
-            for (VarItem* vi : vl->vars) {
-                if (!vi) continue;
-                base += "_";
-                base += vi->type ? type_key(vi->type)
-                                 : (vl->type ? type_key(vl->type) : "x");
-            }
-        }
-    }
-    return base;
-}
-
-std::string Translator::conversion_name(Conversion* cf) {
-    std::string base = "conversion";
-    for (VarList* vl : cf->params) {
-        if (!vl) continue;
-        for (VarItem* vi : vl->vars) {
-            if (!vi) continue;
-            base += "_";
-            base += vi->type ? type_key(vi->type)
-                             : (vl->type ? type_key(vl->type) : "x");
-        }
-    }
-    base += "_ret";
-    if (!cf->returns.empty() && cf->returns.back()) {
-        for (VarItem* ri : cf->returns.back()->vars) {
-            if (ri && ri->type) base += "_" + type_key(ri->type);
-        }
-        if (cf->returns.back()->type && cf->returns.back()->vars.empty())
-            base += "_" + type_key(cf->returns.back()->type);
-    }
-    return base;
-}
-
 void Translator::collect_classes() {
     for (Decl* d : cu_.top_decls) collect_classes_decl(d);
 }
@@ -237,7 +118,7 @@ void Translator::collect_classes_decl(Decl* d) {
         case DeclKind::Class: {
             Class* c = static_cast<Class*>(d);
             ClassInfo info;
-            info.llvm_name = "%" + mangled_of(c);
+            info.llvm_name = "%" + mangler_.of(c);
             int idx = 0;
             for (Decl* m : c->members) {
                 if (!m || m->kind != DeclKind::VarList) continue;
@@ -267,13 +148,6 @@ void Translator::collect_classes_decl(Decl* d) {
             break;
         default: break;
     }
-}
-
-Class* Translator::as_class(Expr* t) {
-    if (!t) return nullptr;
-    if (t->resolved_decl && t->resolved_decl->kind == DeclKind::Class)
-        return static_cast<Class*>(t->resolved_decl);
-    return nullptr;
 }
 
 std::string Translator::map_type(Expr* t) {
@@ -337,7 +211,7 @@ void Translator::emit_guard_call(SpecialMethod* sm, const std::string& val) {
     std::string cont_l = ir_.named_label("hook.cont");
     emit_term("br i1 " + nn + ", label %" + call_l + ", label %" + cont_l);
     open_block(call_l);
-    emit_instr("call void @" + IRWriter::quote(mangled_of(sm)) +
+    emit_instr("call void @" + IRWriter::quote(mangler_.of(sm)) +
                "(ptr " + val + ")");
     emit_term("br label %" + cont_l);
     open_block(cont_l);
@@ -458,7 +332,7 @@ void Translator::emit_func(Func& f, Class* cls) {
     if (main_with_ret) ctx_.exit_label = "main.exit";
 
     std::string sig = "define " + ret_sig + " @" +
-                      IRWriter::quote(mangled_of(&f)) + "(";
+                      IRWriter::quote(mangler_.of(&f)) + "(";
     for (size_t i = 0; i < params.size(); ++i) {
         if (i) sig += ", ";
         sig += params[i];
@@ -577,7 +451,7 @@ void Translator::emit_special(SpecialMethod& sm, Class* cls) {
     }
 
     std::string sig = "define void @" +
-                      IRWriter::quote(mangled_of(&sm)) + "(";
+                      IRWriter::quote(mangler_.of(&sm)) + "(";
     for (size_t i = 0; i < params.size(); ++i) {
         if (i) sig += ", ";
         sig += params[i];
@@ -611,7 +485,7 @@ void Translator::emit_special(SpecialMethod& sm, Class* cls) {
 
 void Translator::emit_class(Class* c) {
     auto& info = classes_[c];
-    if (info.llvm_name.empty()) info.llvm_name = "%" + mangled_of(c);
+    if (info.llvm_name.empty()) info.llvm_name = "%" + mangler_.of(c);
 
     std::string ty = info.llvm_name + " = type {";
     for (size_t i = 0; i < info.fields.size(); ++i) {
@@ -627,7 +501,7 @@ void Translator::emit_class(Class* c) {
         if (m->kind == DeclKind::Func || m->kind == DeclKind::Operator ||
             m->kind == DeclKind::Conversion ||
             m->kind == DeclKind::SpecialMethod) {
-            std::string name = mangled_of(m);
+            std::string name = mangler_.of(m);
             if (!emitted.insert(name).second) continue;
             if (m->kind == DeclKind::SpecialMethod)
                 emit_special(*static_cast<SpecialMethod*>(m), c);
@@ -646,7 +520,7 @@ void Translator::emit_synth_operator(Func& f, Class* cls, VarItem* ret_var) {
     std::string base_ir = base_ir_of(cls->base_source);
     auto it = classes_.find(cls);
     std::string cls_ir = (it != classes_.end()) ? it->second.llvm_name
-                                                 : "%" + mangled_of(cls);
+                                                 : "%" + mangler_.of(cls);
     int idx = 0;
     if (it != classes_.end()) {
         auto fi = it->second.field_index.find("__value");
@@ -809,6 +683,116 @@ void Translator::emit_stmt(Stmt* s) {
     }, s->data);
 }
 
+// 类实例声明：分配实例槽（引用/拷贝构造/malloc），登记析构清理
+bool Translator::emit_class_var(VarList* vl, VarItem* vi, Class* cls) {
+    auto it = classes_.find(cls);
+    if (it == classes_.end()) { ctx_.slots[vi] = "null"; return true; }
+    std::string inst;
+    bool is_malloc_cls = cls->specs.has(SpecKind::Malloc);
+    bool created = false;
+    if (vi->init) {
+        Class* src_cls = as_class(vi->init->type);
+        if (src_cls == cls && !needs_convert(vi->init)) {
+            // 同类初始化：拷贝构造，新建实例并逐字段复制
+            std::string src = eval(vi->init);
+            inst = emit_class_copy(cls, src);
+            created = true;
+        } else {
+            if (vi->init->implicit_to && as_wrap_class(vi->init->implicit_to))
+                created = true;
+            else if (auto* call = vi->init->get_call()) {
+                if (call->resolved &&
+                    call->resolved->kind == DeclKind::SpecialMethod)
+                    created = true;
+            }
+            inst = eval_converted(vi->init);
+        }
+    } else if (is_malloc_cls) {
+        ir_.need_malloc();
+        inst = ir_.reg();
+        emit_instr(inst + " = call ptr @malloc(i64 " +
+                   std::to_string(type_size(it->second.llvm_name)) + ")");
+        created = true;
+    } else {
+        inst = ir_.reg();
+        emit_instr(inst + " = alloca " + it->second.llvm_name);
+    }
+    std::string slot = ir_.reg();
+    emit_instr(slot + " = alloca ptr");
+    emit_instr("store ptr " + inst + ", ptr " + slot);
+    ctx_.slots[vi] = slot;
+    if (is_malloc_cls) {
+        if (!created) emit_bind_ref(cls, inst, SpecialMethod::Kind::Ref);
+        register_deref(slot, cls);
+    } else if (!vl->specs.has(SpecKind::Malloc)) {
+        for (Decl* m : cls->members) {
+            if (m && m->kind == DeclKind::SpecialMethod) {
+                auto* sm = static_cast<SpecialMethod*>(m);
+                if (sm->kind == SpecialMethod::Kind::Drop) {
+                    CleanupEntry e;
+                    e.kind = CleanupEntry::Drop;
+                    e.slot = inst;
+                    e.drop_fn = mangler_.of(sm);
+                    e.scope_depth = ctx_.scope_depth;
+                    ctx_.drops.push_back(e);
+                    break;
+                }
+            }
+        }
+    }
+    return true;
+}
+
+
+// 定长数组无初值：分配 backing 并以 {ptr,i32} 切片形式存入槽
+bool Translator::emit_array_noinit(VarItem* vi, Expr* vtype, const std::string& slot) {
+    int len = array_length_of(vtype);
+    if (len <= 0) return false;
+    Expr* el = vtype->get_array_type()->element;
+    std::string et = el ? map_type(el) : "i32";
+    std::string backing = ir_.reg();
+    emit_instr(backing + " = alloca " + et + ", i64 " +
+               std::to_string((long long)len));
+    std::string s1 = ir_.reg();
+    emit_instr(s1 + " = insertvalue { ptr, i32 } undef, ptr " + backing + ", 0");
+    std::string s2 = ir_.reg();
+    emit_instr(s2 + " = insertvalue { ptr, i32 } " + s1 + ", i32 " +
+               std::to_string((long long)len) + ", 1");
+    emit_instr("store { ptr, i32 } " + s2 + ", ptr " + slot);
+    (void)vi;
+    return true;
+}
+
+// 字符数组以字符串字面量初始化：分配 backing 并逐字节复制（含 NUL）
+bool Translator::emit_array_string_init(VarItem* vi, const std::string& slot) {
+    auto* lit = vi->init->get_literal();
+    std::string content = lit ? std::string(lit->value) : std::string();
+    size_t n = content.size();
+    std::string sym = ir_.string_const(content);
+    std::string backing = ir_.reg();
+    // 多分配 1 字节存放 NUL 终止符，使 .ptr / 切片转指针可作 C 字符串
+    emit_instr(backing + " = alloca i8, i64 " + std::to_string(n + 1));
+    for (size_t k = 0; k <= n; ++k) {
+        std::string src = ir_.reg();
+        emit_instr(src + " = getelementptr i8, ptr @" + sym +
+                   ", i64 " + std::to_string(k));
+        std::string b = ir_.reg();
+        emit_instr(b + " = load i8, ptr " + src);
+        std::string dst = ir_.reg();
+        emit_instr(dst + " = getelementptr i8, ptr " + backing +
+                   ", i64 " + std::to_string(k));
+        emit_instr("store i8 " + b + ", ptr " + dst);
+    }
+    std::string s1 = ir_.reg();
+    emit_instr(s1 + " = insertvalue { ptr, i32 } undef, ptr " + backing + ", 0");
+    std::string s2 = ir_.reg();
+    emit_instr(s2 + " = insertvalue { ptr, i32 } " + s1 + ", i32 " +
+               std::to_string(static_cast<long long>(n)) + ", 1");
+    emit_instr("store { ptr, i32 } " + s2 + ", ptr " + slot);
+    return true;
+}
+
+
 void Translator::emit_var_decl(VarList* vl) {
     if (!vl) return;
     std::string t = map_type(vl->type);
@@ -830,115 +814,17 @@ void Translator::emit_var_decl(VarList* vl) {
             continue;
         }
         Class* cls = as_class(vtype);
-        if (cls) {
-            auto it = classes_.find(cls);
-            if (it == classes_.end()) { ctx_.slots[vi] = "null"; continue; }
-            std::string inst;
-            bool is_malloc_cls = cls->specs.has(SpecKind::Malloc);
-            bool created = false;
-            if (vi->init) {
-                Class* src_cls = as_class(vi->init->type);
-                if (src_cls == cls && !needs_convert(vi->init)) {
-                    // 同类初始化：拷贝构造，新建实例并逐字段复制
-                    std::string src = eval(vi->init);
-                    inst = emit_class_copy(cls, src);
-                    created = true;
-                } else {
-                    if (vi->init->implicit_to && as_wrap_class(vi->init->implicit_to))
-                        created = true;
-                    else if (auto* call = vi->init->get_call()) {
-                        if (call->resolved &&
-                            call->resolved->kind == DeclKind::SpecialMethod)
-                            created = true;
-                    }
-                    inst = eval_converted(vi->init);
-                }
-            } else if (is_malloc_cls) {
-                ir_.need_malloc();
-                inst = ir_.reg();
-                emit_instr(inst + " = call ptr @malloc(i64 " +
-                           std::to_string(type_size(it->second.llvm_name)) + ")");
-                created = true;
-            } else {
-                inst = ir_.reg();
-                emit_instr(inst + " = alloca " + it->second.llvm_name);
-            }
-            std::string slot = ir_.reg();
-            emit_instr(slot + " = alloca ptr");
-            emit_instr("store ptr " + inst + ", ptr " + slot);
-            ctx_.slots[vi] = slot;
-            if (is_malloc_cls) {
-                if (!created) emit_bind_ref(cls, inst, SpecialMethod::Kind::Ref);
-                register_deref(slot, cls);
-            } else if (!vl->specs.has(SpecKind::Malloc)) {
-                for (Decl* m : cls->members) {
-                    if (m && m->kind == DeclKind::SpecialMethod) {
-                        auto* sm = static_cast<SpecialMethod*>(m);
-                        if (sm->kind == SpecialMethod::Kind::Drop) {
-                            CleanupEntry e;
-                            e.kind = CleanupEntry::Drop;
-                            e.slot = inst;
-                            e.drop_fn = mangled_of(sm);
-                            e.scope_depth = ctx_.scope_depth;
-                            ctx_.drops.push_back(e);
-                            break;
-                        }
-                    }
-                }
-            }
-            continue;
-        }
+        if (cls && emit_class_var(vl, vi, cls)) continue;
         std::string vt = vtype ? map_type(vtype) : t;
         std::string slot = ir_.reg();
         emit_instr(slot + " = alloca " + vt);
         ctx_.slots[vi] = slot;
         if (vtype && vtype->is_array_type() && !vi->init) {
-            int len = array_length_of(vtype);
-            if (len > 0) {
-                Expr* el = vtype->get_array_type()->element;
-                std::string et = el ? map_type(el) : "i32";
-                std::string backing = ir_.reg();
-                emit_instr(backing + " = alloca " + et + ", i64 " +
-                           std::to_string((long long)len));
-                std::string s1 = ir_.reg();
-                emit_instr(s1 + " = insertvalue { ptr, i32 } undef, ptr " +
-                           backing + ", 0");
-                std::string s2 = ir_.reg();
-                emit_instr(s2 + " = insertvalue { ptr, i32 } " + s1 +
-                           ", i32 " + std::to_string((long long)len) + ", 1");
-                emit_instr("store { ptr, i32 } " + s2 + ", ptr " + slot);
-                continue;
-            }
+            if (emit_array_noinit(vi, vtype, slot)) continue;
         }
         if (vtype && vtype->is_array_type() && vi->init &&
             vi->init->type && vi->init->type->is_string_literal_type()) {
-            auto* lit = vi->init->get_literal();
-            std::string content = lit ? std::string(lit->value) : std::string();
-            size_t n = content.size();
-            std::string sym = ir_.string_const(content);
-            std::string backing = ir_.reg();
-            // 多分配 1 字节存放 NUL 终止符，使 .ptr / 切片转指针可作 C 字符串
-            emit_instr(backing + " = alloca i8, i64 " +
-                       std::to_string(n + 1));
-            for (size_t k = 0; k <= n; ++k) {
-                std::string src = ir_.reg();
-                emit_instr(src + " = getelementptr i8, ptr @" + sym +
-                           ", i64 " + std::to_string(k));
-                std::string b = ir_.reg();
-                emit_instr(b + " = load i8, ptr " + src);
-                std::string dst = ir_.reg();
-                emit_instr(dst + " = getelementptr i8, ptr " + backing +
-                           ", i64 " + std::to_string(k));
-                emit_instr("store i8 " + b + ", ptr " + dst);
-            }
-            std::string s1 = ir_.reg();
-            emit_instr(s1 + " = insertvalue { ptr, i32 } undef, ptr " +
-                       backing + ", 0");
-            std::string s2 = ir_.reg();
-            emit_instr(s2 + " = insertvalue { ptr, i32 } " + s1 + ", i32 " +
-                       std::to_string(static_cast<long long>(n)) + ", 1");
-            emit_instr("store { ptr, i32 } " + s2 + ", ptr " + slot);
-            continue;
+            if (emit_array_string_init(vi, slot)) continue;
         }
         if (vi->init) {
             bool converted = needs_convert(vi->init);
@@ -1132,7 +1018,7 @@ std::string Translator::eval(Expr* e) {
     if (auto* cl  = e->get_closure())     return eval_closure(e, cl);
     if (auto* sp  = e->get_spawn())       return eval_spawn(e, sp);
     if (auto* fr  = e->get_func_ref())
-        return "@" + IRWriter::quote(mangled_of(fr->func));
+        return "@" + IRWriter::quote(mangler_.of(fr->func));
     return "0";
 }
 
@@ -1170,7 +1056,7 @@ Class* Translator::as_wrap_class(Expr* t) {
 std::string Translator::emit_class_copy(Class* cls, const std::string& src) {
     auto it = classes_.find(cls);
     std::string cls_ir = (it != classes_.end()) ? it->second.llvm_name
-                                                 : "%" + mangled_of(cls);
+                                                 : "%" + mangler_.of(cls);
     std::string dst;
     if (cls->specs.has(SpecKind::Malloc)) {
         ir_.need_malloc();
@@ -1211,7 +1097,7 @@ std::string Translator::emit_wrap_convert(Expr* e) {
         std::string base_ir = base_ir_of(sw->base_source);
         auto it = classes_.find(sw);
         std::string cls_ir = (it != classes_.end()) ? it->second.llvm_name
-                                                     : "%" + mangled_of(sw);
+                                                     : "%" + mangler_.of(sw);
         int idx = 0;
         if (it != classes_.end()) {
             auto fi = it->second.field_index.find("__value");
@@ -1241,7 +1127,7 @@ std::string Translator::emit_wrap_convert(Expr* e) {
     if (dw) {
         auto it = classes_.find(dw);
         std::string cls_ir = (it != classes_.end()) ? it->second.llvm_name
-                                                     : "%" + mangled_of(dw);
+                                                     : "%" + mangler_.of(dw);
         int idx = 0;
         if (it != classes_.end()) {
             auto fi = it->second.field_index.find("__value");
@@ -1420,7 +1306,7 @@ std::string Translator::eval_identifier(Expr* e, Expr::Identifier* id) {
         return ctx_.self_ptr;
     // 函数名作为值：decay 为函数指针，取其地址
     if (e->type && e->type->is_func_ref())
-        return "@" + IRWriter::quote(mangled_of(e->type->get_func_ref()->func));
+        return "@" + IRWriter::quote(mangler_.of(e->type->get_func_ref()->func));
     if (e->sym && e->sym->kind == SymbolKind::Variable) {
         if (auto* vi = dynamic_cast<VarItem*>(e->sym->node)) {
             auto it = ctx_.slots.find(vi);
@@ -1968,7 +1854,7 @@ std::string Translator::emit_conversion_call(Expr* e, Conversion* cf) {
 
     std::string call_ret = via_reg ? ret_ir : "void";
     std::string sig = "call " + call_ret + " @" +
-                      IRWriter::quote(mangled_of(cf)) + "(";
+                      IRWriter::quote(mangler_.of(cf)) + "(";
     for (size_t k = 0; k < args.size(); ++k) {
         if (k) sig += ", ";
         sig += args[k];
@@ -2016,7 +1902,7 @@ std::string Translator::emit_operator_call(Expr* e, Operator* op,
             break;
         }
         args.push_back(pt + " " + v);
-        std::string sig = "call void @" + IRWriter::quote(mangled_of(op)) + "(";
+        std::string sig = "call void @" + IRWriter::quote(mangler_.of(op)) + "(";
         for (size_t k = 0; k < args.size(); ++k) {
             if (k) sig += ", ";
             sig += args[k];
@@ -2056,7 +1942,7 @@ std::string Translator::emit_operator_call(Expr* e, Operator* op,
 
     std::string call_ret = via_reg ? ret_t : "void";
     std::string sig = "call " + call_ret + " @" +
-                      IRWriter::quote(mangled_of(op)) + "(";
+                      IRWriter::quote(mangler_.of(op)) + "(";
     for (size_t k = 0; k < args.size(); ++k) {
         if (k) sig += ", ";
         sig += args[k];
@@ -2102,7 +1988,7 @@ void Translator::emit_declare(Func& f) {
 
     std::string ret_sig = (ret_var && !f.ret_via_reg) ? "void" : ret_t;
     std::string sig = "declare " + ret_sig + " @" +
-                      IRWriter::quote(mangled_of(&f)) + "(";
+                      IRWriter::quote(mangler_.of(&f)) + "(";
     for (size_t i = 0; i < params.size(); ++i) {
         if (i) sig += ", ";
         sig += params[i];
@@ -2111,121 +1997,110 @@ void Translator::emit_declare(Func& f) {
     ir_.emit_type(sig);
 }
 
-std::string Translator::eval_call(Expr* e, Expr::Call* c) {
-    // 内置 free：释放 malloc 类实例
-    if (c->free_builtin && c->callee) {
-        if (auto* m = c->callee->get_member()) {
-            std::string self = eval(m->target);
-            Class* cls = m->target && m->target->type
-                ? as_wrap_class(m->target->type) : nullptr;
-            if (!cls && m->target && m->target->type)
-                cls = as_class(m->target->type);
-            if (cls) {
-                if (SpecialMethod* drop = find_special(cls, SpecialMethod::Kind::Drop))
-                    emit_instr("call void @" + IRWriter::quote(mangled_of(drop)) +
-                               "(ptr " + self + ")");
-            }
-            ir_.need_free();
-            emit_instr("call void @free(ptr " + self + ")");
-            return "0";
-        }
+// 内置 free：释放 malloc 类实例
+std::string Translator::eval_free_builtin(Expr* e, Expr::Call* c) {
+    (void)e;
+    if (!c->free_builtin || !c->callee) return "";
+    auto* m = c->callee->get_member();
+    if (!m) return "";
+    std::string self = eval(m->target);
+    Class* cls = m->target && m->target->type
+        ? as_wrap_class(m->target->type) : nullptr;
+    if (!cls && m->target && m->target->type)
+        cls = as_class(m->target->type);
+    if (cls) {
+        if (SpecialMethod* drop = find_special(cls, SpecialMethod::Kind::Drop))
+            emit_instr("call void @" + IRWriter::quote(mangler_.of(drop)) +
+                       "(ptr " + self + ")");
     }
-    // funcptr 调用
-    if (c->callee && c->callee->type && c->callee->type->is_func_ptr()) {
-        auto* fp = c->callee->type->get_func_ptr();
-        return call_func_ptr(e, c, fp);
-    }
-    // 无 INIT 的类零参默认构造：分配实例
-    if (!c->resolved && c->callee && c->callee->sym &&
-        c->callee->sym->kind == SymbolKind::Class) {
-        Class* cls = as_class(e->type);
-        if (cls) {
-            auto it = classes_.find(cls);
-            if (it != classes_.end()) {
-                std::string slot;
-                if (cls->specs.has(SpecKind::Malloc)) {
-                    ir_.need_malloc();
-                    slot = ir_.reg();
-                    emit_instr(slot + " = call ptr @malloc(i64 " +
-                               std::to_string(type_size(it->second.llvm_name)) + ")");
-                    emit_bind_ref(cls, slot, SpecialMethod::Kind::Ref);
-                } else {
-                    slot = ir_.reg();
-                    emit_instr(slot + " = alloca " + it->second.llvm_name);
-                }
-                return slot;
-            }
-        }
-        return "0";
-    }
-    if (!c->resolved) return "0";
+    ir_.need_free();
+    emit_instr("call void @free(ptr " + self + ")");
+    return "0";
+}
 
-    // 类构造：C(...) — resolved 是 INIT 特殊方法
-    if (c->resolved->kind == DeclKind::SpecialMethod) {
-        auto* sm = static_cast<SpecialMethod*>(c->resolved);
-        if (sm->kind == SpecialMethod::Kind::Init) {
-            Class* cls = as_class(e->type);
-            if (!cls) return "0";
-            auto it = classes_.find(cls);
-            if (it == classes_.end()) return "0";
-            std::string slot;
-            bool is_malloc = cls->specs.has(SpecKind::Malloc);
-            if (is_malloc) {
-                ir_.need_malloc();
-                slot = ir_.reg();
-                emit_instr(slot + " = call ptr @malloc(i64 " +
-                           std::to_string(type_size(it->second.llvm_name)) + ")");
-            } else {
-                slot = ir_.reg();
-                emit_instr(slot + " = alloca " + it->second.llvm_name);
-            }
-            std::vector<std::string> args;
-            args.push_back("ptr " + slot);
-            size_t ai = 0;
-            for (Expr* a : c->args) {
-                bool converted = needs_convert(a);
-                std::string v = converted ? eval_converted(a) : eval(a);
-                std::string at = a && a->type ? map_type(a->type) : "i32";
-                if (converted) {
-                    // 转换后实参类型即对应形参类型
-                    size_t k = 0;
-                    for (VarList* vl : sm->params) {
-                        if (!vl) continue;
-                        bool found = false;
-                        for (VarItem* vi : vl->vars) {
-                            if (k == ai) {
-                                Expr* pte = vi->type ? vi->type : vl->type;
-                                if (pte) at = map_type(pte);
-                                found = true;
-                                break;
-                            }
-                            ++k;
-                        }
-                        if (found) break;
+// 无 INIT 的类零参默认构造：分配实例
+std::string Translator::eval_default_ctor(Expr* e, Expr::Call* c) {
+    if (c->resolved || !c->callee || !c->callee->sym ||
+        c->callee->sym->kind != SymbolKind::Class) return "";
+    Class* cls = as_class(e->type);
+    if (!cls) return "0";
+    auto it = classes_.find(cls);
+    if (it == classes_.end()) return "0";
+    std::string slot;
+    if (cls->specs.has(SpecKind::Malloc)) {
+        ir_.need_malloc();
+        slot = ir_.reg();
+        emit_instr(slot + " = call ptr @malloc(i64 " +
+                   std::to_string(type_size(it->second.llvm_name)) + ")");
+        emit_bind_ref(cls, slot, SpecialMethod::Kind::Ref);
+    } else {
+        slot = ir_.reg();
+        emit_instr(slot + " = alloca " + it->second.llvm_name);
+    }
+    return slot;
+}
+
+// 类构造：C(...) — resolved 是 INIT 特殊方法
+std::string Translator::eval_ctor_call(Expr* e, Expr::Call* c, SpecialMethod* sm) {
+    if (sm->kind != SpecialMethod::Kind::Init) return "0";
+    Class* cls = as_class(e->type);
+    if (!cls) return "0";
+    auto it = classes_.find(cls);
+    if (it == classes_.end()) return "0";
+    std::string slot;
+    bool is_malloc = cls->specs.has(SpecKind::Malloc);
+    if (is_malloc) {
+        ir_.need_malloc();
+        slot = ir_.reg();
+        emit_instr(slot + " = call ptr @malloc(i64 " +
+                   std::to_string(type_size(it->second.llvm_name)) + ")");
+    } else {
+        slot = ir_.reg();
+        emit_instr(slot + " = alloca " + it->second.llvm_name);
+    }
+    std::vector<std::string> args;
+    args.push_back("ptr " + slot);
+    size_t ai = 0;
+    for (Expr* a : c->args) {
+        bool converted = needs_convert(a);
+        std::string v = converted ? eval_converted(a) : eval(a);
+        std::string at = a && a->type ? map_type(a->type) : "i32";
+        if (converted) {
+            // 转换后实参类型即对应形参类型
+            size_t k = 0;
+            for (VarList* vl : sm->params) {
+                if (!vl) continue;
+                bool found = false;
+                for (VarItem* vi : vl->vars) {
+                    if (k == ai) {
+                        Expr* pte = vi->type ? vi->type : vl->type;
+                        if (pte) at = map_type(pte);
+                        found = true;
+                        break;
                     }
+                    ++k;
                 }
-                args.push_back(at + " " + v);
-                ++ai;
+                if (found) break;
             }
-            std::string sig = "call void @" +
-                IRWriter::quote(mangled_of(sm)) + "(";
-            for (size_t i = 0; i < args.size(); ++i) {
-                if (i) sig += ", ";
-                sig += args[i];
-            }
-            sig += ")";
-            emit_instr(sig);
-            if (is_malloc) emit_bind_ref(cls, slot, SpecialMethod::Kind::Ref);
-            return slot;
         }
-        return "0";
+        args.push_back(at + " " + v);
+        ++ai;
     }
+    std::string sig = "call void @" + IRWriter::quote(mangler_.of(sm)) + "(";
+    for (size_t i = 0; i < args.size(); ++i) {
+        if (i) sig += ", ";
+        sig += args[i];
+    }
+    sig += ")";
+    emit_instr(sig);
+    if (is_malloc) emit_bind_ref(cls, slot, SpecialMethod::Kind::Ref);
+    return slot;
+}
 
-    if (c->resolved->kind != DeclKind::Func &&
-        c->resolved->kind != DeclKind::Operator) return "0";
-    Func* fn = static_cast<Func*>(c->resolved);
-
-    std::string fname = mangled_of(fn);
+// 普通函数/运算符调用
+std::string Translator::eval_plain_call(Expr* e, Expr::Call* c, Func* fn) {
+    (void)e;
+    std::string fname = mangler_.of(fn);
     std::string ret_t = "void";
     VarItem* ret_var = nullptr;
     if (!fn->returns.empty() && fn->returns.back()) {
@@ -2329,6 +2204,32 @@ std::string Translator::eval_call(Expr* e, Expr::Call* c) {
     std::string r = ir_.reg();
     emit_instr(r + " = call " + sig);
     return r;
+}
+
+std::string Translator::eval_call(Expr* e, Expr::Call* c) {
+    if (c->free_builtin && c->callee) {
+        std::string r = eval_free_builtin(e, c);
+        if (!r.empty()) return r;
+    }
+    // funcptr 调用
+    if (c->callee && c->callee->type && c->callee->type->is_func_ptr()) {
+        auto* fp = c->callee->type->get_func_ptr();
+        return call_func_ptr(e, c, fp);
+    }
+    if (!c->resolved && c->callee && c->callee->sym &&
+        c->callee->sym->kind == SymbolKind::Class) {
+        return eval_default_ctor(e, c);
+    }
+    if (!c->resolved) return "0";
+
+    if (c->resolved->kind == DeclKind::SpecialMethod) {
+        auto* sm = static_cast<SpecialMethod*>(c->resolved);
+        return eval_ctor_call(e, c, sm);
+    }
+
+    if (c->resolved->kind != DeclKind::Func &&
+        c->resolved->kind != DeclKind::Operator) return "0";
+    return eval_plain_call(e, c, static_cast<Func*>(c->resolved));
 }
 
 std::string Translator::emit_closure_fn(Expr::Closure* c) {
@@ -2560,7 +2461,7 @@ std::string Translator::eval_spawn(Expr*, Expr::Spawn* s) {
         call_args.push_back(field_types[i] + " " + unpacked[i]);
 
     std::string call_ret = ret_var ? "void" : ret_t;
-    std::string sig = call_ret + " @" + IRWriter::quote(mangled_of(fn)) + "(";
+    std::string sig = call_ret + " @" + IRWriter::quote(mangler_.of(fn)) + "(";
     for (size_t i = 0; i < call_args.size(); ++i) {
         if (i) sig += ", ";
         sig += call_args[i];

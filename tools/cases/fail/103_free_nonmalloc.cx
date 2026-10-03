@@ -1,0 +1,5 @@
+@Plain { pub int v = 0 }
+main() {
+    Plain p = Plain()
+    p.free()
+}

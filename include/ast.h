@@ -10,6 +10,68 @@
 #include "string_view_map.h"
 #include "token.h"
 
+// AST 语义产物契约
+//
+// 编译流程分三段，每段结束后进入下一个段的字段必须已就绪：
+//
+//   P0  collect_only()     仅收集符号表（P0 区，不进入函数体/类成员）
+//   P1  analyze_rest()     process_using_namespaces → collect_rest（类注入展开）
+//                          → walk(cu_)（表达式/语句推导与检查）
+//   P2  translator         run/emit_decl 读取 P0+P1 写入的字段生成 IR
+//
+// 多模块场景（compiler.cpp）：
+//   各模块 P0 → 合并为全局 SymbolTable → 各模块回填 global 后 P1 → P2
+//
+// 字段分工：
+//
+//   Expr::type         [写 P1 visit_expr_* / make_*_type] [读 P1 P2]
+//                      表达式的类型节点，本身也是 Expr，见 is_type。
+//                      有效表达式在 P1 结束时与 sym 至少一个非空。
+//
+//   Expr::sym          [写 P1 visit_expr_identifier / visit_expr_member]
+//                      [读 P1 P2]
+//                      解析到的符号（变量/函数/类/枚举成员）。变量引用的 lvalue
+//                      判定、函数引用的 mangled name、类构造都依赖它。
+//                      与 type 至少有一个非空（见文件头"semantic基础规则"）。
+//
+//   Expr::is_lvalue    [写 P1] [读 P2]
+//                      是否可取地址。函数返回值、字面量、cast 结果等为 false；
+//                      变量引用、成员访问（变量）、数组下标为 true。
+//
+//   Expr::is_type      [写 P1 make_named_type / visit_expr_identifier(类型位置)
+//                       / visit_expr_member(类型位置)] [读 P1 P2]
+//                      该节点处于类型位置（类型即表达式）。P2 的 map_type /
+//                      as_class / as_wrap_class 均通过它区分类型与值。
+//
+//   Expr::resolved_decl [写 P1] [读 P1 P2]
+//                      is_type 时的类/枚举/命名空间声明。
+//
+//   Expr::resolved_scope [写 P1] [读 P1]
+//                      is_type 时的成员作用域，供 visit_expr_member 查限定名。
+//
+//   Expr::conv         [写 P1 record_conversion] [读 P2 needs_convert /
+//                      eval_converted]
+//                      非空表示该表达式需经 conversion 函数转换到目标类型。
+//
+//   Expr::implicit_to  [写 P1 record_conversion] [读 P2 needs_convert /
+//                      eval_converted]
+//                      非空表示该表达式需经隐式数值/包装转换，指向目标类型。
+//
+//   Expr::Call::resolved [写 P1 resolve_call] [读 P2 eval_call]
+//                      resolved->kind 决定后续路径：
+//                        Func / Operator          → 普通函数调用
+//                        SpecialMethod(Init)      → 类构造
+//                        nullptr                  → 零参默认构造、free_builtin、
+//                                                   函数指针调用
+//
+//   Expr::Call::free_builtin [写 P1 resolve_call] [读 P2 eval_call]
+//                      该调用是 malloc 类的 a.free()，P2 走释放路径。
+//
+// 约定：
+//   - P1 之后，所有语义字段冻结，P2 不再写 AST（除 translator 自己的局部缓存）。
+//   - 有效表达式在 P1 结束时保证 type 与 sym 至少一个非空（见文件头规则）。
+//   - 检出空指针不报错，产生空指针才报错。
+//
 namespace cx{
 
 struct ASTNode;
@@ -145,6 +207,14 @@ struct CompUnit {
     void add_using_namespace(Expr* path, const Location& loc) {
         using_namespaces.push_back({path, loc});
     }
+
+    // 深拷贝 AST 节点并登记到本 CompUnit；用于类注入展开，避免共享节点
+    Expr* clone_type(Expr* t);
+    Expr* clone_expr(Expr* e);
+    Stmt* clone_stmt(Stmt* s);
+    VarList* clone_varlist(VarList* vl);
+    Func* clone_func(Func* f);
+    Decl* clone_decl(Decl* d);
 };
 
 enum class SpecKind {
@@ -555,6 +625,14 @@ struct Enum : Decl {
           variants(std::move(vs)) {}
 };
 
+// 类型表达式的类声明解析；非类返回 nullptr
+inline Class* as_class(Expr* t) {
+    if (!t) return nullptr;
+    if (t->resolved_decl && t->resolved_decl->kind == DeclKind::Class)
+        return static_cast<Class*>(t->resolved_decl);
+    return nullptr;
+}
+
 struct ASTVisitor {
     virtual ~ASTVisitor() = default;
     virtual void scope_in(std::string){}
@@ -594,11 +672,6 @@ struct ASTVisitor {
     virtual void visit(CompUnit&) {}
     virtual void visit(Import&) {}
 
-    // 模板声明无实参上下文，首轮遍历只注册不检查其体，
-    // 语义分析器可覆写为 false 以跳过函数体/类成员
-    // 当前完全无用，先标记，之后再删
-    virtual bool should_walk(const Func&) const { return true; }
-    virtual bool should_walk(const Class&) const { return true; }
 
     virtual void visit(Decl&) {}
     virtual void visit_var_list(VarList&) {}
@@ -676,13 +749,6 @@ struct ASTVisitor {
         Func* pre = current_func;
         current_func = &f;
         scope_in(std::string(f.name));
-        if (!should_walk(f)) {
-            // 只注册（visit_func 注册模板参数），不检查函数体
-            visit_func(f);
-            scope_out();
-            current_func = pre;
-            return;
-        }
         for (auto* p : f.params) {
             if (p) walk(*p);
         }
@@ -707,13 +773,6 @@ struct ASTVisitor {
         Class* pre = current_class;
         current_class = &c;
         scope_in(std::string(c.name));
-        if (!should_walk(c)) {
-            // 只注册（visit_class 注册模板参数），不检查成员体
-            visit_class(c);
-            scope_out();
-            current_class = pre;
-            return;
-        }
         for (auto* m : c.members) {
             if (m) walk(*m);
         }

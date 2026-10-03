@@ -6,6 +6,7 @@
 #include <vector>
 
 #include "ast.h"
+#include "translator_mangle.h"
 
 namespace cx {
 
@@ -21,7 +22,7 @@ public:
 private:
     CompUnit& cu_;
     IRWriter& ir_;
-    std::unordered_map<Decl*, std::string> mangled_;
+    Mangler mangler_;
     bool uses_alwaysinline_ = false;
 
     struct Field { VarItem* var; int index; std::string ir_type; };
@@ -61,14 +62,8 @@ private:
     std::vector<LoopCtx> loops_;
     int closure_counter_ = 0;
 
-    void collect_mangled();
-    void walk_mangled(Decl* d, const std::string& prefix);
     void collect_classes();
     void collect_classes_decl(Decl* d);
-    std::string mangled_of(Decl* d) const;
-    std::string special_name(SpecialMethod* sm);
-    std::string conversion_name(Conversion* cf);
-    std::string type_key(Expr* t);
 
     SpecialMethod* find_special(Class* cls, SpecialMethod::Kind k) const;
     Class*         pointee_class(Expr* t);
@@ -78,7 +73,6 @@ private:
     void           register_deref(const std::string& slot, Class* cls, int depth = -1);
 
     std::string map_type(Expr* t);
-    Class* as_class(Expr* t);
 
     void emit_instr(const std::string& s);
     void emit_term(const std::string& s);
@@ -92,6 +86,9 @@ private:
 
     void emit_stmt(Stmt* s);
     void emit_var_decl(VarList* vl);
+    bool emit_class_var(VarList* vl, VarItem* vi, Class* cls);
+    bool emit_array_noinit(VarItem* vi, Expr* vtype, const std::string& slot);
+    bool emit_array_string_init(VarItem* vi, const std::string& slot);
     void emit_if(Stmt::If& i);
     void emit_while(Stmt::While& w);
     void emit_for(Stmt::For& f);
@@ -125,6 +122,10 @@ private:
     std::string eval_unary(Expr* e, Expr::Unary* u);
     std::string eval_assign(Expr* e, Expr::Assign* a);
     std::string eval_call(Expr* e, Expr::Call* c);
+    std::string eval_free_builtin(Expr* e, Expr::Call* c);
+    std::string eval_default_ctor(Expr* e, Expr::Call* c);
+    std::string eval_ctor_call(Expr* e, Expr::Call* c, SpecialMethod* sm);
+    std::string eval_plain_call(Expr* e, Expr::Call* c, Func* fn);
     std::string eval_index(Expr* e, Expr::Index* ix);
     std::string eval_member(Expr* e, Expr::Member* m);
     std::string eval_array(Expr* e, Expr::Array* arr);
