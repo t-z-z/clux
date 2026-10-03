@@ -829,6 +829,33 @@ bool Translator::emit_array_rt_len(Expr* vtype, const std::string& slot) {
     return true;
 }
 
+// 由指针构造切片：目标类型提供长度，源指针提供 ptr
+bool Translator::emit_ptr_to_slice(Expr* vtype, Expr* ptr, const std::string& slot) {
+    if (!vtype || !vtype->is_array_type()) return false;
+    if (!ptr || !ptr->type || !ptr->type->is_pointer()) return false;
+    Expr* len = vtype->get_array_type()->length;
+    if (!len) return false;
+    std::string p = eval(ptr);
+    std::string lv;
+    if (len->is_literal()) {
+        lv = std::string(len->get_literal()->value);
+    } else {
+        lv = eval(len);
+        std::string lt = len->type ? map_type(len->type) : "i32";
+        if (lt != "i32") {
+            std::string t = ir_.reg();
+            emit_instr(t + " = trunc " + lt + " " + lv + " to i32");
+            lv = t;
+        }
+    }
+    std::string s1 = ir_.reg();
+    emit_instr(s1 + " = insertvalue { ptr, i32 } undef, ptr " + p + ", 0");
+    std::string s2 = ir_.reg();
+    emit_instr(s2 + " = insertvalue { ptr, i32 } " + s1 + ", i32 " + lv + ", 1");
+    emit_instr("store { ptr, i32 } " + s2 + ", ptr " + slot);
+    return true;
+}
+
 // 字符数组以字符串字面量初始化：分配 backing 并逐字节复制（含 NUL）
 bool Translator::emit_array_string_init(VarItem* vi, const std::string& slot) {
     auto* lit = vi->init->get_literal();
@@ -892,6 +919,10 @@ void Translator::emit_var_decl(VarList* vl) {
         if (vtype && vtype->is_array_type() && vi->init &&
             vi->init->type && vi->init->type->is_string_literal_type()) {
             if (emit_array_string_init(vi, slot)) continue;
+        }
+        if (vtype && vtype->is_array_type() && vi->init &&
+            vi->init->type && vi->init->type->is_pointer()) {
+            if (emit_ptr_to_slice(vtype, vi->init, slot)) continue;
         }
         if (vi->init) {
             bool converted = needs_convert(vi->init);
@@ -1710,6 +1741,29 @@ std::string Translator::eval_assign(Expr* e, Expr::Assign* a) {
     else if (t == "{ ptr, i32 }" && a->value && a->value->type &&
         a->value->type->is_string_literal_type())
         v = build_string_slice(a->value);
+    else if (t == "{ ptr, i32 }" && a->value && a->value->type &&
+        a->value->type->is_pointer() && a->target && a->target->type &&
+        a->target->type->is_array_type()) {
+        // 指针 → 定长切片：由目标类型提供长度
+        Expr* len = a->target->type->get_array_type()->length;
+        std::string p = eval(a->value);
+        std::string lv;
+        if (len && len->is_literal()) {
+            lv = std::string(len->get_literal()->value);
+        } else {
+            lv = len ? eval(len) : "0";
+            std::string lt = (len && len->type) ? map_type(len->type) : "i32";
+            if (lt != "i32") {
+                std::string tt = ir_.reg();
+                emit_instr(tt + " = trunc " + lt + " " + lv + " to i32");
+                lv = tt;
+            }
+        }
+        std::string s1 = ir_.reg();
+        emit_instr(s1 + " = insertvalue { ptr, i32 } undef, ptr " + p + ", 0");
+        v = ir_.reg();
+        emit_instr(v + " = insertvalue { ptr, i32 } " + s1 + ", i32 " + lv + ", 1");
+    }
     else {
         v = eval(a->value);
         if (vsrc != t) v = cast_value(v, vsrc, t,
@@ -1997,6 +2051,16 @@ std::string Translator::cast_value(const std::string& v,
         if (s < d)      emit_instr(r + " = fpext " + src + " " + v + " to " + dst);
         else if (s > d) emit_instr(r + " = fptrunc " + src + " " + v + " to " + dst);
         else            return v;
+        return r;
+    }
+    // 指针 -> 整数：地址值
+    if (src == "ptr" && is_int_n(dst)) {
+        emit_instr(r + " = ptrtoint ptr " + v + " to " + dst);
+        return r;
+    }
+    // 整数 -> 指针：地址值重解释
+    if (is_int_n(src) && dst == "ptr") {
+        emit_instr(r + " = inttoptr " + src + " " + v + " to ptr");
         return r;
     }
     return v;

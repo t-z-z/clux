@@ -100,6 +100,8 @@ private:
     bool emit_array_noinit(VarItem* vi, Expr* vtype, const std::string& slot);
     // 运行期长度数组声明：按长度值 alloca，构造 {ptr,len}
     bool emit_array_rt_len(Expr* vtype, const std::string& slot);
+    // 由指针构造切片：int[N] s = ptr
+    bool emit_ptr_to_slice(Expr* vtype, Expr* ptr, const std::string& slot);
     bool emit_array_string_init(VarItem* vi, const std::string& slot);
     void emit_if(Stmt::If& i);
     void emit_while(Stmt::While& w);

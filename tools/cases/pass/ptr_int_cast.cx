@@ -1,0 +1,5 @@
+main() int r {
+    int[4] arr = [10 20 30 40]
+    int-* p = int-*(ulong(arr.ptr)+4)
+    r = p-*
+}

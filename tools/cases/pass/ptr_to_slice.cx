@@ -1,0 +1,8 @@
+main() int r {
+    int[4] arr = [10 20 30 40]
+    int-* p = arr[1]-&
+    int[2] s = p
+    int[2] t
+    t = arr.ptr
+    r = s[0] + s[1] + t.len
+}

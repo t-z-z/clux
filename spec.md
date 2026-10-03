@@ -158,6 +158,18 @@ int[n] b
 
 可以将`int[10] a=[1,2,3]`看作声明了10个int的空间，a为`{ptr,len}`，是数组的切片。
 
+可以从指针构造数组切片。
+
+```cx
+main()int r=0{
+    int[100] arr=[]
+    int-* p=ulong(arr.ptr)+40
+    int[10] c=ptr
+    int-* q=arr[60]-&
+    int[10] d=q
+}
+```
+
 ### 函数指针类型
 
 ```cx
