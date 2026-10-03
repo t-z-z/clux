@@ -214,7 +214,7 @@ private:
     Expr* make_binary(Expr* left, Token op, Token op2);
     Expr* make_binary(Expr* left, Token op, Expr* right);
 
-    std::vector<VarList*> parse_value_params();    // (int a)
+    std::vector<VarList*> parse_value_params(bool* variadic = nullptr);    // (int a ...)
 
     Expr* parse_type();
     Expr* parse_type_atom();

@@ -1,0 +1,7 @@
+extern "c"{
+    printf(const char-* s ...){}
+}
+main() int r {
+    printf("hi %d\n" 42)
+    r = 0
+}

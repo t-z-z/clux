@@ -410,6 +410,19 @@ void SemanticAnalyzer::visit(CompUnit& cu) {
 void SemanticAnalyzer::visit(Decl&) {}
 void SemanticAnalyzer::visit(Import&) {}
 void SemanticAnalyzer::visit_func(Func& f) {
+    // 变参仅用于 extern 声明
+    if (f.is_variadic) {
+        if (!f.is_extern_decl)
+            error(f.loc, "'...' is only allowed in extern declarations");
+        for (VarList* vl : f.params) {
+            if (!vl) continue;
+            for (VarItem* vi : vl->vars) {
+                Expr* ty = vi->type ? vi->type : vl->type;
+                if (ty && ty->is_array_type())
+                    error(vi->loc, "slice parameter is not allowed in a variadic function");
+            }
+        }
+    }
     // extern 内的函数声明不检查返回值是否被赋值；标量/指针返回按 C ABI 走寄存器
     if (f.is_extern_decl) {
         if (!f.returns.empty() && f.returns.back()) {
@@ -500,9 +513,9 @@ void SemanticAnalyzer::visit_var_list(VarList& vl) {
             check_array_len_fit(var->init, dt, "declared", var->init->loc);
         }
         check_literal_range(var->init, dt, "initialization", var->init->loc);
-        if (is_same_type(var->init->type, dt)) continue;
-        // 隐式转换优先匹配 conversion / 包装转换
+        // 同类也允许 self->self conversion，故先尝试记录
         if (record_conversion(var->init, dt)) continue;
+        if (is_same_type(var->init->type, dt)) continue;
         check_conversion(var->init->type, dt, "initialization", var->init->loc);
     }
     for (VarItem* var : vl.vars) {
@@ -963,8 +976,8 @@ void SemanticAnalyzer::visit_expr_assign(Expr::Assign& a) {
     // 赋值统一走 = 的转换判定
     check_array_len_fit(a.value, lt, "target", current_expr->loc);
     check_literal_range(a.value, lt, "assignment", current_expr->loc);
-    // 记录隐式 conversion / 包装转换，供 translator 派发
-    if (rt && lt && !is_same_type(rt, lt)) {
+    // 记录隐式 conversion / 包装转换，供 translator 派发；同类也允许 self->self
+    if (rt && lt) {
         if (record_conversion(a.value, lt)) {
             current_expr->type = lt;
             current_expr->is_lvalue = false;

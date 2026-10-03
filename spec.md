@@ -239,6 +239,29 @@ $(int,int)int max = \(int a, int b) int r {
 }
 ```
 
+### 实参打包
+
+```cx
+@Param{
+    int a,b,c
+    char[] str
+    INIT(int _a,_b,_c char[]_s){
+        a=_a b=_b c=_c str=_s
+    }
+}
+foo(Param param){
+
+}
+bar(int[] a){
+
+}
+main(){
+    int a=1,b=2,c=3
+    foo(a b c "Hi")
+    bar(a b c)
+}
+```
+
 ## 七、声明
 
 声明是引入名字的语法单元。一组声明构成一个作用域。
@@ -385,6 +408,8 @@ conversion(Vec2 a)Vec2 b{
     b=a
 }
 ```
+
+同类conversion在左值被赋给左值时触发，代替原本的等号拷贝。
 
 ## 九、修饰
 
@@ -560,7 +585,12 @@ extern "opengl32" {
     glBegin(int mode) {}
     glEnd() {}
 }
+extern "C" {
+    printf(const char-* ...) int r{}
+}
 ```
+
+`...` 用于extern中不定参的声明，仅用于extern
 
 ## 十六、编译与执行
 

@@ -8,11 +8,15 @@ namespace cx {
 // 单独成文件以便评审与测试。
 bool SemanticAnalyzer::record_conversion(Expr* e, Expr* dst) {
     if (!e || !e->type || !dst) return false;
-    if (is_same_type(e->type, dst)) return true;
+    bool same = is_same_type(e->type, dst);
+    // self->self conversion 是拷贝语义（COPY）：仅当源为已存在对象（lvalue）
+    // 时才需要深拷贝；新产生的临时值（rvalue）本身即新鲜对象，直接取用。
+    if (same && !e->is_lvalue) return true;
     if (Symbol* conv = find_conversion(*e->type, *dst)) {
         e->conv = conv->get_decl();
         return true;
     }
+    if (same) return true;
     // 包装类参与：记隐式转换目标，translator 走解包/打包 + 数值 cast
     if (wrap_class_of(dst) || wrap_class_of(e->type)) {
         e->implicit_to = dst;
@@ -242,4 +246,5 @@ bool SemanticAnalyzer::check_conversion(Expr* src, Expr* dst, const std::string&
     error(loc, "cannot implicitly convert between incompatible types in " + context);
     return false;
 }
-}
+
+} // namespace cx

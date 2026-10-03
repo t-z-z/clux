@@ -264,7 +264,8 @@ Func* Parser::parse_func_decl(SpecList &ml, Location &loc) {
     std::string_view name = curr().get_val();
     walk();
     if (curr().kind != TokenKind::ParenL) return nullptr;
-    std::vector<VarList*> params = parse_value_params();
+    bool variadic = false;
+    std::vector<VarList*> params = parse_value_params(&variadic);
     admit();
     std::vector<VarList*> returns;
     for (;;) {
@@ -280,13 +281,15 @@ Func* Parser::parse_func_decl(SpecList &ml, Location &loc) {
     }
     Stmt* body = parse_block_stmt();
     if (!body) add_error("expected function body");
-    return cu_.add_node<Func>(
+    Func* f = cu_.add_node<Func>(
             loc, std::move(name),
             std::move(ml),
             std::move(params),
             std::move(returns),
             body
     );
+    f->is_variadic = variadic;
+    return f;
 }
 
 // 变量的识别：类型或推导符加标识符
@@ -1502,18 +1505,46 @@ std::vector<Expr*> Parser::parse_type_list_in_paren() {
     ).value_or({});
 }
 
-std::vector<VarList*> Parser::parse_value_params() {
-    return parse_list<VarList*>(
-        TokenKind::ParenL,
-        TokenKind::ParenR,
-        TokenKind::Semicolon,
-        [this] {
-            SpecList ml = parse_specs();
-            Location loc = get_loc();
-            return parse_var_decl(ml, loc);
-        },
-        "parameter"
-    ).value_or({});
+std::vector<VarList*> Parser::parse_value_params(bool* variadic) {
+    if (variadic) *variadic = false;
+    std::vector<VarList*> params;
+    if (curr().kind != TokenKind::ParenL) return params;
+    walk();
+    if (curr().kind == TokenKind::ParenR) {
+        walk();
+        return params;
+    }
+    for (;;) {
+        // 变参省略号：仅允许出现在形参表末尾
+        if (curr().kind == TokenKind::Ellipsis) {
+            if (variadic) *variadic = true;
+            walk();
+            if (curr().kind != TokenKind::ParenR)
+                add_error("'...' must be the last parameter");
+            break;
+        }
+        SpecList ml = parse_specs();
+        Location loc = get_loc();
+        VarList* elmt = parse_var_decl(ml, loc);
+        if (elmt) {
+            params.push_back(elmt);
+        } else {
+            add_error("expected parameter in '()'");
+        }
+        if (curr().kind == TokenKind::ParenR) break;
+        if (curr().kind == TokenKind::Semicolon || curr().kind == TokenKind::Comma) {
+            walk();
+            if (curr().kind == TokenKind::ParenR) break;
+            continue;
+        }
+        if (is_eof()) {
+            add_error("unterminated '()'");
+            break;
+        }
+        if (!elmt) walk();
+    }
+    if (curr().kind == TokenKind::ParenR) walk();
+    return params;
 }
 
 // 类型解析
