@@ -233,25 +233,6 @@ main() {
 }
 ```
 
-### 尾随代码块
-
-函数调用时可以直接跟花括号，作为尾随代码块参数：
-
-```cx
-with_lock(mutex)--{
-    critical_section()
-}
-```
-
-### 函数字面量
-
-```cx
-$(int,int)int max = \(int a, int b) int r {
-    if a > b { r = a return }
-    r = b
-}
-```
-
 ### 实参打包
 
 ```cx

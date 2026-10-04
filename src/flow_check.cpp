@@ -277,7 +277,6 @@ bool FlowChecker::expr_assigns_return(Expr* e, Symbol* target) {
         return expr_assigns_return(ar->fill_value, target);
     }
     if (auto* sp = e->get_spawn()) return expr_assigns_return(sp->call, target);
-    if (auto* cl = e->get_closure()) return body_assigns_return(cl->body, target);
     return false;
 }
 
@@ -333,19 +332,6 @@ void FlowChecker::init_expr(InitCtx& ctx, Expr* e) {
         return;
     }
     if (auto* sp = e->get_spawn()) { init_expr(ctx, sp->call); return; }
-    if (auto* cl = e->get_closure()) {
-        // 闭包体独立处理，捕获变量在此处按使用检查
-        InitCtx body_ctx;
-        for (VarList* vl : cl->params) {
-            if (!vl) continue;
-            for (VarItem* vi : vl->vars) {
-                Symbol* sym = sym_of(vi);
-                if (sym) { body_ctx.declared.insert(sym); body_ctx.assigned.insert(sym); }
-            }
-        }
-        init_stmt(body_ctx, cl->body);
-        return;
-    }
 }
 
 // 标量返回且每条路径末尾恰好一次赋值 → 可用寄存器 ret

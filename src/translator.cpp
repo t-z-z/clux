@@ -74,12 +74,19 @@ bool expr_is_unsigned(Expr* t) {
 
 // 收集
 
+void Translator::error(const Location& loc, std::string msg) {
+    diags_.emplace_back(DiagLevel::Error, std::move(msg), loc);
+    has_error_ = true;
+}
+
 void Translator::run() {
     mangler_.collect(cu_);
     collect_classes();
     collect_globals_decl(nullptr, "");
     for (auto& g : globals_)
-        ir_.emit_global("@" + g.sym + " = global " + g.ir_type + " zeroinitializer");
+        ir_.emit_global(g.is_extern
+            ? "@" + g.sym + " = external global " + g.ir_type
+            : "@" + g.sym + " = global " + g.ir_type + " zeroinitializer");
     for (auto& [cls, info] : classes_) {
         for (auto& f : info.static_fields)
             ir_.emit_global("@" + info.static_global_of.at(f.var) +
@@ -90,17 +97,24 @@ void Translator::run() {
         ir_.emit_module_tail("attributes #0 = { alwaysinline }");
 }
 
-// 模块级变量：顶层与命名空间内的 VarList，按 mangled 名逐个登记
-void Translator::collect_globals_decl(Decl* d, const std::string& prefix) {
+// 模块级变量：顶层、命名空间内、extern 内的 VarList，按 mangled 名逐个登记
+void Translator::collect_globals_decl(Decl* d, const std::string& prefix,
+                                      bool is_extern) {
     if (!d) {
-        for (Decl* t : cu_.top_decls) collect_globals_decl(t, prefix);
+        for (Decl* t : cu_.top_decls) collect_globals_decl(t, prefix, is_extern);
         return;
     }
     if (d->kind == DeclKind::Namespace) {
         std::string here = prefix.empty()
             ? std::string(d->name) : prefix + "_" + std::string(d->name);
         for (Decl* m : static_cast<Namespace*>(d)->members)
-            collect_globals_decl(m, here);
+            collect_globals_decl(m, here, is_extern);
+        return;
+    }
+    // extern 内符号名保持原样，与 Mangler 的处理一致
+    if (d->kind == DeclKind::Extern) {
+        for (Decl* m : static_cast<Extern*>(d)->members)
+            collect_globals_decl(m, "", true);
         return;
     }
     if (d->kind != DeclKind::VarList) return;
@@ -113,6 +127,7 @@ void Translator::collect_globals_decl(Decl* d, const std::string& prefix) {
         g.var = vi;
         g.sym = sym;
         g.ir_type = vt ? map_type(vt) : "i32";
+        g.is_extern = is_extern;
         globals_.push_back(g);
         global_of_[vi] = sym;
     }
@@ -1166,7 +1181,6 @@ std::string Translator::eval(Expr* e) {
     if (auto* ar  = e->get_array())       return eval_array(e, ar);
     if (auto* ca  = e->get_cast())        return eval_cast(e, ca);
     if (auto* tr  = e->get_ternary())     return eval_ternary(e, tr);
-    if (auto* cl  = e->get_closure())     return eval_closure(e, cl);
     if (auto* sp  = e->get_spawn())       return eval_spawn(e, sp);
     if (auto* fr  = e->get_func_ref())
         return "@" + IRWriter::quote(mangler_.of(fr->func));
@@ -1694,6 +1708,14 @@ std::string Translator::eval_identifier(Expr* e, Expr::Identifier* id) {
             }
         }
     }
+    // 走到这里说明该变量没有已登记的存储：语义已通过，翻译器却无法定位它。
+    // 静默返回 0 会把变量引用变成空指针，必须报错而不是掩盖。
+    if (e->sym && e->sym->kind == SymbolKind::Variable)
+        error(e->loc, "internal: no storage found for variable '" +
+                      std::string(e->get_identifier()
+                                      ? e->get_identifier()->name
+                                      : std::string_view("<unknown>")) +
+                      "'");
     return "0";
 }
 
@@ -2759,108 +2781,6 @@ std::string Translator::eval_call(Expr* e, Expr::Call* c) {
     return eval_plain_call(e, c, static_cast<Func*>(c->resolved));
 }
 
-std::string Translator::emit_closure_fn(Expr::Closure* c) {
-    std::string name = "__closure_" + std::to_string(closure_counter_++);
-
-    ir_.capture_late();
-    Ctx saved = ctx_;
-    Ctx fresh;
-    ctx_ = fresh;
-    ir_.begin_func();
-
-    // 函数指针 ABI：闭包与调用点一致，标量走寄存器、类返回实例指针，
-    // 不使用 sret（$(...)T 类型不携带 sret 信息）
-    std::string ret_t = "void";
-    VarItem* ret_var = nullptr;
-    Expr* ret_expr = nullptr;
-    if (!c->returns.empty() && c->returns.back()) {
-        VarList* rl = c->returns.back();
-        if (!rl->vars.empty()) ret_var = rl->vars.back();
-        Expr* rt = (ret_var && ret_var->type) ? ret_var->type : rl->type;
-        if (rt) { ret_t = map_type(rt); ret_expr = rt; }
-    }
-    Class* ret_cls = ret_expr ? as_class(ret_expr) : nullptr;
-
-    std::vector<std::string> params;
-    std::vector<std::tuple<VarItem*, std::string, std::string>> arg_inits;
-    int idx = 0;
-    for (VarList* vl : c->params) {
-        if (!vl) continue;
-        for (VarItem* vi : vl->vars) {
-            std::string vt = vi->type ? map_type(vi->type)
-                                      : (vl->type ? map_type(vl->type) : "i32");
-            std::string argn = "%a" + std::to_string(idx++);
-            params.push_back(vt + " " + argn);
-            arg_inits.emplace_back(vi, argn, vt);
-        }
-    }
-
-    std::string ret_sig = (ret_var && !ret_cls) ? ret_t : "void";
-    std::string sig = "define " + ret_sig + " @" + IRWriter::quote(name) + "(";
-    for (size_t i = 0; i < params.size(); ++i) {
-        if (i) sig += ", ";
-        sig += params[i];
-    }
-    sig += ") {";
-    ir_.emit(sig);
-    open_block("entry");
-
-    for (auto& [vi, argn, vt] : arg_inits) {
-        std::string slot = ir_.reg();
-        emit_instr(slot + " = alloca " + vt);
-        emit_instr("store " + vt + " " + argn + ", ptr " + slot);
-        ctx_.slots[vi] = slot;
-        // 引用形参：入参即被绑定对象的地址，槽已是绑定态
-        if (is_ref_item(vi, nullptr)) ctx_.ref_bound.insert(vi);
-    }
-
-    std::string exit_l;
-    if (ret_var) {
-        exit_l = ir_.named_label("closure.exit");
-        ctx_.exit_label = exit_l;
-        if (ret_cls) {
-            std::string obj = ir_.reg();
-            emit_instr(obj + " = alloca " + classes_[ret_cls].llvm_name);
-            ctx_.ret_obj_var = ret_var;
-            ctx_.ret_obj_ptr = obj;
-            ctx_.ret_obj_cls = ret_cls;
-        } else {
-            std::string slot = ir_.reg();
-            emit_instr(slot + " = alloca " + ret_t);
-            ctx_.slots[ret_var] = slot;
-        }
-    }
-
-    if (c->body) emit_stmt(c->body);
-    if (!ctx_.term) {
-        emit_drops_to(0);
-        if (ret_var) emit_term("br label %" + exit_l);
-    }
-    if (ret_var) {
-        open_block(exit_l);
-        if (ret_cls) {
-            emit_term("ret ptr " + ctx_.ret_obj_ptr);
-        } else {
-            std::string r = ir_.reg();
-            emit_instr(r + " = load " + ret_t + ", ptr " + ctx_.slots[ret_var]);
-            emit_term("ret " + ret_t + " " + r);
-        }
-    } else if (!ctx_.term) {
-        emit_drops_to(0);
-        emit_term("ret void");
-    }
-    ir_.emit("}");
-    ir_.blank();
-    ir_.release_late();
-
-    ctx_ = saved;
-    return name;
-}
-
-std::string Translator::eval_closure(Expr*, Expr::Closure* c) {
-    return "@" + emit_closure_fn(c);
-}
-
 std::string Translator::call_func_ptr(Expr* e, Expr::Call* c, Expr::FuncPtr* fp) {
     std::string fpv = eval(c->callee);
     (void)e;
@@ -2989,7 +2909,7 @@ std::string Translator::eval_spawn(Expr*, Expr::Spawn* s) {
     }
 
     // 生成 wrapper（到 late 缓冲）
-    std::string wrapper = "__spawn_" + std::to_string(closure_counter_++);
+    std::string wrapper = "__spawn_" + std::to_string(aux_fn_counter_++);
     ir_.capture_late();
     ir_.begin_func();
     Ctx saved = ctx_;

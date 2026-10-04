@@ -1,4 +1,6 @@
+// 函数指针作形参：传入普通函数名并通过指针调用
+triple(int a) int r { r = a * 3 }
 apply($(int)int g, int v) int r { r = g(v) }
 main() {
-    int x = apply(\(int a) int r { r = a }, 3)
+    int x = apply(triple, 3)
 }

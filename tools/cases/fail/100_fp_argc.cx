@@ -1,4 +1,6 @@
+// 函数指针实参个数不符：应报参数个数错误
+twice(int a, int b) int r { r = a }
 main() {
-    $(int)int f = \(int a) int r { r = a }
-    int x = f(1, 2)
+    $(int)int f = twice
+    int x = f(1)
 }

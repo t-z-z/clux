@@ -6,10 +6,12 @@
 #include "../include/ir_writer.h"
 #include "../include/translator.h"
 
+#include <algorithm>
 #include <filesystem>
 #include <fstream>
 #include <sstream>
 #include <memory>
+#include <string_view>
 #include <unordered_map>
 #include <vector>
 
@@ -172,20 +174,42 @@ bool check(const std::string& source, const std::string& filename,
     return run_frontend(pool, source, filename, lib_dir).ok;
 }
 
+// 收集 extern 块声明的库名。`extern "c"` 表示 C 运行时，
+// 由 clang++ 默认链接，不生成 -l
+void collect_extern_libs(
+        const std::vector<std::unique_ptr<Module>>& modules,
+        std::vector<std::string>& out) {
+    for (const auto& mp : modules) {
+        if (!mp || !mp->cu) continue;
+        for (Decl* d : mp->cu->top_decls) {
+            if (!d || d->kind != DeclKind::Extern) continue;
+            std::string_view name = d->name;
+            if (name == "c" || name == "C") continue;
+            if (std::find(out.begin(), out.end(), name) == out.end())
+                out.emplace_back(name);
+        }
+    }
+}
+
 bool translate(const std::string& source, const std::string& filename,
-               const std::string& lib_dir, std::ostream& out) {
+               const std::string& lib_dir, std::ostream& out,
+               std::vector<std::string>* libs) {
     // pool 必须活到翻译结束，否则 AST 中 string_view 悬垂
     StringPool pool;
     FrontendResult r = run_frontend(pool, source, filename, lib_dir);
     if (!r.ok) return false;
     IRWriter ir(out);
     ir.emit_header();
+    bool ok = true;
     for (auto& m : r.modules) {
         Translator t(*m->cu, ir);
         t.run();
+        for (const Diagnostic& d : t.diagnostics()) emit_diagnostic(d);
+        if (t.has_error()) ok = false;
     }
     ir.flush();
-    return true;
+    if (libs) collect_extern_libs(r.modules, *libs);
+    return ok;
 }
 
 } // namespace cx

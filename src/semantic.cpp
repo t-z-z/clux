@@ -1420,30 +1420,6 @@ void SemanticAnalyzer::visit_expr_array(Expr::Array& arr) {
     current_expr->is_lvalue = false;
 }
 
-void SemanticAnalyzer::visit_expr_closure(Expr::Closure& clo) {
-    if (clo.body) {
-        flow_.check_jumps(clo.body);
-        flow_.check_initialization(clo.body, clo.params, clo.returns);
-    }
-    std::vector<Expr*> param_types;
-    for (auto* p : clo.params) {
-        if (p && p->type) {
-            param_types.push_back(p->type);
-        }
-    }
-
-    Expr* ret_type = nullptr;
-    if (!clo.returns.empty() && clo.returns.back() && clo.returns.back()->type) {
-        ret_type = clo.returns.back()->type;
-    } else {
-        ret_type = typeVoid;
-    }
-
-    current_expr->type = make_type(current_expr->loc,
-        Expr::FuncPtr{std::move(param_types), ret_type});
-    current_expr->is_lvalue = false;
-}
-
 void SemanticAnalyzer::visit_expr_ternary(Expr::Ternary& t) {
     Expr* ct = t.cond ? t.cond->type : nullptr;
     if (ct && !is_bool_type(ct)) {

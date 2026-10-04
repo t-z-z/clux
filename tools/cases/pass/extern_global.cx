@@ -1,0 +1,19 @@
+extern "c" {
+    void-* stdout, stderr
+    fflush(void-* s) int r { }
+}
+
+namespace io {
+    extern "c" {
+        int optind
+    }
+}
+
+main() int r {
+    int n = io.optind
+    fflush(stdout)
+    stderr = stdout
+    io.optind = 1
+    fflush(stderr)
+    r = n - n
+}

@@ -56,6 +56,43 @@ for f in tools/cases/pass/*.cx; do
     fi
 done
 
+# extern 库名 + -L：非系统目录下的动态库须能链接，且 -r 运行无需
+# LD_LIBRARY_PATH（验证 -Wl,-rpath 生效）；反之去掉 -L 必须链接失败
+lib_ok=0
+libdir="$tmp/lib"
+mkdir -p "$libdir"
+
+cat > "$tmp/cluxtestlib.cpp" <<'EOF'
+extern "C" int clux_test_value() { return 33; }
+EOF
+
+cat > "$tmp/use_lib.cx" <<'EOF'
+extern "cluxtest" { clux_test_value() int r { } }
+main() int r {
+    r = clux_test_value()
+}
+EOF
+
+lib_n=1
+if ! clang++ -shared -fPIC -o "$libdir/libcluxtest.so" "$tmp/cluxtestlib.cpp" >/dev/null 2>&1; then
+    bad_list+=("生成 libcluxtest.so 失败")
+else
+    "$CLUX" -r "$tmp/use_lib.cx" -L "$libdir" -o "$tmp/use_lib" >/dev/null 2>&1
+    rc=$?
+    if [ "$rc" -ne 33 ]; then
+        bad_list+=("-L 构建运行退出码 $rc，期望 33")
+    else
+        lib_ok=$((lib_ok+1))
+    fi
+
+    lib_n=$((lib_n+1))
+    if "$CLUX" -b "$tmp/use_lib.cx" -o "$tmp/use_lib_nol" >/dev/null 2>&1; then
+        bad_list+=("未给 -L 时本应链接失败却成功")
+    else
+        lib_ok=$((lib_ok+1))
+    fi
+fi
+
 end_ns=$(date +%s%N)
 elapsed_ms=$(( (end_ns - start_ns) / 1000000 ))
 sec=$((elapsed_ms / 1000))
@@ -65,6 +102,7 @@ elif [ "$ms" -lt 100 ]; then ms="0$ms"
 fi
 
 echo "smoke: $ok/$n"
+echo "lib: $lib_ok/$lib_n"
 echo "耗时: ${sec}.${ms}s"
 if [ ${#bad_list[@]} -gt 0 ]; then
     printf '\n%s\n' "${bad_list[@]}"

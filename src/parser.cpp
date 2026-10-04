@@ -1403,45 +1403,33 @@ Expr* Parser::parse_postfix(Expr* left, bool is_type) {
     }
 }
 
-// 块表达式（闭包）
+// 块表达式：语法可读，但不构造块节点（见 future.md 的闭包捕获）
+// 返回占位表达式只为让解析继续，避免后续报一堆无意义的连锁错误；
+// 已有 error，翻译阶段不会执行到
 Expr* Parser::parse_block_expr() {
-    Stmt* block = parse_block_stmt();
-    if (!block) return nullptr;
-    return cu_.add_node<Expr>(
-        block->loc,
-        Expr::Closure{
-            std::vector<VarList*>{},
-            std::vector<VarList*>{},
-            block
-        }
-    );
+    Location loc = get_loc();
+    errors_.push_back(Diagnostic(DiagLevel::Error,
+        "block expression is not supported yet", loc));
+    parse_block_stmt();
+    return cu_.add_node<Expr>(loc, Expr::Inferred{});
 }
 
-// 函数字面量：/ [捕获] (参数) 返回类型 { 函数体 }
+// 函数字面量：\ (参数) 返回类型 { 函数体 }
+// 语法可读并完整消费，但不构造函数字面量节点（见 future.md 的闭包捕获）
 Expr* Parser::parse_func_literal() {
     Location loc = get_loc();
     walk();
-    std::vector<VarList*> params = parse_value_params();
+    errors_.push_back(Diagnostic(DiagLevel::Error,
+        "function literal is not supported yet", loc));
+    parse_value_params();
     admit();
-    std::vector<VarList*> returns;
     for (;;) {
         SpecList ml = parse_specs();
-        Location loc = get_loc();
-        VarList* r = parse_var_decl(ml, loc);
-        if (r) {
-            returns.push_back(r);
-        } else {
-            break;
-        }
+        Location vloc = get_loc();
+        if (!parse_var_decl(ml, vloc)) break;
     }
-    Stmt* body = parse_block_stmt();
-    if (!body) {
-        add_error("expected function body");
-    }
-    return cu_.add_node<Expr>(
-        loc,
-        Expr::Closure{std::move(params), returns, body}
-    );
+    parse_block_stmt();
+    return cu_.add_node<Expr>(loc, Expr::Inferred{});
 }
 
 // 字面量解析
