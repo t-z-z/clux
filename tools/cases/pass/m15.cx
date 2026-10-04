@@ -1,9 +1,10 @@
+// 注入成员：不同来源的成员按名字合并，各自的成员都可调用
 @a {
     pub int v = 0
     pub f() int r { r = 1 }
 }
 @c {
-    pub g() int r { r = 3 }
+    pub g(int x) int r { r = 3 }
 }
 #a @b #c {
     pub INIT() { }
@@ -12,6 +13,6 @@
 main() {
     b obj = b()
     int x = obj.f()
-    int y = obj.g()
+    int y = obj.g(2)
     int z = obj.h()
 }

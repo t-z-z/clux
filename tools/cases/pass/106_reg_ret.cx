@@ -1,2 +1,0 @@
-add(int a, int b) int r { r = a + b }
-main() { int x = add(1, 2) }

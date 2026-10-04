@@ -1,5 +1,10 @@
-main() {
+extern "c" {
+    getenv(char-* name) char-* r { }
+    puts(char-* s) { }
+}
+main() int r {
     int[3] a = [1 2 3]
     int-* p = a.ptr
     int x = p-*
+    r = 0
 }

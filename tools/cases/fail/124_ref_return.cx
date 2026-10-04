@@ -1,0 +1,9 @@
+// 引用不能作返回类型：返回变量的存储随栈帧消失
+func() int-& r {
+    r = 1
+    return
+}
+main() int x {
+    x = 0
+    return
+}

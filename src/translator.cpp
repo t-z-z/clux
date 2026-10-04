@@ -77,6 +77,9 @@ bool expr_is_unsigned(Expr* t) {
 void Translator::run() {
     mangler_.collect(cu_);
     collect_classes();
+    collect_globals_decl(nullptr, "");
+    for (auto& g : globals_)
+        ir_.emit_global("@" + g.sym + " = global " + g.ir_type + " zeroinitializer");
     for (auto& [cls, info] : classes_) {
         for (auto& f : info.static_fields)
             ir_.emit_global("@" + info.static_global_of.at(f.var) +
@@ -85,6 +88,34 @@ void Translator::run() {
     for (Decl* d : cu_.top_decls) emit_decl(d);
     if (uses_alwaysinline_)
         ir_.emit_module_tail("attributes #0 = { alwaysinline }");
+}
+
+// 模块级变量：顶层与命名空间内的 VarList，按 mangled 名逐个登记
+void Translator::collect_globals_decl(Decl* d, const std::string& prefix) {
+    if (!d) {
+        for (Decl* t : cu_.top_decls) collect_globals_decl(t, prefix);
+        return;
+    }
+    if (d->kind == DeclKind::Namespace) {
+        std::string here = prefix.empty()
+            ? std::string(d->name) : prefix + "_" + std::string(d->name);
+        for (Decl* m : static_cast<Namespace*>(d)->members)
+            collect_globals_decl(m, here);
+        return;
+    }
+    if (d->kind != DeclKind::VarList) return;
+    for (VarItem* vi : static_cast<VarList*>(d)->vars) {
+        if (!vi) continue;
+        std::string sym = mangler_.global_of(vi);
+        if (sym.empty()) continue;
+        Expr* vt = vi->type ? vi->type : static_cast<VarList*>(d)->type;
+        GlobalVar g;
+        g.var = vi;
+        g.sym = sym;
+        g.ir_type = vt ? map_type(vt) : "i32";
+        globals_.push_back(g);
+        global_of_[vi] = sym;
+    }
 }
 
 void Translator::emit_decl(Decl* d) {
@@ -125,6 +156,7 @@ void Translator::collect_classes_decl(Decl* d) {
             Class* c = static_cast<Class*>(d);
             ClassInfo info;
             info.llvm_name = "%" + mangler_.of(c);
+            info.size_global = "__clux_size_" + mangler_.of(c);
             int idx = 0;
             for (Decl* m : c->members) {
                 if (!m || m->kind != DeclKind::VarList) continue;
@@ -269,16 +301,7 @@ void Translator::open_block(const std::string& label) {
 
 // DROP 清理
 
-void Translator::emit_scope_cleanup(int depth) {
-    // 离开作用域时遗忘引用绑定（引用变量本身不承载资源，无需释放）
-    for (auto it = ctx_.ref_slots.begin(); it != ctx_.ref_slots.end(); ) {
-        if (it->second > depth) it = ctx_.ref_slots.erase(it);
-        else ++it;
-    }
-}
-
 void Translator::emit_drops_to(int depth) {
-    emit_scope_cleanup(depth);
     while (!ctx_.drops.empty() && ctx_.drops.back().scope_depth > depth) {
         auto& d = ctx_.drops.back();
         if (!ctx_.term) {
@@ -320,6 +343,7 @@ void Translator::emit_func(Func& f, Class* cls) {
     // main 有返回变量：不用 sret，改为局部变量 + 统一 exit 块
     bool main_with_ret = is_main && ret_var;
     bool plain_main = is_main && !ret_var && ret_t == "void";
+    ctx_.plain_main = plain_main;
     // 类返回：调用方提供对象存储，callee 就地构造
     Class* ret_cls = (!main_with_ret && !f.ret_via_reg)
         ? as_class(ret_expr) : nullptr;
@@ -380,6 +404,12 @@ void Translator::emit_func(Func& f, Class* cls) {
         emit_instr(slot + " = alloca " + vt);
         emit_instr("store " + vt + " " + argn + ", ptr " + slot);
         ctx_.slots[vi] = slot;
+        // 引用形参：入参即被绑定对象的地址，槽已是绑定态。
+        // 必须先于下面的类指针分支，pointee_class 会解包引用 target
+        if (is_ref_item(vi, nullptr)) {
+            ctx_.ref_bound.insert(vi);
+            continue;
+        }
         if (vt == "ptr") {
             Expr* vt_expr = vi->type;
             Class* pc = pointee_class(vt_expr);
@@ -389,8 +419,11 @@ void Translator::emit_func(Func& f, Class* cls) {
             }
         }
     }
-    // static 字段默认值：在任何 INIT 执行前写入
-    if (is_main) emit_static_inits();
+    // static 字段与模块级变量的默认值：在任何 INIT 执行前写入
+    if (is_main) {
+        emit_global_inits();
+        emit_static_inits();
+    }
     if (main_with_ret) {
         std::string slot = ir_.reg();
         emit_instr(slot + " = alloca i32");
@@ -471,6 +504,7 @@ void Translator::emit_special(SpecialMethod& sm, Class* cls) {
     ctx_ = Ctx{};
     ctx_.current_class = cls;
     ctx_.self_ptr = "%self";
+    ctx_.in_init = (sm.kind == SpecialMethod::Kind::Init);
 
     std::vector<std::string> params;
     params.push_back("ptr %self");
@@ -502,6 +536,11 @@ void Translator::emit_special(SpecialMethod& sm, Class* cls) {
         emit_instr(slot + " = alloca " + vt);
         emit_instr("store " + vt + " " + argn + ", ptr " + slot);
         ctx_.slots[vi] = slot;
+        // 引用形参：入参即被绑定对象的地址，槽已是绑定态
+        if (is_ref_item(vi, nullptr)) {
+            ctx_.ref_bound.insert(vi);
+            continue;
+        }
         if (vt == "ptr") {
             Class* pc = pointee_class(vi->type);
             if (pc) {
@@ -531,6 +570,13 @@ void Translator::emit_class(Class* c) {
     }
     ty += "}";
     ir_.emit_type(ty);
+    // 向前一步的偏移即实例字节数：交给 LLVM 计算，避免手写布局推导。
+    // 只有 malloc 类需要它来定分配量
+    if (c->specs.has(SpecKind::Malloc)) {
+        ir_.emit_global("@" + info.size_global +
+                        " = private constant i64 ptrtoint (ptr getelementptr (" +
+                        info.llvm_name + ", ptr null, i32 1) to i64)");
+    }
 
     std::unordered_set<std::string> emitted;
     for (Decl* m : c->members) {
@@ -729,7 +775,13 @@ bool Translator::emit_class_var(VarList* vl, VarItem* vi, Class* cls) {
     bool created = false;
     if (vi->init) {
         Class* src_cls = as_class(vi->init->type);
-        if (src_cls == cls && !needs_convert(vi->init)) {
+        // 初值是 INIT 调用时是构造而非拷贝：构造结果就是本实例，
+        // 再逐字段复制会把引用字段的绑定目标也复制成指向临时实例
+        bool ctor_call = false;
+        if (auto* call = vi->init->get_call())
+            ctor_call = call->resolved &&
+                        call->resolved->kind == DeclKind::SpecialMethod;
+        if (!ctor_call && src_cls == cls && !needs_convert(vi->init)) {
             // 同类初始化：拷贝构造，新建实例并逐字段复制
             std::string src = eval(vi->init);
             inst = emit_class_copy(cls, src);
@@ -737,18 +789,15 @@ bool Translator::emit_class_var(VarList* vl, VarItem* vi, Class* cls) {
         } else {
             if (vi->init->implicit_to && as_wrap_class(vi->init->implicit_to))
                 created = true;
-            else if (auto* call = vi->init->get_call()) {
-                if (call->resolved &&
-                    call->resolved->kind == DeclKind::SpecialMethod)
-                    created = true;
-            }
+            else if (ctor_call)
+                created = true;
             inst = eval_converted(vi->init);
         }
     } else if (is_malloc_cls) {
         ir_.need_malloc();
         inst = ir_.reg();
         emit_instr(inst + " = call ptr @malloc(i64 " +
-                   std::to_string(type_size(it->second.llvm_name)) + ")");
+                   emit_size_of(it->second.llvm_name) + ")");
         created = true;
     } else {
         inst = ir_.reg();
@@ -897,7 +946,6 @@ void Translator::emit_var_decl(VarList* vl) {
             std::string slot = ir_.reg();
             emit_instr(slot + " = alloca ptr");
             ctx_.slots[vi] = slot;
-            ctx_.ref_slots[vi] = ctx_.scope_depth;
             if (vi->init) {
                 std::string addr = eval_lvalue(vi->init);
                 if (addr.empty()) addr = eval(vi->init);
@@ -1042,6 +1090,11 @@ void Translator::emit_return(Stmt::Return&) {
             return;
         }
     }
+    // 无返回变量的 main 签名为 i32，裸 return 按返回 0 处理
+    if (ctx_.plain_main) {
+        emit_term("ret i32 0");
+        return;
+    }
     emit_term("ret void");
 }
 
@@ -1160,6 +1213,43 @@ void Translator::emit_fields_copy(Class* cls, const std::string& src,
         std::string sa = ir_.reg();
         emit_instr(sa + " = getelementptr " + cls_ir + ", ptr " + src +
                    ", i32 0, i32 " + std::to_string(f.index));
+        // malloc 类的数组字段：切片里存的是 backing 指针，逐字段复制会让两个
+        // 对象共用同一段堆存储，其中一个释放后另一个悬垂，故重新分配并拷贝内容。
+        // 非 malloc 类的对象与其 backing 同在栈帧内，共用是安全的，保持原状
+        Expr* vt = f.var ? f.var->type : nullptr;
+        if (cls->specs.has(SpecKind::Malloc) && vt && vt->is_array_type() &&
+            f.ir_type == "{ ptr, i32 }") {
+            std::string sv = ir_.reg();
+            emit_instr(sv + " = load { ptr, i32 }, ptr " + sa);
+            std::string sp = ir_.reg();
+            emit_instr(sp + " = extractvalue { ptr, i32 } " + sv + ", 0");
+            std::string sl = ir_.reg();
+            emit_instr(sl + " = extractvalue { ptr, i32 } " + sv + ", 1");
+            Expr* el = vt->get_array_type()->element;
+            long bytes = type_bytes_of(el ? map_type(el) : "i32");
+            std::string sl64 = ir_.reg();
+            emit_instr(sl64 + " = sext i32 " + sl + " to i64");
+            std::string nb = ir_.reg();
+            emit_instr(nb + " = mul i64 " + sl64 + ", " + std::to_string(bytes));
+            ir_.need_malloc();
+            std::string dp = ir_.reg();
+            emit_instr(dp + " = call ptr @malloc(i64 " + nb + ")");
+            if (bytes > 0) {
+                ir_.need_memcpy();
+                emit_instr("call void @llvm.memcpy.p0i8.p0i8.i64(ptr " + dp +
+                           ", ptr " + sp + ", i64 " + nb + ", i1 false)");
+            }
+            std::string d1 = ir_.reg();
+            emit_instr(d1 + " = insertvalue { ptr, i32 } undef, ptr " + dp + ", 0");
+            std::string d2 = ir_.reg();
+            emit_instr(d2 + " = insertvalue { ptr, i32 } " + d1 + ", i32 " + sl +
+                       ", 1");
+            std::string da = ir_.reg();
+            emit_instr(da + " = getelementptr " + cls_ir + ", ptr " + dst +
+                       ", i32 0, i32 " + std::to_string(f.index));
+            emit_instr("store { ptr, i32 } " + d2 + ", ptr " + da);
+            continue;
+        }
         std::string sv = ir_.reg();
         emit_instr(sv + " = load " + f.ir_type + ", ptr " + sa);
         std::string da = ir_.reg();
@@ -1169,23 +1259,64 @@ void Translator::emit_fields_copy(Class* cls, const std::string& src,
     }
 }
 
+// 字段是否有需要写入的声明处默认值：无初值的引用字段写 null，
+// 使未绑定时的读取确定性地失败而非读到垃圾
+bool Translator::field_has_default(const Field& f) {
+    if (!f.var) return false;
+    if (f.var->type && f.var->type->is_reference()) return true;
+    return f.var->init != nullptr;
+}
+
+// 写入单个字段的声明处默认值：引用字段的初值即绑定点，存被引用对象的地址
+void Translator::emit_field_default(const std::string& dst_addr, const Field& f) {
+    if (!f.var) return;
+    if (f.var->type && f.var->type->is_reference()) {
+        // 引用字段一律在 INIT 中绑定，构造开始前写 null：
+        // INIT 绑定语句之前就读取会确定性地失败而非读到垃圾
+        emit_instr("store ptr null, ptr " + dst_addr);
+        return;
+    }
+    if (!f.var->init) return;
+    bool converted = needs_convert(f.var->init);
+    std::string v = converted ? eval_converted(f.var->init) : eval(f.var->init);
+    std::string st = f.var->init->type ? map_type(f.var->init->type) : f.ir_type;
+    if (!converted && st != f.ir_type)
+        v = cast_value(v, st, f.ir_type, !expr_is_unsigned(f.var->init->type),
+                       !expr_is_unsigned(f.var->type));
+    emit_instr("store " + f.ir_type + " " + v + ", ptr " + dst_addr);
+}
+
 // 模块入口为所有 static 字段写入声明处默认值
 void Translator::emit_static_inits() {
     for (auto& [cls, info] : classes_) {
         for (auto& f : info.static_fields) {
-            if (!f.var || !f.var->init) continue;
-            std::string g = "@" + info.static_global_of.at(f.var);
-            bool converted = needs_convert(f.var->init);
-            std::string v = converted ? eval_converted(f.var->init)
-                                      : eval(f.var->init);
-            std::string st = f.var->init->type ? map_type(f.var->init->type)
-                                               : f.ir_type;
-            if (!converted && st != f.ir_type)
-                v = cast_value(v, st, f.ir_type,
-                               !expr_is_unsigned(f.var->init->type),
-                               !expr_is_unsigned(f.var->type));
-            emit_instr("store " + f.ir_type + " " + v + ", ptr " + g);
+            if (!f.var || !field_has_default(f)) continue;
+            emit_field_default("@" + info.static_global_of.at(f.var), f);
         }
+    }
+}
+
+// 模块入口为所有模块级变量写入声明处默认值。
+// 初值在main 入口求值而非写成 LLVM 常量初始化式，因此可以引用其他变量、
+// 调用函数；代价是 main 之前这些全局量都是零值
+void Translator::emit_global_inits() {
+    for (auto& g : globals_) {
+        if (!g.var || !g.var->init) continue;
+        if (g.var->type && g.var->type->is_reference()) {
+            std::string addr = eval_ref_addr(g.var->init);
+            if (addr.empty()) addr = "null";
+            emit_instr("store ptr " + addr + ", ptr @" + g.sym);
+            continue;
+        }
+        bool converted = needs_convert(g.var->init);
+        std::string v = converted ? eval_converted(g.var->init)
+                                  : eval(g.var->init);
+        std::string st = g.var->init->type ? map_type(g.var->init->type)
+                                           : g.ir_type;
+        if (!converted && st != g.ir_type)
+            v = cast_value(v, st, g.ir_type, !expr_is_unsigned(g.var->init->type),
+                           !expr_is_unsigned(g.var->type));
+        emit_instr("store " + g.ir_type + " " + v + ", ptr @" + g.sym);
     }
 }
 
@@ -1194,19 +1325,11 @@ void Translator::emit_field_defaults(Class* cls, const std::string& slot) {
     auto it = classes_.find(cls);
     if (it == classes_.end()) return;
     for (auto& f : it->second.fields) {
-        if (!f.var || !f.var->init) continue;
-        bool converted = needs_convert(f.var->init);
-        std::string v = converted ? eval_converted(f.var->init)
-                                  : eval(f.var->init);
-        std::string t = f.ir_type;
-        std::string st = f.var->init->type ? map_type(f.var->init->type) : t;
-        if (!converted && st != t)
-            v = cast_value(v, st, t, !expr_is_unsigned(f.var->init->type),
-                           !expr_is_unsigned(f.var->type));
+        if (!field_has_default(f)) continue;
         std::string addr = ir_.reg();
         emit_instr(addr + " = getelementptr " + it->second.llvm_name +
                    ", ptr " + slot + ", i32 0, i32 " + std::to_string(f.index));
-        emit_instr("store " + t + " " + v + ", ptr " + addr);
+        emit_field_default(addr, f);
     }
 }
 
@@ -1220,7 +1343,7 @@ std::string Translator::emit_class_copy(Class* cls, const std::string& src) {
         ir_.need_malloc();
         dst = ir_.reg();
         emit_instr(dst + " = call ptr @malloc(i64 " +
-                   std::to_string(type_size(cls_ir)) + ")");
+                   emit_size_of(cls_ir) + ")");
         emit_bind_ref(cls, dst, SpecialMethod::Kind::Ref);
     } else {
         dst = ir_.reg();
@@ -1284,7 +1407,7 @@ std::string Translator::emit_wrap_convert(Expr* e) {
             ir_.need_malloc();
             slot = ir_.reg();
             emit_instr(slot + " = call ptr @malloc(i64 " +
-                       std::to_string(type_size(cls_ir)) + ")");
+                       emit_size_of(cls_ir) + ")");
             emit_bind_ref(dw, slot, SpecialMethod::Kind::Ref);
         } else {
             slot = ir_.reg();
@@ -1299,22 +1422,26 @@ std::string Translator::emit_wrap_convert(Expr* e) {
     return v;
 }
 
-size_t Translator::type_size(const std::string& llvm_name) const {
+// 单个元素的字节数：类型名已知且是定长标量/指针，可直接算出
+long Translator::type_bytes_of(const std::string& t) {
+    if (t == "i1" || t == "i8") return 1;
+    if (t == "i16" || t == "half") return 2;
+    if (t == "i32" || t == "float") return 4;
+    if (t == "i64" || t == "double" || t == "ptr") return 8;
+    if (t == "i128") return 16;
+    return 8;
+}
+
+// 实例字节数：交给 LLVM 用常量表达式算出真实布局（含聚合类型与对齐），
+// 手写字段分派无法覆盖任意聚合类型且会漏掉对齐填充
+std::string Translator::emit_size_of(const std::string& llvm_name) {
     for (auto& [cls, info] : classes_) {
         if (info.llvm_name != llvm_name) continue;
-        size_t total = 0;
-        for (auto& f : info.fields) {
-            const std::string& t = f.ir_type;
-            if (t == "i1" || t == "i8") total += 1;
-            else if (t == "i16" || t == "half") total += 2;
-            else if (t == "i32" || t == "float") total += 4;
-            else if (t == "i64" || t == "double" || t == "ptr") total += 8;
-            else if (t == "i128") total += 16;
-            else total += 8;
-        }
-        return total == 0 ? 1 : total;
+        std::string r = ir_.reg();
+        emit_instr(r + " = load i64, ptr @" + info.size_global);
+        return r;
     }
-    return 1;
+    return "1";
 }
 
 bool Translator::needs_convert(Expr* e) {
@@ -1328,6 +1455,71 @@ std::string Translator::eval_converted(Expr* e) {
     if (e && e->implicit_to)
         return emit_wrap_convert(e);
     return eval(e);
+}
+
+// 成员表达式的存储地址：static 字段为模块级全局符号，实例字段为 getelementptr
+std::string Translator::field_addr_of(Expr* e) {
+    if (!e || !e->sym) return "";
+    auto* vi = dynamic_cast<VarItem*>(e->sym->node);
+    if (!vi) return "";
+    auto sit = static_global_.find(vi);
+    if (sit != static_global_.end()) return "@" + sit->second;
+    auto git = global_of_.find(vi);
+    if (git != global_of_.end()) return "@" + git->second;
+    auto* m = e->get_member();
+    if (!m) return "";
+    Class* cls = as_class(m->target ? m->target->type : nullptr);
+    if (!cls) return "";
+    auto it = classes_.find(cls);
+    if (it == classes_.end()) return "";
+    auto fit = it->second.field_index.find(std::string(m->member));
+    if (fit == it->second.field_index.end()) return "";
+    std::string base = eval(m->target);
+    std::string addr = ir_.reg();
+    emit_instr(addr + " = getelementptr " + it->second.llvm_name + ", ptr " + base +
+               ", i32 0, i32 " + std::to_string(fit->second));
+    return addr;
+}
+
+// 引用字段的槽存被引用对象的地址，取其 lvalue 需先取出该地址
+std::string Translator::field_lvalue(Expr* e, const std::string& slot_addr) {
+    Expr* dt = e && e->sym ? e->sym->get_type() : nullptr;
+    if (slot_addr.empty() || !dt || !dt->is_reference()) return slot_addr;
+    std::string addr = ir_.reg();
+    emit_instr(addr + " = load ptr, ptr " + slot_addr);
+    return addr;
+}
+
+// 引用字段绑定：见 bind_ref_field。
+// 引用字段的绑定：仅 INIT 内对字段的直接赋值是绑定，其余位置都是写穿。
+// 局部引用与引用形参都在创建时已绑定（声明处 / 进入函数时），不经过这里
+std::string Translator::bind_ref_field(Expr* target, Expr* value) {
+    if (!ctx_.in_init || !target || !target->sym) return "";
+    auto* vi = dynamic_cast<VarItem*>(target->sym->node);
+    if (!vi || !is_ref_item(vi, nullptr)) return "";
+    std::string dst = field_addr_of(target);
+    if (dst.empty()) return "";
+    std::string addr = eval_ref_addr(value);
+    if (addr.empty()) addr = eval(value);
+    emit_instr("store ptr " + addr + ", ptr " + dst);
+    return addr;
+}
+
+// 被引用对象的地址：引用绑定、引用形参传参、取地址都走这里。
+// 与 eval_lvalue 的唯一分歧是类实例变量——它的槽存的是实例指针，
+// 作为被引用对象时要取出该指针而非槽地址
+std::string Translator::eval_ref_addr(Expr* e) {
+    if (e && e->sym && e->sym->kind == SymbolKind::Variable && as_class(e->type)) {
+        if (auto* vi = dynamic_cast<VarItem*>(e->sym->node)) {
+            auto it = ctx_.slots.find(vi);
+            if (it != ctx_.slots.end() && !ctx_.ref_bound.count(vi)) {
+                std::string addr = ir_.reg();
+                emit_instr(addr + " = load ptr, ptr " + it->second);
+                return addr;
+            }
+        }
+    }
+    return eval_lvalue(e);
 }
 
 std::string Translator::eval_lvalue(Expr* e) {
@@ -1347,20 +1539,23 @@ std::string Translator::eval_lvalue(Expr* e) {
                     }
                     return it->second;
                 }
+                // 模块级变量：其存储本身就是全局量，地址即该符号
+                auto git = global_of_.find(vi);
+                if (git != global_of_.end()) return "@" + git->second;
                 if (ctx_.current_class) {
                     auto cit = classes_.find(ctx_.current_class);
                     if (cit != classes_.end()) {
                         auto sit = cit->second.static_global_by_name.find(
                             std::string(vi->name));
                         if (sit != cit->second.static_global_by_name.end())
-                            return "@" + sit->second;
+                            return field_lvalue(e, "@" + sit->second);
                         auto fit = cit->second.field_index.find(std::string(vi->name));
                         if (fit != cit->second.field_index.end()) {
                             std::string addr = ir_.reg();
                             emit_instr(addr + " = getelementptr " + cit->second.llvm_name +
                                        ", ptr " + ctx_.self_ptr + ", i32 0, i32 " +
                                        std::to_string(fit->second));
-                            return addr;
+                            return field_lvalue(e, addr);
                         }
                     }
                 }
@@ -1385,30 +1580,8 @@ std::string Translator::eval_lvalue(Expr* e) {
         emit_instr(addr + " = getelementptr " + et + ", ptr " + base + ", i64 " + idx);
         return addr;
     }
-    if (auto* m = e->get_member()) {
-        if (e->sym && e->sym->kind == SymbolKind::Variable) {
-            if (auto* vi = dynamic_cast<VarItem*>(e->sym->node)) {
-                auto sit = static_global_.find(vi);
-                if (sit != static_global_.end())
-                    return "@" + sit->second;
-            }
-        }
-        Expr* tgt = m->target;
-        if (Class* cls = as_class(tgt ? tgt->type : nullptr)) {
-            auto it = classes_.find(cls);
-            if (it != classes_.end()) {
-                auto fit = it->second.field_index.find(std::string(m->member));
-                if (fit != it->second.field_index.end()) {
-                    std::string base = eval(tgt);
-                    std::string addr = ir_.reg();
-                    emit_instr(addr + " = getelementptr " + it->second.llvm_name +
-                               ", ptr " + base + ", i32 0, i32 " +
-                               std::to_string(fit->second));
-                    return addr;
-                }
-            }
-        }
-    }
+    if (e->sym && e->sym->kind == SymbolKind::Variable)
+        return field_lvalue(e, field_addr_of(e));
     return "";
 }
 
@@ -1449,14 +1622,6 @@ bool Translator::is_ref_item(const VarItem* vi, Expr** target_out) const {
     return false;
 }
 
-bool Translator::is_ref_expr(Expr* e, Expr** target_out) const {
-    if (!e) return false;
-    if (e->type && e->type->is_reference()) {
-        if (target_out) *target_out = e->type->get_reference()->target;
-        return true;
-    }
-    return false;
-}
 
 std::string Translator::eval_identifier(Expr* e, Expr::Identifier* id) {
     if (std::string(id->name) == "self" && !ctx_.self_ptr.empty())
@@ -1475,6 +1640,8 @@ std::string Translator::eval_identifier(Expr* e, Expr::Identifier* id) {
                 if (ctx_.ref_bound.count(vi)) {
                     std::string addr = ir_.reg();
                     emit_instr(addr + " = load ptr, ptr " + it->second);
+                    // 类值即对象地址本身，取出地址即为该引用的值
+                    if (as_class(e->type)) return addr;
                     std::string t = e->type ? map_type(e->type) : "i32";
                     std::string r = ir_.reg();
                     emit_instr(r + " = load " + t + ", ptr " + addr);
@@ -1491,27 +1658,37 @@ std::string Translator::eval_identifier(Expr* e, Expr::Identifier* id) {
                 emit_instr(r + " = load " + t + ", ptr " + it->second);
                 return r;
             }
+            // 模块级变量：按 VarItem 身份判定，与同名的类字段区分
+            auto git = global_of_.find(vi);
+            if (git != global_of_.end()) {
+                std::string t = e->type ? map_type(e->type) : "i32";
+                std::string r = ir_.reg();
+                emit_instr(r + " = load " + t + ", ptr @" + git->second);
+                return r;
+            }
             if (ctx_.current_class) {
                 auto cit = classes_.find(ctx_.current_class);
                 if (cit != classes_.end()) {
                     auto sit = cit->second.static_global_by_name.find(
-                        std::string(vi->name));
-                    if (sit != cit->second.static_global_by_name.end()) {
-                        std::string t = e->type ? map_type(e->type) : "i32";
-                        std::string r = ir_.reg();
-                        emit_instr(r + " = load " + t + ", ptr @" + sit->second);
-                        return r;
-                    }
-                    auto fit = cit->second.field_index.find(std::string(vi->name));
-                    if (fit != cit->second.field_index.end()) {
-                        std::string addr = ir_.reg();
-                        emit_instr(addr + " = getelementptr " + cit->second.llvm_name +
-                                   ", ptr " + ctx_.self_ptr + ", i32 0, i32 " +
-                                   std::to_string(fit->second));
-                        std::string t = e->type ? map_type(e->type) : "i32";
-                        std::string r = ir_.reg();
-                        emit_instr(r + " = load " + t + ", ptr " + addr);
-                        return r;
+                            std::string(vi->name));
+                        if (sit != cit->second.static_global_by_name.end()) {
+                            std::string t = e->type ? map_type(e->type) : "i32";
+                            std::string r = ir_.reg();
+                            emit_instr(r + " = load " + t + ", ptr " +
+                                       field_lvalue(e, "@" + sit->second));
+                            return r;
+                        }
+                        auto fit = cit->second.field_index.find(std::string(vi->name));
+                        if (fit != cit->second.field_index.end()) {
+                            std::string addr = ir_.reg();
+                            emit_instr(addr + " = getelementptr " + cit->second.llvm_name +
+                                       ", ptr " + ctx_.self_ptr + ", i32 0, i32 " +
+                                       std::to_string(fit->second));
+                            std::string t = e->type ? map_type(e->type) : "i32";
+                            std::string r = ir_.reg();
+                            emit_instr(r + " = load " + t + ", ptr " +
+                                       field_lvalue(e, addr));
+                            return r;
                     }
                 }
             }
@@ -1655,7 +1832,7 @@ std::string Translator::eval_unary(Expr* e, Expr::Unary* u) {
             emit_instr(r + " = load ptr, ptr " + slot);
             return r;
         }
-        return eval_lvalue(op);
+        return eval_ref_addr(op);
     }
     std::string ot = u->operand && u->operand->type ? map_type(u->operand->type) : "i32";
     std::string ov = eval(u->operand);
@@ -1713,21 +1890,9 @@ std::string Translator::eval_assign(Expr* e, Expr::Assign* a) {
                                           a->target, a->value);
         }
     }
-    // 引用首次绑定：把右值的地址存入引用槽
-    if (a->target && a->target->sym) {
-        if (auto* vi = dynamic_cast<VarItem*>(a->target->sym->node)) {
-            if (is_ref_item(vi, nullptr) && !ctx_.ref_bound.count(vi)) {
-                auto it = ctx_.slots.find(vi);
-                if (it != ctx_.slots.end()) {
-                    std::string addr = eval_lvalue(a->value);
-                    if (addr.empty()) addr = eval(a->value);
-                    emit_instr("store ptr " + addr + ", ptr " + it->second);
-                    ctx_.ref_bound.insert(vi);
-                    return addr;
-                }
-            }
-        }
-    }
+    // INIT 内对引用字段的赋值是绑定
+    if (std::string bound = bind_ref_field(a->target, a->value); !bound.empty())
+        return bound;
     std::string ptr = eval_lvalue(a->target);
     if (ptr.empty()) return "0";
     std::string t = a->target && a->target->type ? map_type(a->target->type) : "i32";
@@ -1836,14 +2001,20 @@ std::string Translator::eval_member(Expr* e, Expr::Member* m) {
         if (auto* ev = e->sym->get<EnumVariant>())
             return std::to_string(ev->value);
     }
-    // static 字段：模块级全局变量
+    // static 字段与模块级变量：都是 LLVM 全局量
     if (e->sym && e->sym->kind == SymbolKind::Variable) {
         if (auto* vi = dynamic_cast<VarItem*>(e->sym->node)) {
+            std::string g;
             auto sit = static_global_.find(vi);
-            if (sit != static_global_.end()) {
+            if (sit != static_global_.end()) g = sit->second;
+            else {
+                auto git = global_of_.find(vi);
+                if (git != global_of_.end()) g = git->second;
+            }
+            if (!g.empty()) {
                 std::string t = e->type ? map_type(e->type) : "i32";
                 std::string r = ir_.reg();
-                emit_instr(r + " = load " + t + ", ptr @" + sit->second);
+                emit_instr(r + " = load " + t + ", ptr " + field_lvalue(e, "@" + g));
                 return r;
             }
         }
@@ -1890,7 +2061,7 @@ std::string Translator::eval_member(Expr* e, Expr::Member* m) {
                            std::to_string(fit->second));
                 std::string t = e->type ? map_type(e->type) : "i32";
                 std::string v = ir_.reg();
-                emit_instr(v + " = load " + t + ", ptr " + addr);
+                emit_instr(v + " = load " + t + ", ptr " + field_lvalue(e, addr));
                 return v;
             }
         }
@@ -2312,7 +2483,7 @@ std::string Translator::eval_default_ctor(Expr* e, Expr::Call* c) {
         ir_.need_malloc();
         slot = ir_.reg();
         emit_instr(slot + " = call ptr @malloc(i64 " +
-                   std::to_string(type_size(it->second.llvm_name)) + ")");
+                   emit_size_of(it->second.llvm_name) + ")");
         emit_bind_ref(cls, slot, SpecialMethod::Kind::Ref);
     } else {
         slot = ir_.reg();
@@ -2335,7 +2506,7 @@ std::string Translator::eval_ctor_call(Expr* e, Expr::Call* c, SpecialMethod* sm
         ir_.need_malloc();
         slot = ir_.reg();
         emit_instr(slot + " = call ptr @malloc(i64 " +
-                   std::to_string(type_size(it->second.llvm_name)) + ")");
+                   emit_size_of(it->second.llvm_name) + ")");
     } else {
         slot = ir_.reg();
         emit_instr(slot + " = alloca " + it->second.llvm_name);
@@ -2439,19 +2610,28 @@ std::string Translator::eval_plain_call(Expr* e, Expr::Call* c, Func* fn) {
         }
     }
     if (has_self) args.push_back("ptr " + self_arg);
-    // 形参 IR 类型表，用于字符串字面量按切片形参构造 {ptr,i32}
+    // 形参 IR 类型表，用于字符串字面量按切片形参构造 {ptr,i32}；
+    // param_ref 标记引用形参：实参传地址而非值
     std::vector<std::string> param_ir;
+    std::vector<bool> param_ref;
     for (VarList* vl : fn->params) {
         if (!vl) continue;
         for (VarItem* vi : vl->vars) {
             std::string pt = vi->type ? map_type(vi->type)
                                       : (vl->type ? map_type(vl->type) : "i32");
             param_ir.push_back(pt);
+            param_ref.push_back(is_ref_item(vi, nullptr));
         }
     }
     for (size_t ai = 0; ai < c->args.size(); ++ai) {
         Expr* a = c->args[ai];
         std::string at = a && a->type ? map_type(a->type) : "i32";
+        // 引用形参：按绑定语义传被绑定对象的地址，跳过值转换
+        if (ai < param_ref.size() && param_ref[ai]) {
+            std::string addr = eval_ref_addr(a);
+            args.push_back("ptr " + (addr.empty() ? eval(a) : addr));
+            continue;
+        }
         // 变参多余实参：按 C 默认实参提升（char/short -> int，float -> double）
         if (fn->is_variadic && ai >= param_ir.size()) {
             std::string v;
@@ -2617,6 +2797,8 @@ std::string Translator::emit_closure_fn(Expr::Closure* c) {
         emit_instr(slot + " = alloca " + vt);
         emit_instr("store " + vt + " " + argn + ", ptr " + slot);
         ctx_.slots[vi] = slot;
+        // 引用形参：入参即被绑定对象的地址，槽已是绑定态
+        if (is_ref_item(vi, nullptr)) ctx_.ref_bound.insert(vi);
     }
 
     std::string exit_l;
@@ -2677,6 +2859,12 @@ std::string Translator::call_func_ptr(Expr* e, Expr::Call* c, Expr::FuncPtr* fp)
         Expr* a = c->args[i];
         Expr* pt_expr = i < fp->params.size() ? fp->params[i] : nullptr;
         std::string pt = pt_expr ? map_type(pt_expr) : (a && a->type ? map_type(a->type) : "i32");
+        // 引用形参：按绑定语义传被绑定对象的地址，跳过值转换
+        if (pt_expr && pt_expr->is_reference()) {
+            std::string addr = eval_ref_addr(a);
+            args.push_back("ptr " + (addr.empty() ? eval(a) : addr));
+            continue;
+        }
         std::string v = eval_converted(a);
         std::string at = a && a->type ? map_type(a->type) : pt;
         bool converted = needs_convert(a);

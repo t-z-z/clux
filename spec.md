@@ -130,10 +130,12 @@ int-&a = x
 int-&b = a
 x = 2
 int-* p = b-&
-int-*& rp = p-&
+int-*& rp = p
 ```
 
-引用在第一次等号时是绑定引用对象，之后都是修改被绑定的对象，绑定对象不可修改。
+引用必须创建时绑定引用对象，之后只能修改被绑定的对象，绑定对象不可切换。
+
+对象的引用字段必须在INIT中绑定。
 
 ### 数组类型
 
@@ -390,6 +392,8 @@ pointer p = pointer()
 }
 ```
 
+INIT会根据字段声明的初始值自动构造
+
 ### 操作符重载
 
 类中可以重载操作符。可重载的操作符为优先级表中除 `.` `::` `,` `-&` `=` 之外的操作符。
@@ -425,7 +429,7 @@ conversion(Vec2 a)Vec2 b{
 }
 ```
 
-同类conversion在左值被赋给左值时触发，代替原本的等号拷贝。
+同类conversion（自转）在左值被赋给左值时触发，代替原本的等号拷贝。
 
 ## 九、修饰
 
@@ -465,7 +469,8 @@ conversion(Vec2 a)Vec2 b{
 }
 ```
 
-malloc的对象会有free()方法，malloc类在初始化时会额外触发REF，析构时会额外触发DEREF
+malloc的对象会有free()方法，malloc类在初始化时会额外触发REF，析构时会额外触发DEREF。
+malloc类在被赋值时会复制堆上的对象。
 
 ```cx
 @rc {
@@ -494,10 +499,10 @@ malloc的rcInt覆盖了rc中的free方法，所以rc的free会触发释放。
 
 在以上修饰中，foo的成员覆盖了bar的，bar的覆盖了baz的，baz覆盖qux。
 
-你也可以由一个基础类型修饰，会自动派发所有操作符和特殊方法
+也可以由一个基础类型修饰，会自动派发所有操作符和特殊方法
 
 ```cx
-malloc #rc #int @rcInt{}
+malloc @rcInt #rc #int{}
 main(){
     rcInt a=1;
     a.free();
@@ -521,11 +526,11 @@ flag label
 toflag label
 ```
 
-`flag` 与 `toflag` 的本质是 asm 标签跳转。
+`flag` 与 `toflag` 是标签跳转，规则和cpp相同。
 
 ## 十一、并发与异步
 
-`spawn` 处理函数时，函数会开启新线程执行
+`spawn` 处理函数时，函数会开启新线程执行，返回值会传给该表达式
 
 ```cx
 work(int a)int r=a+1
@@ -537,23 +542,7 @@ main(){
 
 更复杂的并发行为可以封装成类。
 
-## 十二、编译期反射
-
-暂缓实现，当前使用会无法识别而报错。
-
-```cx
-@foo{int a,b}
-main() {
-    type x = type.foo
-    int i = sizeof(type.foo)
-    int j = offset(x 1)
-    type k = fieldtype(x 0)
-}
-```
-
-`sizeof(变量)` 会生成运行时的 `sizeof` 函数，`offset`,`fieldtype` 同理。
-
-## 十三、导入系统与标准库
+## 十二、导入系统与标准库
 
 ```cx
 import std
@@ -567,7 +556,7 @@ no import std
 - `concurrent`：并发
 - `containers`：容器
 
-## 十四、内联汇编与保留代码
+## 十三、内联汇编与保留代码
 
 `inline` 修饰使函数在汇编层面内联在调用处：
 
@@ -594,7 +583,7 @@ define i32 @add(i32 %a, i32 %b) {
 `
 ```
 
-## 十五、外部函数接口
+## 十四、外部函数接口
 
 ```cx
 extern "opengl32" {
@@ -606,9 +595,9 @@ extern "C" {
 }
 ```
 
-`...` 用于extern中不定参的声明，仅用于extern
+`...` 用于extern中不定参的声明，仅用于extern。
 
-## 十六、编译与执行
+## 十五、编译与执行
 
 工具链命令：
 
@@ -629,7 +618,7 @@ main(int argc, char-** argv) { }
 main(int argc, char-** argv) int r { }
 ```
 
-## 十七、语法糖
+## 十六、语法糖
 
 `modf modifier:` 声明此后的同级声明都是 modifier 修饰：
 
@@ -653,7 +642,7 @@ namespace foo {
 }
 ```
 
-## 十八、操作符优先级表
+## 十七、操作符优先级表
 
 | 优先级 | 运算符 | 结合 |
 | --- | --- | --- |

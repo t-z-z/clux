@@ -638,10 +638,14 @@ struct ASTVisitor {
     virtual ~ASTVisitor() = default;
     virtual void scope_in(std::string){}
     virtual void scope_out(){}
-    Expr* current_expr;
-    Func* current_func;
-    Class* current_class;
-    Stmt* current_stmt;
+    Expr* current_expr = nullptr;
+    Func* current_func = nullptr;
+    // 当前正在遍历的形参列表：形参允许省略初值，局部声明不允许
+    const std::vector<VarList*>* current_params = nullptr;
+    // 当前正在遍历的类成员：字段的绑定发生在 INIT，不在声明处
+    const std::vector<Decl*>* current_members = nullptr;
+    Class* current_class = nullptr;
+    Stmt* current_stmt = nullptr;
     // 当前嵌套循环深度，供需要循环上下文的派生 pass 使用
     int loop_depth_ = 0;
     // 正在遍历调用表达式的被调用者，供标识符解析区分函数名与普通变量
@@ -748,7 +752,9 @@ struct ASTVisitor {
 
     void walk_children(Func& f) {
         Func* pre = current_func;
+        auto* pre_params = current_params;
         current_func = &f;
+        current_params = &f.params;
         scope_in(std::string(f.name));
         for (auto* p : f.params) {
             if (p) walk(*p);
@@ -760,6 +766,7 @@ struct ASTVisitor {
         visit_func(f);
         scope_out();
         current_func = pre;
+        current_params = pre_params;
     }
 
     void walk_children(VarList& vl) {
@@ -772,7 +779,12 @@ struct ASTVisitor {
 
     void walk_children(Class& c) {
         Class* pre = current_class;
+        Func* pre_func = current_func;
+        auto* pre_members = current_members;
         current_class = &c;
+        // 类体不在任何函数内：返回变量之类的判定不应看到外层函数
+        current_func = nullptr;
+        current_members = &c.members;
         scope_in(std::string(c.name));
         for (auto* m : c.members) {
             if (m) walk(*m);
@@ -780,6 +792,8 @@ struct ASTVisitor {
         visit_class(c);
         scope_out();
         current_class = pre;
+        current_func = pre_func;
+        current_members = pre_members;
     }
 
     void walk_children(Namespace& ns) {
@@ -799,11 +813,14 @@ struct ASTVisitor {
     }
 
     void walk_children(SpecialMethod& sm) {
+        auto* pre_params = current_params;
+        current_params = &sm.params;
         scope_in(std::string(sm.name));
         for (auto* p : sm.params) if (p) walk(*p);
         if (sm.body) walk(*sm.body);
         visit_special_method(sm);
         scope_out();
+        current_params = pre_params;
     }
     void walk_children(Enum& e) { visit_enum(e); }
     void walk_children(Keep&) {}
@@ -858,12 +875,15 @@ struct ASTVisitor {
                 if (v.call) walk(*v.call);
                 visit_expr_spawn(v);
             } else if constexpr (std::is_same_v<T, Expr::Closure>) {
+                auto* pre_params = current_params;
+                current_params = &v.params;
                 scope_in("closure");
                 for (auto* p : v.params) if (p) walk(*p);
                 for (auto* r : v.returns) if (r) walk(*r);
                 if (v.body) walk(*v.body);
                 visit_expr_closure(v);
                 scope_out();
+                current_params = pre_params;
             } else if constexpr (std::is_same_v<T, Expr::Pointer>) {
                 if (v.pointee) walk(*v.pointee);
                 visit_type_pointer(v);

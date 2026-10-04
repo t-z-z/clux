@@ -1,0 +1,9 @@
+// 无返回变量的 main：裸 return 按返回 0 处理，签名仍是 i32
+f() {
+    return
+}
+main() {
+    int a = 1
+    f()
+    return
+}

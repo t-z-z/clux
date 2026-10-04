@@ -1,8 +1,0 @@
-@Counter {
-    int value = 0
-    increment() { value = value + 1 }
-}
-main() {
-    Counter c = Counter()
-    c.increment()
-}

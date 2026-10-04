@@ -1,0 +1,6 @@
+// 引用形参的实参必须是 lvalue
+f(int-& x) { return }
+main() {
+    int a = 1
+    f(a + 1)
+}

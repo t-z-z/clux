@@ -52,9 +52,20 @@ void Mangler::walk(Decl* d, const std::string& prefix) {
                 } else if (m->kind == DeclKind::Conversion) {
                     mangled_[m] = here + "_" +
                         conversion_name(static_cast<Conversion*>(m));
-                } else {
+                } else if (m->kind != DeclKind::VarList) {
                     walk(m, here);
                 }
+                // VarList 是类字段：进实例 layout，不是模块级变量
+            }
+            break;
+        }
+        case DeclKind::VarList: {
+            // 模块级 / 命名空间级变量：每个 VarItem 一个 LLVM 全局符号
+            for (VarItem* vi : static_cast<VarList*>(d)->vars) {
+                if (!vi) continue;
+                globals_[vi] = prefix.empty()
+                    ? std::string(vi->name)
+                    : prefix + "_" + std::string(vi->name);
             }
             break;
         }
@@ -78,6 +89,12 @@ std::string Mangler::of(Decl* d) const {
     auto it = mangled_.find(d);
     if (it != mangled_.end()) return it->second;
     return std::string(d->name);
+}
+
+std::string Mangler::global_of(const VarItem* vi) const {
+    if (!vi) return "";
+    auto it = globals_.find(vi);
+    return it != globals_.end() ? it->second : std::string();
 }
 
 std::string Mangler::type_key(Expr* t) {

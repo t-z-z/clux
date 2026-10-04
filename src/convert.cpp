@@ -37,7 +37,6 @@ Symbol* SemanticAnalyzer::find_conversion(Expr& src, Expr& dst) {
 }
 
 Class* SemanticAnalyzer::wrap_or_plain_class(Expr* t) {
-    t = underlying_type(t);
     if (!t || !t->is_type) return nullptr;
     if (!t->resolved_decl || t->resolved_decl->kind != DeclKind::Class)
         return nullptr;
@@ -45,7 +44,6 @@ Class* SemanticAnalyzer::wrap_or_plain_class(Expr* t) {
 }
 
 Class* SemanticAnalyzer::wrap_class_of(Expr* t) {
-    t = underlying_type(t);
     if (!t || !t->is_type) return nullptr;
     if (!t->resolved_decl || t->resolved_decl->kind != DeclKind::Class)
         return nullptr;
@@ -62,8 +60,6 @@ Expr* SemanticAnalyzer::wrap_base_type(Class* c) {
 
 bool SemanticAnalyzer::can_convert_to(Expr* src, Expr* dst) {
     if (!src || !dst) return false;
-    src = underlying_type(src);
-    dst = underlying_type(dst);
     if (!src || !dst) return false;
     if (is_same_type(src, dst)) return true;
 
@@ -193,7 +189,7 @@ void SemanticAnalyzer::check_literal_range(Expr* value, Expr* dst,
                                            const std::string& context,
                                            const Location& loc) {
     if (!value || !value->is_literal() || !dst) return;
-    Expr* ud = underlying_type(dst);
+    Expr* ud = dst;
     if (!ud || !ud->is_primitive()) return;
     bool dst_signed = false; int dst_bits = 0;
     if (!primitive_int_range(ud->get_primitive()->kind, dst_signed, dst_bits))
@@ -241,8 +237,8 @@ bool SemanticAnalyzer::check_conversion(Expr* src, Expr* dst, const std::string&
     if (has_conversion(src, dst)) return true;
     if (explicit_cast) {
         // 仅当显式 cast 能落到确定语义时才放行；否则报错，避免生成非法 IR
-        Expr* us = underlying_type(src);
-        Expr* ud = underlying_type(dst);
+        Expr* us = src;
+        Expr* ud = dst;
         bool base_same = us && ud && is_same_type(us, ud);
         bool both_ptr = us && ud && (us->is_pointer() || us->is_reference()) &&
                         (ud->is_pointer() || ud->is_reference());

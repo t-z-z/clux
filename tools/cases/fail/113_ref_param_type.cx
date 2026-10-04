@@ -1,0 +1,6 @@
+// 引用形参按被引用目标类型匹配
+f(int-& x) { return }
+main() {
+    long a = 1
+    f(a)
+}

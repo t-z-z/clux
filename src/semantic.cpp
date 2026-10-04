@@ -62,7 +62,21 @@ void SemanticAnalyzer::collect_only() {
 void SemanticAnalyzer::analyze_rest() {
     process_using_namespaces();
     injector_->expand_all();
+    for (Decl* d : cu_.top_decls) collect_global_order(d);
     walk(cu_);
+}
+
+// 模块级变量按声明顺序编号：初值只能引用序号更小的变量
+void SemanticAnalyzer::collect_global_order(Decl* d) {
+    if (!d) return;
+    if (d->kind == DeclKind::Namespace) {
+        for (Decl* m : static_cast<Namespace*>(d)->members)
+            collect_global_order(m);
+        return;
+    }
+    if (d->kind != DeclKind::VarList) return;
+    for (VarItem* vi : static_cast<VarList*>(d)->vars)
+        if (vi) global_order_[vi] = global_order_.size();
 }
 
 std::string SemanticAnalyzer::build_callkey(const std::string& name,
@@ -331,7 +345,6 @@ void SemanticAnalyzer::register_special(SpecialMethod& sm, bool default_public) 
 }
 
 std::string SemanticAnalyzer::type_to_key(Expr& t) {
-    if (Expr* u = underlying_type(&t); u != &t) return type_to_key(*u);
     // 枚举底层是数字：与 int 同键
     if (is_enum_type(&t)) return "i32";
     if (t.is_primitive()) {
@@ -447,6 +460,16 @@ void SemanticAnalyzer::visit_func(Func& f) {
         }
         return;
     }
+    // 引用返回类型：和 C++ 一样只能返回左值，返回的是被引用对象的别名。
+    // 返回变量的存储随栈帧消失，绑定它没有意义，故直接拒绝
+    if (!f.returns.empty() && f.returns.back()) {
+        VarList* rl = f.returns.back();
+        Expr* ty = rl->vars.empty() ? rl->type
+                                    : rl->vars.back()->type;
+        if (ty && ty->is_reference())
+            error(rl->vars.empty() ? rl->loc : rl->vars.back()->loc,
+                  "cannot return a reference type");
+    }
     // body 为空（未写 {}）时不检查返回值是否被赋值
     if (!f.body) return;
     flow_.check_jumps(f.body);
@@ -460,10 +483,101 @@ void SemanticAnalyzer::visit_func(Func& f) {
 void SemanticAnalyzer::visit_special_method(SpecialMethod& sm) {
     if (!sm.body) return;
     flow_.check_jumps(sm.body);
-    flow_.check_initialization(sm.body, sm.params, {});
+    flow_.check_initialization(sm.body, sm.params, {},
+                               sm.kind == SpecialMethod::Kind::Init);
+}
+
+// 收集表达式引用的标识符符号（含成员访问），用于前向引用检测
+static void collect_expr_syms(Expr* e, std::vector<Symbol*>& out) {
+    if (!e) return;
+    // 访问器与闭包体在各自的遍历上下文里已单独处理
+    if (e->sym && e->sym->kind == SymbolKind::Variable) out.push_back(e->sym);
+    if (auto* b = e->get_binary()) {
+        collect_expr_syms(b->left, out);
+        collect_expr_syms(b->right, out);
+    } else if (auto* u = e->get_unary()) {
+        collect_expr_syms(u->operand, out);
+    } else if (auto* a = e->get_assign()) {
+        collect_expr_syms(a->target, out);
+        collect_expr_syms(a->value, out);
+    } else if (auto* c = e->get_call()) {
+        collect_expr_syms(c->callee, out);
+        for (Expr* a : c->args) collect_expr_syms(a, out);
+    } else if (auto* t = e->get_ternary()) {
+        collect_expr_syms(t->cond, out);
+        collect_expr_syms(t->then_expr, out);
+        collect_expr_syms(t->else_expr, out);
+    } else if (auto* i = e->get_index()) {
+        collect_expr_syms(i->target, out);
+        collect_expr_syms(i->index, out);
+    } else if (auto* m = e->get_member()) {
+        collect_expr_syms(m->target, out);
+    } else if (auto* ca = e->get_cast()) {
+        collect_expr_syms(ca->operand, out);
+    } else if (auto* ar = e->get_array()) {
+        for (Expr* m : ar->members) collect_expr_syms(m, out);
+        collect_expr_syms(ar->fill_value, out);
+    } else if (auto* sp = e->get_spawn()) {
+        collect_expr_syms(sp->call, out);
+    }
+}
+
+// 类是否声明了引用字段：这类对象被逐字段复制时，副本会与源共享被引用对象
+static bool class_has_ref_field(Class* c) {
+    if (!c) return false;
+    for (Decl* m : c->members) {
+        if (!m || m->kind != DeclKind::VarList) continue;
+        for (VarItem* vi : static_cast<VarList*>(m)->vars)
+            if (vi && vi->type && vi->type->is_reference()) return true;
+    }
+    return false;
+}
+
+// 该初始化/赋值是否走等号逐字段拷贝：源是已存在的同类对象，
+// 且没有自转 conversion 接管（record_conversion 只在找到转换时挂 conv）
+static bool copies_reference_fields(Expr* src, Expr* dst) {
+    if (!src || !dst || src->conv || src->implicit_to) return false;
+    if (!src->is_lvalue) return false;
+    if (!is_same_type(src->type, dst)) return false;
+    return class_has_ref_field(as_class(dst));
 }
 
 void SemanticAnalyzer::visit_var_list(VarList& vl) {
+    // 模块级变量的存储是 LLVM 全局量，其类型必须是常量可表达的
+    bool module_level = !current_params && !current_members;
+    if (module_level) {
+        // 初值在 main 入口按声明顺序求值，引用后方声明的变量只会读到零值
+        for (VarItem* var : vl.vars) {
+            if (!var || !var->init) continue;
+            auto self = global_order_.find(var);
+            if (self == global_order_.end()) continue;
+            std::vector<Symbol*> refs;
+            collect_expr_syms(var->init, refs);
+            for (Symbol* sym : refs) {
+                auto* rvi = dynamic_cast<VarItem*>(sym->node);
+                if (!rvi) continue;
+                auto other = global_order_.find(rvi);
+                if (other != global_order_.end() && other->second > self->second)
+                    error(var->init->loc,
+                          "initializer of module-level variable '" +
+                          std::string(var->name) + "' refers to '" +
+                          std::string(rvi->name) + "', which is declared later");
+            }
+        }
+    }
+    if (module_level && (vl.type == nullptr || !vl.type->is_inferred())) {
+        for (VarItem* var : vl.vars) {
+            Expr* dt = var && var->type ? var->type : vl.type;
+            if (!dt) continue;
+            if (dt->is_array_type() || dt->is_string_literal_type() ||
+                (var && var->init &&
+                 (var->init->is_array() ||
+                  (var->init->type &&
+                   var->init->type->is_string_literal_type()))))
+                error(var->loc, "module-level variable cannot be an array or "
+                      "string: its storage would not outlive the initializer");
+        }
+    }
     // 动态长度数组检查：运行时长度必须显式声明存储方式
     if (vl.type && vl.type->is_array_type()) {
         auto* arr = vl.type->get_array_type();
@@ -477,23 +591,32 @@ void SemanticAnalyzer::visit_var_list(VarList& vl) {
     }
     // 初始化类型检查：显式声明类型时，初值须可转换到声明类型（let 推导跳过）
     for (VarItem* var : vl.vars) {
-        if (!var || !var->init || !var->init->type) continue;
+        if (!var) continue;
         Expr* dt = var->type ? var->type : vl.type;
-        if (!dt || dt->is_inferred()) continue;
-        // 引用声明：初值即绑定，绑定源必须是同目标类型的 lvalue；
-        // 无初值表示先声明后绑定。绑定不走常规值转换。
-        if (dt->is_reference()) {
-            Expr* tgt = dt->get_reference()->target;
-            if (var->init) {
-                if (!var->init->is_lvalue)
-                    error(var->init->loc,
-                          "reference must be initialized with an lvalue");
-                else if (var->init->type && tgt &&
-                         !is_same_type(var->init->type, tgt))
+        // 引用必须创建时绑定：初值即绑定，绑定源必须是同目标类型的 lvalue。
+        // 形参在进入函数时由实参绑定，字段在 INIT 中绑定，二者都不在声明处。
+        // 绑定不走常规值转换。
+        if (dt && dt->is_reference()) {
+            // 返回变量的存储随栈帧消失，绑定它没有意义（visit_func 已单独报错）
+            if (is_return_var_item(var)) continue;
+            if (!var->init) {
+                if (!is_param_item(var) && !is_field_item(var))
+                    error(var->loc, "reference must be initialized");
+            } else if (!var->init->type) {
+                // 解析器已报错
+            } else if (!var->init->is_lvalue) {
+                error(var->init->loc,
+                      "reference must be initialized with an lvalue");
+            } else {
+                Expr* tgt = dt->get_reference()->target;
+                if (tgt && !tgt->is_reference() &&
+                    !is_same_type(var->init->type, tgt))
                     error(var->init->loc, "reference target type mismatch");
             }
             continue;
         }
+        if (!var->init || !var->init->type) continue;
+        if (!dt || dt->is_inferred()) continue;
         // 返回变量不接受数组/字符串字面量：栈存储返回后悬垂
         bool lit_slice = var->init->is_array() ||
             (var->init->type && var->init->type->is_string_literal_type());
@@ -515,8 +638,16 @@ void SemanticAnalyzer::visit_var_list(VarList& vl) {
             check_array_len_fit(var->init, dt, "declared", var->init->loc);
         }
         check_literal_range(var->init, dt, "initialization", var->init->loc);
-        // 同类也允许 self->self conversion，故先尝试记录
-        if (record_conversion(var->init, dt)) continue;
+        // 同类也允许 self->self conversion，故先尝试记录。
+        // record_conversion 对同类 lvalue 一律返回 true（拷贝语义），
+        // 是否真找到自转要看它有没有挂上 conv
+        bool converted = record_conversion(var->init, dt);
+        if (copies_reference_fields(var->init, dt))
+            warning(var->init->loc,
+                    "initializing '" + type_name_string(dt) +
+                    "' copies its reference fields, so the two objects share "
+                    "the referenced object");
+        if (converted) continue;
         if (is_same_type(var->init->type, dt)) continue;
         check_conversion(var->init->type, dt, "initialization", var->init->loc);
     }
@@ -533,7 +664,52 @@ void SemanticAnalyzer::visit_var_list(VarList& vl) {
     }
 }
 
-void SemanticAnalyzer::visit_class(Class&) {}
+// 引用字段的绑定点只能是 INIT 顶层的直接赋值：嵌套在条件里的赋值不保证执行
+static bool field_bound_in_init(Class& c, const VarItem* f) {
+    for (Decl* m : c.members) {
+        if (!m || m->kind != DeclKind::SpecialMethod) continue;
+        auto* sm = static_cast<SpecialMethod*>(m);
+        if (sm->kind != SpecialMethod::Kind::Init || !sm->body) continue;
+        auto* blk = sm->body->get_block();
+        if (!blk) return false;
+        for (Stmt* st : blk->stmts) {
+            if (!st) continue;
+            auto* es = st->get_expr();
+            auto* asg = es && es->expr ? es->expr->get_assign() : nullptr;
+            if (asg && asg->target && asg->target->sym &&
+                asg->target->sym->node == f)
+                return true;
+        }
+    }
+    return false;
+}
+
+// 引用字段必须在 INIT 中绑定：字段初始化器与 static 字段都没有可用的绑定点，
+// INIT 嵌套在条件里的赋值也不保证执行
+void SemanticAnalyzer::visit_class(Class& c) {
+    for (Decl* m : c.members) {
+        if (!m || m->kind != DeclKind::VarList) continue;
+        auto* vl = static_cast<VarList*>(m);
+        bool is_static = vl->specs.has(SpecKind::Static);
+        for (VarItem* vi : vl->vars) {
+            if (!vi || !vi->type || !vi->type->is_reference()) continue;
+            std::string f = "reference field '" + std::string(vi->name) + "'";
+            if (is_static) {
+                error(vi->loc, f + " cannot be static: a reference field can "
+                      "only be bound in INIT");
+                continue;
+            }
+            if (vi->init) {
+                error(vi->init->loc, f + " must be bound by an assignment at "
+                      "the top level of INIT, not by an initializer");
+                continue;
+            }
+            if (!field_bound_in_init(c, vi))
+                error(vi->loc, f + " must be bound by an assignment at the "
+                      "top level of INIT");
+        }
+    }
+}
 
 void SemanticAnalyzer::visit_namespace(Namespace&) {}
 void SemanticAnalyzer::visit_extern(Extern&) {}
@@ -748,6 +924,16 @@ bool SemanticAnalyzer::is_return_var_item(VarItem* vi) const {
         return false;
     for (VarItem* rvi : current_func->returns.back()->vars)
         if (rvi == vi) return true;
+    return false;
+}
+
+bool SemanticAnalyzer::is_param_item(VarItem* vi) const {
+    if (!vi || !current_params) return false;
+    for (VarList* vl : *current_params) {
+        if (!vl) continue;
+        for (VarItem* pvi : vl->vars)
+            if (pvi == vi) return true;
+    }
     return false;
 }
 
@@ -986,7 +1172,15 @@ void SemanticAnalyzer::visit_expr_assign(Expr::Assign& a) {
     check_literal_range(a.value, lt, "assignment", current_expr->loc);
     // 记录隐式 conversion / 包装转换，供 translator 派发；同类也允许 self->self
     if (rt && lt) {
-        if (record_conversion(a.value, lt)) {
+        bool converted = record_conversion(a.value, lt);
+        // 落到等号逐字段拷贝时（无自转 conversion），含引用字段的类会让
+        // 副本与源共享被引用对象
+        if (copies_reference_fields(a.value, lt))
+            warning(current_expr->loc,
+                    "assigning '" + type_name_string(lt) +
+                    "' copies its reference fields, so the two objects share "
+                    "the referenced object");
+        if (converted) {
             current_expr->type = lt;
             current_expr->is_lvalue = false;
             return;
@@ -1131,7 +1325,10 @@ void SemanticAnalyzer::visit_expr_member(Expr::Member& m) {
         check_access(member, current_expr->loc);
 
         if (member->kind == SymbolKind::Variable && member->get_type()) {
-            current_expr->type = member->get_type();
+            // 读取引用字段即读取被绑定对象：隐式解引用为其目标类型
+            Expr* ft = member->get_type();
+            if (ft->is_reference()) ft = ft->get_reference()->target;
+            current_expr->type = ft;
             current_expr->is_lvalue = true;
             return;
         }
@@ -1160,6 +1357,16 @@ void SemanticAnalyzer::visit_expr_member(Expr::Member& m) {
     error(current_expr->loc, "no member '" + field + "' in scope");
     current_expr->type = nullptr;
     current_expr->is_lvalue = false;
+}
+
+bool SemanticAnalyzer::is_field_item(VarItem* vi) const {
+    if (!vi || !current_members) return false;
+    for (Decl* d : *current_members) {
+        if (!d || d->kind != DeclKind::VarList) continue;
+        for (VarItem* fvi : static_cast<VarList*>(d)->vars)
+            if (fvi == vi) return true;
+    }
+    return false;
 }
 
 void SemanticAnalyzer::visit_expr_cast(Expr::Cast& cast) {
@@ -1336,11 +1543,22 @@ void SemanticAnalyzer::visit_expr_spawn(Expr::Spawn& sp) {
     current_expr->is_lvalue = false;
 
     if (auto* c = sp.call->get_call()) {
-        for (Expr* arg : c->args) {
-            if (!arg || !arg->type) continue;
-            if (arg->type->is_reference()) {
+        // 引用形参按地址传递，被引用对象可能是栈变量，故同样禁止
+        std::vector<Expr*> params;
+        if (c->resolved) {
+            if (c->resolved->kind == DeclKind::Func ||
+                c->resolved->kind == DeclKind::Operator)
+                params = param_types(static_cast<Func*>(c->resolved)->params);
+            else if (c->resolved->kind == DeclKind::SpecialMethod)
+                params = param_types(static_cast<SpecialMethod*>(c->resolved)->params);
+        }
+        for (size_t i = 0; i < c->args.size(); ++i) {
+            Expr* arg = c->args[i];
+            if (!arg) continue;
+            Expr* pt = i < params.size() ? params[i] : nullptr;
+            if (pt && pt->is_reference()) {
                 error(arg->loc, "spawn cannot capture a stack reference argument");
-            } else if (arg->type->is_pointer()) {
+            } else if (arg->type && arg->type->is_pointer()) {
                 error(arg->loc, "spawn cannot capture a stack pointer argument");
             }
         }
@@ -1351,11 +1569,23 @@ void SemanticAnalyzer::visit_expr_spawn(Expr::Spawn& sp) {
 // 无法从节点本身判断上下文，故不在此处拒绝
 void SemanticAnalyzer::visit_type_primitive(Expr::Primitive&) {}
 // ast本来应该有指针指向的节点如果是nullptr，说明已经在parser报过错了，不要重复报错
-void SemanticAnalyzer::visit_type_pointer(Expr::Pointer&) {}
-void SemanticAnalyzer::visit_type_array(Expr::ArrayType&) {}
+// 引用不可寻址，指针不能指向引用：否则 *p 该返回引用还是被引用对象无从判定
+void SemanticAnalyzer::visit_type_pointer(Expr::Pointer& p) {
+    if (p.pointee && p.pointee->is_reference())
+        error(current_expr->loc, "cannot form a pointer to a reference");
+}
+void SemanticAnalyzer::visit_type_array(Expr::ArrayType& a) {
+    // 数组元素没有逐个绑定的语法，元素类型为引用则无法初始化
+    if (a.element && a.element->is_reference())
+        error(current_expr->loc, "cannot form an array of references");
+}
 void SemanticAnalyzer::visit_type_func_ptr(Expr::FuncPtr&) {}
 void SemanticAnalyzer::visit_type_func_ref(Expr::FuncRef&) {}
-void SemanticAnalyzer::visit_type_reference(Expr::Reference&) {}
+// 引用不可重新绑定，引用不能再包引用
+void SemanticAnalyzer::visit_type_reference(Expr::Reference& r) {
+    if (r.target && r.target->is_reference())
+        error(current_expr->loc, "reference to reference");
+}
 
 void SemanticAnalyzer::visit_type_string_literal(Expr::StringLiteralType&) {
     // StringLiteral is a valid type, no additional checks needed

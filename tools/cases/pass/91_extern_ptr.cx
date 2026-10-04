@@ -1,7 +1,0 @@
-extern "c" {
-    getenv(char-* name) char-* r { }
-    puts(char-* s) { }
-}
-main() int r {
-    r = 0
-}

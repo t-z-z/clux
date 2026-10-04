@@ -1,9 +1,19 @@
+// REF/DEREF 特殊方法：赋值、传参、块作用域三种绑定时机
 @Res {
     int n = 0
+
     pub INIT() { }
     pub REF { }
     pub DEREF { }
 }
+foo(Res-* p) {
+}
 main() {
-    Res-* p = null
+    Res r = Res()
+    Res-* p = r-&
+    foo(r-&)
+    {
+        Res-* q = r-&
+    }
+    Res-* null_p = null
 }

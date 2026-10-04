@@ -1,0 +1,17 @@
+// 局部引用：创建时绑定、读取即被引用对象、赋值只写穿不重绑定
+main() int r {
+  int a = 1
+  int-* p = a-&
+  int-*& rp = p
+  int b = 2
+  p = b-&
+  int-& s = a
+  s = b
+  r = 0
+  if a != 2 { r = 1 }
+  if rp != p { r = r + 10 }
+  if b != 2 { r = r + 100 }
+  rp = null
+  if p != null { r = r + 1000 }
+  return
+}

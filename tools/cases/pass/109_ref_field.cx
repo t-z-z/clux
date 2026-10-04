@@ -1,0 +1,25 @@
+// 引用字段：INIT 顶层绑定，其后读写都作用于被绑定对象
+@Counter {
+  pub int-& ref
+  pub int total
+
+  pub INIT(int seed) {
+    self.total = seed
+    self.ref = self.total
+  }
+
+  pub bump() {
+    ref = ref + 10
+    total = total + 1
+    return
+  }
+}
+main() int r {
+  Counter c = Counter(100)
+  c.bump()
+  r = 0
+  if c.total != 111 { r = 1 }
+  if c.ref != 111 { r = r + 10 }
+  if c.ref != c.total { r = r + 100 }
+  return
+}

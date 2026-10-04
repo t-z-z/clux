@@ -1,0 +1,11 @@
+// 命名空间内的模块级变量
+namespace cfg {
+    int limit = 5
+    int total = 0
+}
+int x = 1
+main() int r {
+    cfg::total = cfg::total + cfg::limit
+    r = x + cfg::total
+    return
+}

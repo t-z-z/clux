@@ -1,0 +1,11 @@
+// 条件里的赋值不保证执行，不能作为绑定点
+@A {
+    pub int v = 0
+    pub int-& r
+    pub INIT(int s) {
+        if s > 0 { self.r = self.v }
+    }
+}
+main() {
+    A a = A(1)
+}

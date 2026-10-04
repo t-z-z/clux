@@ -1,0 +1,8 @@
+// 引用字段必须有绑定点
+@A {
+    pub int-& r
+    pub INIT() { }
+}
+main() {
+    A a = A()
+}

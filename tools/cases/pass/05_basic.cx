@@ -3,4 +3,5 @@ add(int a, int b) int r {
 }
 main() {
     int x = add(1, 2)
+    int y = add(x, 3)
 }

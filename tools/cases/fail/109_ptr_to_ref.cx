@@ -1,0 +1,5 @@
+// 引用不可寻址
+main() {
+    int x = 1
+    int-&* pr = null
+}
