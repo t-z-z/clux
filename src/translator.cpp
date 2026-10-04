@@ -2449,10 +2449,23 @@ void Translator::emit_declare(Func& f) {
     ir_.emit_type(sig);
 }
 
-// 内置 free：释放 malloc 类实例
+// 内置 free：释放 malloc 类实例。类方法内的裸 free() 释放 self
 std::string Translator::eval_free_builtin(Expr* e, Expr::Call* c) {
     (void)e;
     if (!c->free_builtin || !c->callee) return "";
+    if (c->free_on_self) {
+        std::string s = ctx_.self_ptr;
+        if (s.empty()) return "0";
+        Class* c2 = ctx_.current_class;
+        if (c2) {
+            if (SpecialMethod* drop = find_special(c2, SpecialMethod::Kind::Drop))
+                emit_instr("call void @" + IRWriter::quote(mangler_.of(drop)) +
+                           "(ptr " + s + ")");
+        }
+        ir_.need_free();
+        emit_instr("call void @free(ptr " + s + ")");
+        return "0";
+    }
     auto* m = c->callee->get_member();
     if (!m) return "";
     std::string self = eval(m->target);

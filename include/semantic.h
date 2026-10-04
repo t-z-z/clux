@@ -277,6 +277,7 @@ public:
             [this](const Location& loc, const std::string& msg) { error(loc, msg); }) {
         injector_ = std::make_unique<InjectionExpander>(cu_, symbols_,
             [this](const Location& loc, const std::string& msg) { error(loc, msg); },
+            [this](const Location& loc, const std::string& msg) { warning(loc, msg); },
             [this](Decl* d, bool dp) { collect_decl(d, dp); });
         #define X(name,str) type##name = make_type(Location(), Expr::Primitive{PrimitiveTypeKind::name});
         TYPE

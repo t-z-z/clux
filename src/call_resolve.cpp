@@ -97,19 +97,28 @@ bool SemanticAnalyzer::resolve_ctor_call(Expr* call_expr, Expr::Call& c,
     return true;
 }
 
-// malloc 类的内置 free()：a.free() 释放堆实例
+// malloc 类的内置 free()：a.free() 释放堆实例；
+// 类方法内的裸 free() 同样指向内置实现（self 即被释放对象）
 bool SemanticAnalyzer::resolve_free_builtin(Expr* call_expr, Expr::Call& c,
                                             const std::string& name) {
     if (name != "free" || !c.args.empty() || !c.callee) return false;
-    auto* m = c.callee->get_member();
-    if (!m) return false;
-    Class* cls = m->target && m->target->type
-        ? wrap_or_plain_class(m->target->type) : nullptr;
+    Class* cls = nullptr;
+    bool on_self = false;
+    if (auto* m = c.callee->get_member()) {
+        cls = m->target && m->target->type
+            ? wrap_or_plain_class(m->target->type) : nullptr;
+    } else if (c.callee->is_identifier() && current_class) {
+        cls = current_class;
+        on_self = true;
+    } else {
+        return false;
+    }
     if (!cls || !cls->specs.has(SpecKind::Malloc)) return false;
     call_expr->sym = nullptr;
     call_expr->type = typeVoid;
     call_expr->is_lvalue = false;
     c.free_builtin = true;
+    c.free_on_self = on_self;
     return true;
 }
 
