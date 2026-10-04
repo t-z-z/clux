@@ -17,12 +17,14 @@ struct Decl;
 class InjectionExpander {
 public:
     using ErrorFn = std::function<void(const Location&, const std::string&)>;
+    using WarnFn = std::function<void(const Location&, const std::string&)>;
     using CollectFn = std::function<void(Decl*, bool)>;
 
     InjectionExpander(CompUnit& cu, SymbolTable& symbols,
-                      ErrorFn error, CollectFn collect)
+                      ErrorFn error, WarnFn warn, CollectFn collect)
         : cu_(cu), symbols_(symbols),
-          error_(std::move(error)), collect_(std::move(collect)) {}
+          error_(std::move(error)), warn_(std::move(warn)),
+          collect_(std::move(collect)) {}
 
     // 遍历顶层声明，展开所有类的注入
     void expand_all();
@@ -37,6 +39,7 @@ private:
     CompUnit& cu_;
     SymbolTable& symbols_;
     ErrorFn error_;
+    WarnFn warn_;
     CollectFn collect_;
     // 类注入展开状态：InProgress 用于环检测，Done 用作缓存
     std::unordered_map<Class*, ExpandState> expand_state_;

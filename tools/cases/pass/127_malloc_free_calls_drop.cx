@@ -1,0 +1,13 @@
+// 内置 free 先触发 DROP 再调用 @free，实例确实被释放
+extern "c" { putchar(int c) int r {} }
+malloc @Node {
+    pub int v = 0
+    pub DROP { putchar(70) }
+    pub INIT(int s) { self.v = s }
+}
+main() {
+    Node a = Node(1)
+    a.free()
+    putchar(10)
+    return
+}

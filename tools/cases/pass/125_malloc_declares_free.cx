@@ -1,0 +1,20 @@
+// 类自身声明 free、或把含 free 的类前置注入（#rc 在 @ 之前），
+// 都会盖掉内置 free：告警并仍用内置实现，实例不会被泄漏
+malloc @Declared {
+    pub int v = 0
+
+    free() { }
+}
+@base {
+    pub int w = 0
+    free() { }
+}
+malloc #base @Injected{
+    pub INIT() { }
+}
+main() {
+    Declared d = Declared()
+    d.free()
+    Injected i = Injected()
+    i.free()
+}

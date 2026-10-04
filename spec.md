@@ -473,6 +473,26 @@ malloc的对象会有free()方法，malloc类在初始化时会额外触发REF�
 malloc类在被赋值时会复制堆上的对象。
 
 ```cx
+malloc @rcInt #rc #int{}
+main(){
+    rcInt a=1;
+    a.free();
+}
+```
+
+### 修饰注入Injection
+
+修饰注入是一种容器操作，将修饰符注入到类声明上。
+
+```cx
+#foo #bar @baz #qux { }
+```
+
+在以上修饰中，foo的成员覆盖了bar的，bar的覆盖了baz的，baz覆盖qux。
+
+也可以由一个基础类型修饰，会自动派发所有操作符和特殊方法
+
+```cx
 @rc {
     int cnt = 0
     REF {
@@ -488,26 +508,6 @@ malloc @rcInt #rc #int{}
 ```
 
 malloc的rcInt覆盖了rc中的free方法，所以rc的free会触发释放。
-
-### 修饰注入Injection
-
-修饰注入是一种容器操作，将修饰符注入到类声明上。
-
-```cx
-#foo #bar @baz #qux { }
-```
-
-在以上修饰中，foo的成员覆盖了bar的，bar的覆盖了baz的，baz覆盖qux。
-
-也可以由一个基础类型修饰，会自动派发所有操作符和特殊方法
-
-```cx
-malloc @rcInt #rc #int{}
-main(){
-    rcInt a=1;
-    a.free();
-}
-```
 
 ## 十、控制流
 

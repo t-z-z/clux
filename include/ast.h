@@ -64,7 +64,8 @@
 //                        nullptr                  → 零参默认构造、free_builtin、
 //                                                   函数指针调用
 //
-//   Expr::Call::free_builtin [写 P1 resolve_call] [读 P2 eval_call]
+//   Expr::Call::free_builtin / free_on_self
+//                        [写 P1 resolve_call] [读 P2 eval_call]
 //                      该调用是 malloc 类的 a.free()，P2 走释放路径。
 //
 // 约定：
@@ -320,7 +321,7 @@ struct Expr : ASTNode {
     struct Binary       { Expr* left; OpKind op; Expr* right; };
     struct Unary        { OpKind op; Expr* operand; bool is_postfix = false; };
     struct Assign       { Expr* target; OpKind op; Expr* value; };
-    struct Call         { Expr* callee; std::vector<Expr*> args; Decl* resolved = nullptr; bool free_builtin = false; };
+    struct Call         { Expr* callee; std::vector<Expr*> args; Decl* resolved = nullptr; bool free_builtin = false; bool free_on_self = false; };
     struct Ternary      { Expr* cond; Expr* then_expr; Expr* else_expr; };
     struct Index        { Expr* target; Expr* index; };
     struct Member       { Expr* target; std::string_view member; };

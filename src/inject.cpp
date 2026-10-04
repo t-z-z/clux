@@ -2,6 +2,7 @@
 
 #include "../include/semantic.h"
 
+#include <algorithm>
 #include <string>
 #include <vector>
 
@@ -251,6 +252,40 @@ void InjectionExpander::expand_class(Class* cls, Scope* parent_scope) {
     sources.push_back(cls);
     for (Class* c : post_sources) sources.push_back(c);
 
+    // malloc 类的 free 是内置方法，且是唯一的堆释放入口：只有它会调用
+    // @free，成员 free 覆盖它就等于让实例无法释放。因此无条件让内置
+    // free 胜出。被丢弃的 free 分两种情形：
+    //  - 尾随注入（#mod 在 @ 之后）优先级本就低于类自身，spec 中
+    //    "malloc @rcInt #rc" 正是靠这个顺序让内置 free 覆盖 rc 的 free，
+    //    属预期行为，不告警；
+    //  - 前置注入（#mod 在 @ 之前）或类自身声明，优先级高于内置 free，
+    //    作者大概无意让空实现盖掉释放路径，告警提示。
+    bool is_malloc = cls->specs.has(SpecKind::Malloc);
+    if (is_malloc) {
+        for (size_t si = 0; si < sources.size(); ++si) {
+            Class* src = sources[si];
+            bool overrides_builtin = src == cls || si < pre_sources.size();
+            if (!overrides_builtin) continue;
+            for (Decl* m : src->members) {
+                if (!m) continue;
+                std::vector<std::string> keys = decl_key_names(m);
+                if (std::find(keys.begin(), keys.end(), "free") == keys.end())
+                    continue;
+                warn_(m->loc,
+                      src == cls
+                          ? std::string("'free' is a built-in method of malloc "
+                                        "classes; the declaration is ignored and "
+                                        "the built-in free is used")
+                          : "'free' of '" + std::string(src->name) +
+                            "' is injected before '" +
+                            std::string(cls->name) +
+                            "' and would override its built-in free; the "
+                            "built-in free is used instead");
+                break;
+            }
+        }
+    }
+
     std::vector<Decl*> result;
     std::unordered_map<std::string, size_t> index;
     for (Class* src : sources) {
@@ -258,6 +293,7 @@ void InjectionExpander::expand_class(Class* cls, Scope* parent_scope) {
             if (!m) continue;
             bool claimed = false;
             for (const std::string& n : decl_key_names(m)) {
+                if (is_malloc && n == "free") { claimed = true; break; }
                 if (index.count(n)) { claimed = true; break; }
             }
             if (claimed) continue;
