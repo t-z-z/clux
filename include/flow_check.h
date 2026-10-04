@@ -27,7 +27,8 @@ public:
     void check_jumps(Stmt* body);
     // 变量初始化检查：不得读取未赋值过的变量
     void check_initialization(Stmt* body, const std::vector<VarList*>& params,
-                              const std::vector<VarList*>& returns);
+                              const std::vector<VarList*>& returns,
+                              bool in_init = false);
     // 标量返回且每条路径末尾恰好一次赋值 → 可用寄存器 ret
     bool can_use_register_ret(Func& f);
 
@@ -37,6 +38,7 @@ private:
         std::unordered_set<Symbol*> assigned;
         Symbol* ret_sym = nullptr;   // 当前函数的返回变量（若有）
         bool terminated = false;     // 当前路径是否已终止（return）
+        bool in_init = false;        // 当前检查的是 INIT 方法体
     };
 
     void init_stmt(InitCtx& ctx, Stmt* s);

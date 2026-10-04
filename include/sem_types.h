@@ -18,8 +18,6 @@ bool ref_is_lvalue(Expr* t);
 // 命名类型节点的成员作用域
 Scope* named_type_scope(Expr* t);
 
-Expr* underlying_type(Expr* t);
-
 // 目标整数原始类型的符号性与位宽；返回 false 表示不是受检整数类型
 bool primitive_int_range(PrimitiveTypeKind k, bool& is_signed, int& bits);
 

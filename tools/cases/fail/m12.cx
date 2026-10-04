@@ -1,7 +1,0 @@
-@bar {
-    pub int value = 0
-    pub INIT(int v) { value = v }
-}
-main() {
-    bar b = 1
-}

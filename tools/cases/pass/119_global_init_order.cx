@@ -1,0 +1,12 @@
+// 模块级变量初值按声明顺序求值；允许调用函数，只是不能前向引用
+const int base = 4
+double_it(int v) int r {
+    r = v * 2
+    return
+}
+int a = base + 1
+int b = double_it(a)
+main() int r {
+    r = b
+    return
+}

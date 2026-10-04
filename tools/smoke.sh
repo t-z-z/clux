@@ -12,6 +12,14 @@ CLUX=./bin/clux
 # 用例名（不含 .cx）→ 期望退出码
 declare -A EXPECT=(
     [78_array_decl_len]=10
+    [113_global_var]=14
+    [114_global_namespace]=6
+    [115_global_ptr]=16
+    [117_malloc_class_size]=4
+    [118_ref_field_copy_alias]=17
+    [119_global_init_order]=10
+    [120_malloc_array_field_copy]=100
+    [121_self_conversion]=4
     [class_arg_pack]=1
     [ptr_int_cast]=20
     [ptr_to_slice]=52

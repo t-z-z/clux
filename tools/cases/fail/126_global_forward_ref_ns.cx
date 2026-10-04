@@ -1,0 +1,9 @@
+// 命名空间内同样禁止前向引用
+namespace cfg {
+    int total = limit + 1
+    int limit = 5
+}
+main() int r {
+    r = cfg::total
+    return
+}

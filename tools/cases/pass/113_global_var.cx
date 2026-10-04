@@ -1,0 +1,15 @@
+// 模块级变量：读写、跨函数可见、初值按声明顺序求值
+int g = 7
+const int k = 3
+int counter
+bump(int d) int r {
+    counter = counter + d
+    r = counter
+    return
+}
+main() int r {
+    counter = k
+    bump(4)
+    r = g + counter
+    return
+}

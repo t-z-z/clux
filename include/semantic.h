@@ -254,6 +254,9 @@ class SemanticAnalyzer : public ASTVisitor {
     SymbolTable symbols_;
     std::unique_ptr<InjectionExpander> injector_;
     std::unordered_map<VarItem*, Symbol*> var_symbols_;
+    // 模块级变量的声明序号，用于检测初值里的前向引用
+    std::unordered_map<const VarItem*, size_t> global_order_;
+    void collect_global_order(Decl* d);
     FlowChecker flow_;
     std::vector<Diagnostic> diagnostics_;
     bool has_error_ = false;
@@ -442,10 +445,18 @@ private:
     void check_call_args(Func* fn, const std::vector<Expr*>& args);
     void check_call_args(const std::vector<VarList*>& params,
                          const std::vector<Expr*>& args, const Location& loc);
+    // 平铺多个 VarList 声明的形参类型节点
+    static std::vector<Expr*> param_types(const std::vector<VarList*>& lists);
+    // 引用形参：按被引用目标类型匹配且实参须为 lvalue。已按引用形参处理返回 true
+    bool check_ref_param(Expr* arg, Expr* param);
     bool args_match(const std::vector<VarList*>& params,
                     const std::vector<Expr*>& args);
     // vi 是否为当前函数最后一个返回声明中的返回变量
     bool is_return_var_item(VarItem* vi) const;
+    // vi 是否为当前函数某个形参
+    bool is_param_item(VarItem* vi) const;
+    // vi 是否为当前类声明的字段
+    bool is_field_item(VarItem* vi) const;
 
     // 克隆辅助（深拷贝，新节点统一登记到 cu_）
 

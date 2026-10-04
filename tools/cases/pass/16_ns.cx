@@ -1,6 +1,8 @@
 namespace math {
+    // 默认私有的成员不能从外部访问
     add(int a, int b) int r { r = a + b }
+    pub mul(int a, int b) int r { r = a * b }
 }
 main() {
-    int x = math::add(1, 2)
+    int x = math::mul(1, 2)
 }

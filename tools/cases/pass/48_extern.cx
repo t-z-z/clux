@@ -1,4 +1,13 @@
 extern "c" {
     puts(char-* s) { }
+    putchar(int c) int r { }
 }
-main() { }
+emit(int[] codes) int r {
+    for int i = 0; i < codes.len; i += 1 {
+        putchar(codes[i])
+    }
+    r = 0
+}
+main() int r {
+    r = emit(72 105 10)
+}

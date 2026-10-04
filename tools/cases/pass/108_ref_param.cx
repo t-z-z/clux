@@ -1,0 +1,44 @@
+// 引用形参：out 参数、写穿；类与闭包形参同样适用
+@Node {
+    pub int v
+
+    pub INIT(int s) { self.v = s }
+    pub zero() { v = 0  return }
+}
+bump(int-& x, int d) {
+    x = x + d
+    return
+}
+reset(int-*& p) {
+    p = null
+    return
+}
+read_ptr(int-*& p) int-* r { r = p  return }
+clear(Node-& n) { n.zero()  return }
+main() int r {
+    int a = 1
+    int b = 2
+    int-& t = b
+    bump(t, 5)
+    int v = a
+    bump(v, 5)
+    int x = 7
+    int-* p = x-&
+    int-* got = read_ptr(p)
+    reset(p)
+    Node n = Node(3)
+    clear(n)
+    $(int-&, int)int add = \(int-& y, int d) int s {
+        y = y + d
+        s = y
+    }
+    add(a, 4)
+    r = 0
+    if b != 7 { r = 1 }
+    if v != 6 { r = r + 10 }
+    if got != x-& { r = r + 100 }
+    if p != null { r = r + 1000 }
+    if n.v != 0 { r = r + 10000 }
+    if a != 5 { r = r + 100000 }
+    return
+}

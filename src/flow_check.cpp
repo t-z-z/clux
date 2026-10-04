@@ -97,9 +97,10 @@ void FlowChecker::check_jumps(Stmt* body) {
 // 变量初始化检查：不得读取未赋值过的变量
 void FlowChecker::check_initialization(
         Stmt* body, const std::vector<VarList*>& params,
-        const std::vector<VarList*>& returns) {
+        const std::vector<VarList*>& returns, bool in_init) {
     if (!body) return;
     InitCtx ctx;
+    ctx.in_init = in_init;
     // 参数视为已赋值
     for (VarList* vl : params) {
         if (!vl) continue;
@@ -299,15 +300,15 @@ void FlowChecker::init_expr(InitCtx& ctx, Expr* e) {
     }
     if (auto* a = e->get_assign()) {
         init_expr(ctx, a->value);
-        // 引用首次绑定：目标尚未绑定时右值必须是 lvalue
+        // INIT 内对引用字段的赋值是绑定：形参与局部变量在构造返回后即失效
         if (a->target && a->target->sym) {
             Expr* tt = a->target->sym->get_type();
-            if (tt && tt->is_reference() &&
-                !ctx.assigned.count(a->target->sym)) {
-                if (!a->value || !a->value->is_lvalue)
-                    error_(a->value ? a->value->loc : e->loc,
-                          "reference must be bound to an lvalue");
-            }
+            if (tt && tt->is_reference() && ctx.in_init &&
+                !ctx.declared.count(a->target->sym) && a->value &&
+                a->value->sym && ctx.declared.count(a->value->sym))
+                error_(a->value->loc,
+                       "cannot bind a reference field to a local or parameter "
+                       "of INIT: it is dead once INIT returns");
         }
         init_assign_target(ctx, a->target);
         return;

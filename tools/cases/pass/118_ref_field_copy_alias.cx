@@ -1,0 +1,28 @@
+// 引用字段的对象级复制：初始���式与赋值式都走等号拷贝，副本与源共享被引用对象，
+// 必须告警
+@Node {
+    pub int v = 0
+    pub int-& ref
+
+    pub INIT() { self.ref = self.v }
+}
+malloc @V {
+    pub int v = 0
+    pub int-& ref
+
+    pub INIT(int a) {
+        self.v = a
+        self.ref = self.v
+    }
+}
+main() int r {
+    Node a = Node()
+    Node b = a
+    b.ref = 9
+    V p = V(3)
+    V q = V(0)
+    q = p
+    q.ref = 8
+    r = a.ref + p.ref
+    return
+}

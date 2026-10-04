@@ -1,0 +1,9 @@
+// 引用字段必须在 INIT 中绑定，字段初始化器不是绑定点
+@A {
+    pub int v = 0
+    pub int-& r = v
+    pub INIT() { }
+}
+main() {
+    A a = A()
+}

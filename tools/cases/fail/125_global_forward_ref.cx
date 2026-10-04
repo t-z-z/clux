@@ -1,0 +1,7 @@
+// 模块级变量的初值按声明顺序求值，前向引用只会读到零值
+int b = a + 1
+int a = 5
+main() int r {
+    r = b
+    return
+}

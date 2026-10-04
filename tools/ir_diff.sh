@@ -17,6 +17,12 @@ if [ "${1:-}" = "--init" ]; then
         "$CLUX" -t "$f" -o "$BASE/$b.ll" >/dev/null 2>&1 || { echo "IR 生成失败: $f"; exit 1; }
         n=$((n+1))
     done
+    # 用例删除后其基线会残留，导致基线数与用例数不一致
+    for g in "$BASE"/*.ll; do
+        [ -e "$g" ] || continue
+        b=$(basename "$g" .ll)
+        [ -e "tools/cases/pass/$b.cx" ] || { rm -f "$g"; echo "已清理残留基线: $b"; }
+    done
     echo "已生成基线 $n 个"
     exit 0
 fi

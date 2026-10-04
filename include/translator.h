@@ -28,6 +28,8 @@ private:
     struct Field { VarItem* var; int index; std::string ir_type; };
     struct ClassInfo {
         std::string llvm_name;
+        // 存放实例字节数的全局常量，由 LLVM 常量表达式算出真实布局
+        std::string size_global;
         std::vector<Field> fields;
         std::unordered_map<std::string, int> field_index;
         // static 字段：存储在模块级全局变量，不进实例 layout
@@ -38,6 +40,16 @@ private:
     std::unordered_map<Class*, ClassInfo> classes_;
     // static 字段变量 → 模块级全局符号名
     std::unordered_map<const VarItem*, std::string> static_global_;
+
+    struct GlobalVar {
+        VarItem* var;
+        std::string sym;      // LLVM 全局符号名（不含 @）
+        std::string ir_type;
+    };
+    // 顶层 / 命名空间内的 VarList：模块级变量
+    std::vector<GlobalVar> globals_;
+    std::unordered_map<const VarItem*, std::string> global_of_;
+    void collect_globals_decl(Decl* d, const std::string& prefix);
 
     struct LoopCtx { std::string break_label, continue_label; int scope_depth; };
     struct CleanupEntry {
@@ -53,14 +65,16 @@ private:
         Func* fn = nullptr;
         Class* current_class = nullptr;
         std::string self_ptr;
+        // 正在生成 INIT 方法体：此处的引用字段赋值是绑定，其余位置是写穿
+        bool in_init = false;
         std::string ret_type;
         std::string exit_label;
         std::unordered_map<const VarItem*, std::string> slots;
-        // 已绑定的引用变量：其槽存被引用对象的地址
+        // 引用变量与引用字段：其槽存被引用对象的地址
         std::unordered_set<const VarItem*> ref_bound;
-        // 引用变量 → 其绑定的作用域深度，离开作用域时遗忘绑定
-        std::unordered_map<const VarItem*, int> ref_slots;
         bool term = false;
+        // 无返回变量的 main：签名是 i32 但体内按 void 走，裸 return 需补 i32 0
+        bool plain_main = false;
         std::vector<CleanupEntry> drops;
         int scope_depth = 0;
         // 类返回：返回变量 r 即 sret 目标对象，r 的值是 %ret 指针
@@ -92,7 +106,6 @@ private:
     void emit_special(SpecialMethod& sm, Class* cls);
     void emit_class(Class* c);
     void emit_drops_to(int depth);
-    void           emit_scope_cleanup(int depth);
 
     void emit_stmt(Stmt* s);
     void emit_var_decl(VarList* vl);
@@ -127,16 +140,26 @@ private:
     void emit_field_defaults(Class* cls, const std::string& slot);
     // 模块入口为所有 static 字段写入声明处默认值
     void emit_static_inits();
+    // 模块入口为所有模块级变量写入声明处默认值
+    void emit_global_inits();
+    // 写入单个字段的声明处默认值：引用字段的初值即绑定点，存地址而非值
+    void emit_field_default(const std::string& dst_addr, const Field& f);
+    // 字段是否有需要写入的声明处默认值：无初值的引用字段写 null
+    static bool field_has_default(const Field& f);
     // 合成操作符的函数体 IR：解包 __value -> 运算 -> 打包返回
     void emit_synth_operator(Func& f, Class* cls, VarItem* ret_var);
     // 合成操作符的函数体 IR：解包 __value -> 运算 -> 打包返回
     Class* as_wrap_class(Expr* t);
     static std::string base_ir_of(PrimitiveTypeKind k);
     // 类实例的字节大小（供 @malloc 分配）
-    size_t type_size(const std::string& llvm_name) const;
+    std::string emit_size_of(const std::string& llvm_name);
+    // 单个元素的字节数
+    static long type_bytes_of(const std::string& t);
     std::string eval_cond(Expr* e);
     std::string to_bool(Expr* e, const std::string& v);
     std::string eval_lvalue(Expr* e);
+    // 被引用对象的地址：引用绑定、引用形参传参、取地址用
+    std::string eval_ref_addr(Expr* e);
     std::string eval_literal(Expr::Literal* lit);
     std::string eval_identifier(Expr* e, Expr::Identifier* id);
     std::string eval_binary(Expr* e, Expr::Binary* b);
@@ -161,7 +184,12 @@ private:
 
     std::string data_ptr_of(Expr* e);
     bool is_ref_item(const VarItem* vi, Expr** target_out) const;
-    bool is_ref_expr(Expr* e, Expr** target_out) const;
+    // 成员表达式的存储地址：static 字段为全局符号，实例字段为 getelementptr
+    std::string field_addr_of(Expr* e);
+    // 引用字段的槽存被引用对象的地址，取其 lvalue 需先取出该地址
+    std::string field_lvalue(Expr* e, const std::string& slot_addr);
+    // 引用字段绑定：仅 INIT 内对字段的直接赋值是绑定，返回被绑定对象的地址
+    std::string bind_ref_field(Expr* target, Expr* value);
     std::string cast_value(const std::string& v,
                            const std::string& src, const std::string& dst,
                            bool src_signed = true, bool dst_signed = true);

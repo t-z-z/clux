@@ -1,0 +1,6 @@
+// 引用形参按地址传递，跨线程共享栈对象不安全
+worker(int-& x) { x = 1  return }
+main() {
+    int a = 0
+    spawn(worker(a))
+}

@@ -26,10 +26,6 @@ Scope* named_type_scope(Expr* t) {
     return nullptr;
 }
 
-Expr* underlying_type(Expr* t) {
-    return t;
-}
-
 bool primitive_int_range(PrimitiveTypeKind k, bool& is_signed, int& bits) {
     switch (k) {
         case PrimitiveTypeKind::Int8:   is_signed = true;  bits = 8;  return true;
@@ -124,13 +120,11 @@ std::string sym_display_name(Symbol* sym) {
 
 bool is_enum_type(Expr* t) {
     if (!t) return false;
-    t = underlying_type(t);
     return t->is_type && (t->is_identifier() || t->is_member()) &&
            t->resolved_decl && t->resolved_decl->kind == DeclKind::Enum;
 }
 
 bool is_numeric_type(Expr* t) {
-    t = underlying_type(t);
     if (!t) return false;
     // 枚举底层是数字
     if (is_enum_type(t)) return true;
@@ -140,7 +134,6 @@ bool is_numeric_type(Expr* t) {
 }
 
 bool is_integer_type(Expr* t) {
-    t = underlying_type(t);
     if (!t) return false;
     // 枚举底层是整数
     if (is_enum_type(t)) return true;
@@ -156,20 +149,17 @@ bool is_integer_type(Expr* t) {
 }
 
 bool is_float_type(Expr* t) {
-    t = underlying_type(t);
     if (!t || !t->is_primitive()) return false;
     auto k = t->get_primitive()->kind;
     return k == PrimitiveTypeKind::Float16 || k == PrimitiveTypeKind::Float || k == PrimitiveTypeKind::Double;
 }
 
 bool is_bool_type(Expr* t) {
-    t = underlying_type(t);
     return t && t->is_primitive() && t->get_primitive()->kind == PrimitiveTypeKind::Bool;
 }
 
 bool is_condition_type(Expr* t) {
     if (is_bool_type(t)) return true;
-    t = underlying_type(t);
     if (!t) return false;
     return t->is_pointer() || t->is_array_type() || t->is_null();
 }
@@ -177,8 +167,6 @@ bool is_condition_type(Expr* t) {
 bool is_same_type(Expr* a, Expr* b) {
     if (!a && !b) return true;
     if (!a || !b) return false;
-    a = underlying_type(a);
-    b = underlying_type(b);
     // StringLiteral 与 char[] 视为同类
     auto is_char_array = [](Expr* t) {
         if (!t || !t->is_array_type()) return false;
@@ -240,7 +228,6 @@ bool is_same_type(Expr* a, Expr* b) {
 }
 
 bool is_integer_promotable(Expr* t) {
-    t = underlying_type(t);
     if (!t || !t->is_primitive()) return false;
     auto k = t->get_primitive()->kind;
     return k == PrimitiveTypeKind::Int8 || k == PrimitiveTypeKind::Short
@@ -249,7 +236,6 @@ bool is_integer_promotable(Expr* t) {
 }
 
 bool is_void_type(Expr* t) {
-    t = underlying_type(t);
     if (!t) return false;
     if (t->is_void()) return true;
     // 解析器把源码中的 void 生成为 Primitive{Void}

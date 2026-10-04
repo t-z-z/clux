@@ -1,7 +1,0 @@
-extern "c" {
-    puts(char-* s) { }
-    putchar(int c) int r { }
-}
-main() int r {
-    r = 0
-}

@@ -25,6 +25,7 @@ bool SemanticAnalyzer::resolve_funcptr_call(Expr* call_expr, Expr::Call& c) {
     for (size_t i = 0; i < c.args.size() && i < fp->params.size(); ++i) {
         Expr* at = c.args[i] ? c.args[i]->type : nullptr;
         Expr* pt = fp->params[i];
+        if (check_ref_param(c.args[i], pt)) continue;
         if (at && pt && !is_same_type(at, pt) && !can_convert_to(at, pt)) {
             warning(c.args[i]->loc, "argument type mismatch in call");
         }
@@ -256,6 +257,31 @@ void SemanticAnalyzer::resolve_call(Expr* call_expr, Expr::Call& c) {
     resolve_named_call(call_expr, c, callee_sym, name);
 }
 
+// 平铺多个 VarList 声明的形参类型节点
+std::vector<Expr*> SemanticAnalyzer::param_types(
+        const std::vector<VarList*>& lists) {
+    std::vector<Expr*> out;
+    for (VarList* vl : lists) {
+        if (!vl) continue;
+        for (VarItem* vi : vl->vars) {
+            if (vi) out.push_back(vi->type ? vi->type : vl->type);
+        }
+    }
+    return out;
+}
+
+// 引用形参按绑定语义匹配：实参须为 lvalue，且类型与被引用目标一致。
+// 绑定不走值转换，故返回 true 表示已处理完毕
+bool SemanticAnalyzer::check_ref_param(Expr* arg, Expr* param) {
+    if (!arg || !param || !param->is_reference()) return false;
+    Expr* tgt = param->get_reference()->target;
+    if (!arg->is_lvalue)
+        error(arg->loc, "reference parameter requires an lvalue argument");
+    else if (tgt && arg->type && !is_same_type(arg->type, tgt))
+        error(arg->loc, "reference parameter target type mismatch");
+    return true;
+}
+
 // 形参列表逐一对实参做转换判定
 void SemanticAnalyzer::check_call_args(const std::vector<VarList*>& params_lists,
                                        const std::vector<Expr*>& args,
@@ -273,6 +299,7 @@ void SemanticAnalyzer::check_call_args(const std::vector<VarList*>& params_lists
         return;
     }
     for (size_t i = 0; i < args.size(); ++i) {
+        if (check_ref_param(args[i], params[i])) continue;
         Expr* at = args[i] ? args[i]->type : nullptr;
         if (!at || !params[i]) continue;
         check_array_len_fit(args[i], params[i], "parameter",
