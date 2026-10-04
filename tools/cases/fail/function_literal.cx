@@ -1,4 +1,5 @@
+// 函数字面量：语法可读，但当前不产生节点，报不支持
 main() {
-    $(int,int)int f = \(int a, int b) int r { r = a + b }
-    int x = f(1, 2)
+    $(int,int)int max = \(int a, int b) int r { r = a + b }
+    int x = max(1, 2)
 }

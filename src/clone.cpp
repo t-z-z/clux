@@ -80,14 +80,6 @@ Expr* CompUnit::clone_expr(Expr* e) {
     if (auto* v = e->get_spawn()) {
         return add_node<Expr>(loc, Expr::Spawn{clone_expr(v->call)});
     }
-    if (auto* v = e->get_closure()) {
-        std::vector<VarList*> params;
-        for (auto* p : v->params) params.push_back(clone_varlist(p));
-        std::vector<VarList*> returns;
-        for (auto* r : v->returns) returns.push_back(clone_varlist(r));
-        return add_node<Expr>(loc, Expr::Closure{std::move(params), std::move(returns),
-            clone_stmt(v->body)});
-    }
     return add_node<Expr>(loc, e->data);
 }
 

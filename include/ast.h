@@ -327,8 +327,6 @@ struct Expr : ASTNode {
     struct Member       { Expr* target; std::string_view member; };
     struct Cast         { Expr* target_type; Expr* operand; };
     struct Array        { std::vector<Expr*> members; Expr* fill_value = nullptr; };
-    struct Closure      { std::vector<VarList*> params; std::vector<VarList*> returns;
-                        Stmt* body = nullptr; };
     struct Spawn        { Expr* call; };
     struct Primitive        { PrimitiveTypeKind kind; };
     struct Pointer          { Expr* pointee; };
@@ -344,7 +342,7 @@ struct Expr : ASTNode {
     using Variant = std::variant<
         Literal, Identifier, Binary, Unary, Assign,
         Call, Ternary, Index, Member,
-        Cast, Array, Closure, Spawn,
+        Cast, Array, Spawn,
         Primitive, Pointer, ArrayType, StringLiteralType,
         FuncPtr, FuncRef, Reference, Inferred, Void, Null
     >;
@@ -377,7 +375,6 @@ struct Expr : ASTNode {
     BBB(member, Member, Expr)
     BBB(cast, Cast, Expr)
     BBB(array, Array, Expr)
-    BBB(closure, Closure, Expr)
     BBB(spawn, Spawn, Expr)
     BBB(primitive, Primitive, Expr)
     BBB(pointer, Pointer, Expr)
@@ -703,7 +700,6 @@ struct ASTVisitor {
     virtual void visit_expr_member(Expr::Member&) {}
     virtual void visit_expr_cast(Expr::Cast&) {}
     virtual void visit_expr_array(Expr::Array&) {}
-    virtual void visit_expr_closure(Expr::Closure&) {}
     virtual void visit_expr_spawn(Expr::Spawn&) {}
     virtual void visit_expr_ternary(Expr::Ternary&) {}
 
@@ -875,16 +871,6 @@ struct ASTVisitor {
             } else if constexpr (std::is_same_v<T, Expr::Spawn>) {
                 if (v.call) walk(*v.call);
                 visit_expr_spawn(v);
-            } else if constexpr (std::is_same_v<T, Expr::Closure>) {
-                auto* pre_params = current_params;
-                current_params = &v.params;
-                scope_in("closure");
-                for (auto* p : v.params) if (p) walk(*p);
-                for (auto* r : v.returns) if (r) walk(*r);
-                if (v.body) walk(*v.body);
-                visit_expr_closure(v);
-                scope_out();
-                current_params = pre_params;
             } else if constexpr (std::is_same_v<T, Expr::Pointer>) {
                 if (v.pointee) walk(*v.pointee);
                 visit_type_pointer(v);

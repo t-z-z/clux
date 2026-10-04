@@ -1,4 +1,4 @@
-// 引用形参：out 参数、写穿；类与闭包形参同样适用
+// 引用形参：out 参数、写穿；类形参同样适用
 @Node {
     pub int v
 
@@ -15,6 +15,7 @@ reset(int-*& p) {
 }
 read_ptr(int-*& p) int-* r { r = p  return }
 clear(Node-& n) { n.zero()  return }
+add(int-& y, int d) int s { y = y + d  s = y }
 main() int r {
     int a = 1
     int b = 2
@@ -28,11 +29,8 @@ main() int r {
     reset(p)
     Node n = Node(3)
     clear(n)
-    $(int-&, int)int add = \(int-& y, int d) int s {
-        y = y + d
-        s = y
-    }
-    add(a, 4)
+    $(int-&, int)int f = add
+    f(a, 4)
     r = 0
     if b != 7 { r = 1 }
     if v != 6 { r = r + 10 }

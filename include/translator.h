@@ -6,6 +6,7 @@
 #include <vector>
 
 #include "ast.h"
+#include "diagnostic.h"
 #include "translator_mangle.h"
 
 namespace cx {
@@ -19,11 +20,18 @@ public:
     void run();
     void emit_decl(Decl* d);
 
+    const std::vector<Diagnostic>& diagnostics() const { return diags_; }
+    bool has_error() const { return has_error_; }
+
 private:
+    void error(const Location& loc, std::string msg);
+
     CompUnit& cu_;
     IRWriter& ir_;
     Mangler mangler_;
     bool uses_alwaysinline_ = false;
+    std::vector<Diagnostic> diags_;
+    bool has_error_ = false;
 
     struct Field { VarItem* var; int index; std::string ir_type; };
     struct ClassInfo {
@@ -45,11 +53,13 @@ private:
         VarItem* var;
         std::string sym;      // LLVM 全局符号名（不含 @）
         std::string ir_type;
+        bool is_extern = false;   // extern 声明：由外部库定义，此处只声明不初始化
     };
-    // 顶层 / 命名空间内的 VarList：模块级变量
+    // 顶层 / 命名空间 / extern 内的 VarList：模块级变量
     std::vector<GlobalVar> globals_;
     std::unordered_map<const VarItem*, std::string> global_of_;
-    void collect_globals_decl(Decl* d, const std::string& prefix);
+    void collect_globals_decl(Decl* d, const std::string& prefix,
+                              bool is_extern = false);
 
     struct LoopCtx { std::string break_label, continue_label; int scope_depth; };
     struct CleanupEntry {
@@ -84,7 +94,8 @@ private:
     };
     Ctx ctx_;
     std::vector<LoopCtx> loops_;
-    int closure_counter_ = 0;
+    // 翻译器合成的辅助函数编号：spawn 包装函数共用
+    int aux_fn_counter_ = 0;
 
     void collect_classes();
     void collect_classes_decl(Decl* d);
@@ -176,9 +187,7 @@ private:
     std::string build_string_slice(Expr* lit);
     std::string eval_cast(Expr* e, Expr::Cast* c);
     std::string eval_ternary(Expr* e, Expr::Ternary* t);
-    std::string eval_closure(Expr* e, Expr::Closure* c);
     std::string eval_spawn(Expr* e, Expr::Spawn* s);
-    std::string emit_closure_fn(Expr::Closure* c);
     std::string call_func_ptr(Expr* e, Expr::Call* c, Expr::FuncPtr* fp);
     int array_length_of(Expr* arrtype);
 

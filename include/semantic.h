@@ -337,7 +337,6 @@ public:
     void visit_expr_member(Expr::Member&) override;
     void visit_expr_cast(Expr::Cast&) override;
     void visit_expr_array(Expr::Array&) override;
-    void visit_expr_closure(Expr::Closure&) override;
     void visit_expr_spawn(Expr::Spawn&) override;
     void visit_expr_ternary(Expr::Ternary&) override;
 

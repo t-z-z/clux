@@ -1,5 +1,6 @@
 #include "../include/compiler.h"
 
+#include <algorithm>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
@@ -34,6 +35,7 @@ void usage() {
         "options:\n"
         "  -o, --output FILE      output path\n"
         "  -I DIR                 add DIR to the module search path\n"
+        "  -L DIR                 add DIR to the library search path\n"
         "  -O N                   optimization level 0-3 (translate runs opt; build passes to clang++)\n"
         "  -v, --verbose          print the clang++ command line\n"
         "      --version          show version\n"
@@ -174,6 +176,20 @@ int main(int argc, char** argv) {
     int opt_level = -1;
     bool verbose = false;
 
+    // -L 目录去重保序；同时写入运行期搜索路径，使 -r 构建的可执行文件无需
+    // LD_LIBRARY_PATH 即可找到动态库
+    std::vector<std::string> lib_paths;
+    auto add_lib_path = [&](const std::string& dir) {
+        if (dir.empty()) {
+            std::cerr << "error: -L requires a non-empty argument\n";
+            std::exit(1);
+        }
+        if (std::find(lib_paths.begin(), lib_paths.end(), dir) != lib_paths.end()) return;
+        lib_paths.push_back(dir);
+        clang_extra.push_back("-L" + dir);
+        clang_extra.push_back("-Wl,-rpath," + dir);
+    };
+
     for (int i = 1; i < argc; ++i) {
         std::string a = argv[i];
         if (a == "-t" || a == "--translate")            action = Action::Translate;
@@ -192,6 +208,13 @@ int main(int argc, char** argv) {
         }
         else if (a.size() > 2 && a[0] == '-' && a[1] == 'I') {
             lib_dir = a.substr(2);
+        }
+        else if (a == "-L") {
+            if (i + 1 >= argc) { std::cerr << "error: -L requires an argument\n"; return 1; }
+            add_lib_path(argv[++i]);
+        }
+        else if (a.size() > 2 && a[0] == '-' && a[1] == 'L') {
+            add_lib_path(a.substr(2));
         }
         else if (a == "-O") {
             if (i + 1 >= argc) { std::cerr << "error: -O requires an argument\n"; return 1; }
@@ -262,11 +285,14 @@ int main(int argc, char** argv) {
 
     // -b / -r / --emit-asm / --emit-obj: IR in memory, then clang++ via stdin
     std::ostringstream ir;
-    if (!cx::translate(source, input, lib_dir, ir)) return 1;
+    std::vector<std::string> libs;
+    if (!cx::translate(source, input, lib_dir, ir, &libs)) return 1;
 
     std::vector<std::string> extra = clang_extra;
     if (action == Action::EmitAsm) extra.push_back("-S");
     if (action == Action::EmitObj) extra.push_back("-c");
+    // extern 块声明的库按 -l 传入，须排在 IR 之后以满足静态库链接顺序
+    for (const std::string& lib : libs) extra.push_back("-l" + lib);
 
     std::string default_ext;
     if (action == Action::EmitAsm) default_ext = ".s";
