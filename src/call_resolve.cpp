@@ -3,7 +3,7 @@
 
 namespace cx {
 
-// 调用解析：函数指针 / functor / 构造 / free 内置 / 切片打包 / 命名调用
+// 调用解析：函数指针 / functor / 构造 / free 内置 / 数组实参打包 / 命名调用
 // 以及实参匹配检查。路径分支密集，独立成文件以便评审。
 
 void SemanticAnalyzer::call_fail(Expr* call_expr, const std::string& msg) {
@@ -122,8 +122,8 @@ bool SemanticAnalyzer::resolve_free_builtin(Expr* call_expr, Expr::Call& c,
     return true;
 }
 
-// 切片形参的调用点打包：f(a b c) 等价于 f([a b c])
-void SemanticAnalyzer::pack_slice_args(Func* func, Expr* call_expr, Expr::Call& c) {
+// 数组形参的调用点打包：f(a b c) 等价于 f([a b c])
+void SemanticAnalyzer::pack_array_args(Func* func, Expr* call_expr, Expr::Call& c) {
     if (func->params.empty()) return;
     std::vector<Expr*> params;
     for (VarList* vl : func->params) {
@@ -216,7 +216,7 @@ void SemanticAnalyzer::resolve_named_call(Expr* call_expr, Expr::Call& c,
         return;
     }
 
-    pack_slice_args(func, call_expr, c);
+    pack_array_args(func, call_expr, c);
     pack_class_args(func, call_expr, c);
     check_call_args(func, c.args);
 

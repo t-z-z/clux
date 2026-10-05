@@ -1,4 +1,0 @@
-extern "c"{
-    foo(char[] s ...){}
-}
-main(){}

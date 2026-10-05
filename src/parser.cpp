@@ -1328,7 +1328,9 @@ Expr* Parser::parse_postfix(Expr* left, bool is_type) {
                         }
                     }
                     step();
-                    Expr* node = cu_.add_node<Expr>(loc, Expr::ArrayType{left, length});
+                    Expr* node = cu_.add_node<Expr>(loc, Expr::ArrayType{
+                        left, length,
+                        length ? ArrayKind::Fixed : ArrayKind::Infer});
                     node->is_type = true;
                     left = node;
                 } else {
@@ -1346,6 +1348,22 @@ Expr* Parser::parse_postfix(Expr* left, bool is_type) {
                         Expr::Index{left, index}
                     );
                 }
+                continue;
+            }
+            // 所有权切片类型: T{}
+            // 与函数体起始的 '{' 区分：只有紧跟 '}' 的 '{' 才是切片类型
+            case TokenKind::BraceL: {
+                if (!is_type || peek().kind != TokenKind::BraceR) return left;
+                step();
+                if (curr().kind != TokenKind::BraceR) {
+                    add_error("expected '}' to close slice type");
+                    return left;
+                }
+                step();
+                Expr* node = cu_.add_node<Expr>(loc,
+                    Expr::ArrayType{left, nullptr, ArrayKind::Slice});
+                node->is_type = true;
+                left = node;
                 continue;
             }
             // 成员/作用域: . ::

@@ -84,9 +84,9 @@ bool SemanticAnalyzer::can_convert_to(Expr* src, Expr* dst) {
         return true;
     }
 
-    // 指针 → 定长切片：由目标类型提供长度（int[N] s = ptr）
+    // 指针 → 定长数组：由目标类型提供长度（int[N] s = ptr）
     if (src->is_pointer() && dst->is_array_type() &&
-        dst->get_array_type()->length) {
+        !is_slice_type(dst) && dst->get_array_type()->length) {
         Expr* elem = dst->get_array_type()->element;
         Expr* pointee = src->get_pointer()->pointee;
         if (elem && pointee &&
@@ -94,7 +94,14 @@ bool SemanticAnalyzer::can_convert_to(Expr* src, Expr* dst) {
             return true;
     }
 
-    // 切片 → 指向元素类型的指针（元素相同，或目标为 void*）
+    // 定长数组 → 所有权切片：backing 与长度都现成；反向不可，长度运行期才知道
+    if (src->is_array_type() && !is_slice_type(src) && is_slice_type(dst)) {
+        Expr* elem = src->get_array_type()->element;
+        Expr* delem = dst->get_array_type()->element;
+        if (elem && delem && is_same_type(elem, delem)) return true;
+    }
+
+    // 数组/切片 → 指向元素类型的指针（元素相同，或目标为 void*）
     if (src->is_array_type() && dst->is_pointer()) {
         Expr* elem = src->get_array_type()->element;
         Expr* pointee = dst->get_pointer()->pointee;
@@ -170,14 +177,10 @@ void SemanticAnalyzer::check_array_len_fit(Expr* src, Expr* dst_type,
                                            const std::string& context,
                                            const Location& loc) {
     if (!src || !dst_type || !dst_type->is_array_type()) return;
-    Expr* len = dst_type->get_array_type()->length;
-    if (!len || !len->is_literal()) return;
-    size_t decl_len = 0;
-    try { decl_len = std::stoul(std::string(len->get_literal()->value)); }
-    catch (...) { return; }
-    if (decl_len == 0) return;
+    long long decl_len = const_array_type_len(dst_type);
+    if (decl_len <= 0) return;
     long long n = const_array_len_of(src);
-    if (n >= 0 && (size_t)n > decl_len) {
+    if (n >= 0 && n > decl_len) {
         error(loc, "array literal has " + std::to_string(n) +
               " elements but " + context + " length is " +
               std::to_string(decl_len));
@@ -206,27 +209,25 @@ void SemanticAnalyzer::check_literal_range(Expr* value, Expr* dst,
     }
 }
 
-// 形参定长时强制实参数组长度相同；形参未定长时实参长度任意。
+// 形参定长时强制实参数组长度相同；形参为所有权切片时实参长度任意。
 // 数组字面量实参不受此限（允许按目标长度补齐）。
 void SemanticAnalyzer::check_param_array_len(Expr* arg, Expr* at, Expr* pt,
                                              const Location& loc) {
     if (!at || !pt) return;
     if (!pt->is_array_type() || !at->is_array_type()) return;
+    if (is_slice_type(at) && !is_slice_type(pt)) return;  // 转换本身不可行，由 check_conversion 报
     if (arg && arg->is_array()) return;  // 字面量：按目标长度补齐
-    Expr* plen = pt->get_array_type()->length;
-    Expr* alen = at->get_array_type()->length;
-    if (!plen || !plen->is_literal()) return;  // 形参未定长
-    if (!alen || !alen->is_literal()) {
+    long long plen = const_array_type_len(pt);
+    if (plen < 0) return;  // 形参未定长
+    long long alen = const_array_type_len(at);
+    if (alen < 0) {
         error(loc, "array argument length must be known when parameter "
                    "length is fixed");
         return;
     }
-    if (std::string(plen->get_literal()->value) !=
-        std::string(alen->get_literal()->value)) {
-        error(loc, "array argument length " +
-              std::string(alen->get_literal()->value) +
-              " does not match parameter length " +
-              std::string(plen->get_literal()->value));
+    if (alen != plen) {
+        error(loc, "array argument length " + std::to_string(alen) +
+              " does not match parameter length " + std::to_string(plen));
     }
 }
 
@@ -235,6 +236,13 @@ bool SemanticAnalyzer::check_conversion(Expr* src, Expr* dst, const std::string&
     if (!src || !dst) return false;
     if (is_same_type(src, dst)) return true;
     if (has_conversion(src, dst)) return true;
+    // 切片长度运行期才知道，不能当定长数组用；反向的数组 → 切片是允许的
+    if (src->is_array_type() && dst->is_array_type() &&
+        is_slice_type(src) && !is_slice_type(dst)) {
+        error(loc, "cannot use a slice as a fixed-length array: its length is "
+                   "only known at run time, in " + context);
+        return false;
+    }
     if (explicit_cast) {
         // 仅当显式 cast 能落到确定语义时才放行；否则报错，避免生成非法 IR
         Expr* us = src;

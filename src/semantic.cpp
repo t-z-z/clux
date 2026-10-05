@@ -64,6 +64,7 @@ void SemanticAnalyzer::analyze_rest() {
     injector_->expand_all();
     for (Decl* d : cu_.top_decls) collect_global_order(d);
     walk(cu_);
+    report_infer_arrays();
 }
 
 // 模块级变量按声明顺序编号：初值只能引用序号更小的变量
@@ -383,7 +384,8 @@ std::string SemanticAnalyzer::type_to_key(Expr& t) {
         auto* arr = t.get_array_type();
         std::string elem_ir = arr->element ? type_to_key(*arr->element) : "i8";
         std::string len_ir = "x";
-        if (arr->length && arr->length->is_literal())
+        if (arr->kind == ArrayKind::Slice) len_ir = "s";
+        else if (arr->length && arr->length->is_literal())
             len_ir = std::string(arr->length->get_literal()->value);
         return "[" + elem_ir + ";" + len_ir + "]";
     }
@@ -424,6 +426,22 @@ void SemanticAnalyzer::visit(CompUnit& cu) {
 }
 void SemanticAnalyzer::visit(Decl&) {}
 void SemanticAnalyzer::visit(Import&) {}
+// T{} 是视图切片：所有权不外泄，故不出现在函数签名里；
+// 跨函数传递数组一律用指针
+void SemanticAnalyzer::check_no_slice(const std::vector<VarList*>& lists,
+                                      const char* what) {
+    for (VarList* vl : lists) {
+        if (!vl) continue;
+        for (VarItem* vi : vl->vars) {
+            if (!vi) continue;
+            if (is_slice_type(vi->type ? vi->type : vl->type))
+                error(vi->loc, std::string("array slice ") + what +
+                      " is not allowed: a view must not escape its owner, "
+                      "pass a pointer instead");
+        }
+    }
+}
+
 void SemanticAnalyzer::visit_func(Func& f) {
     // 变参仅用于 extern 声明
     if (f.is_variadic) {
@@ -434,10 +452,12 @@ void SemanticAnalyzer::visit_func(Func& f) {
             for (VarItem* vi : vl->vars) {
                 Expr* ty = vi->type ? vi->type : vl->type;
                 if (ty && ty->is_array_type())
-                    error(vi->loc, "slice parameter is not allowed in a variadic function");
+                    error(vi->loc, "array parameter is not allowed in a variadic function");
             }
         }
     }
+    check_no_slice(f.params, "parameter");
+    check_no_slice(f.returns, "return type");
     // extern 内的函数声明不检查返回值是否被赋值；标量/指针返回按 C ABI 走寄存器
     if (f.is_extern_decl) {
         if (!f.returns.empty() && f.returns.back()) {
@@ -481,6 +501,7 @@ void SemanticAnalyzer::visit_func(Func& f) {
 
 
 void SemanticAnalyzer::visit_special_method(SpecialMethod& sm) {
+    check_no_slice(sm.params, "parameter");
     if (!sm.body) return;
     flow_.check_jumps(sm.body);
     flow_.check_initialization(sm.body, sm.params, {},
@@ -542,6 +563,40 @@ static bool copies_reference_fields(Expr* src, Expr* dst) {
     return class_has_ref_field(as_class(dst));
 }
 
+// T[]：长度由初值推导，取自初值的编译期长度（字符串字面量按字符数）。
+// 元素本身也可能是 T[]，按初值的首个元素继续推导。推导不出来时保持 Infer，
+// 由 report_infer_arrays 统一报错
+void SemanticAnalyzer::resolve_infer_array_len(Expr& type, Expr* init_type,
+                                               Expr* init_expr) {
+    Expr::ArrayType* arr = type.get_array_type();
+    if (!arr || arr->kind != ArrayKind::Infer || arr->length) return;
+    long long n = init_expr ? const_array_len_of(init_expr) : -1;
+    if (n < 0) n = const_array_type_len(init_type);
+    if (n < 0) return;
+    arr->length = make_int_literal(type.loc, (size_t)n);
+    arr->kind = ArrayKind::Fixed;
+    Expr* elem_type = init_type && init_type->is_array_type()
+        ? init_type->get_array_type()->element : nullptr;
+    Expr* elem_expr = nullptr;
+    if (init_expr && init_expr->is_array() &&
+        !init_expr->get_array()->members.empty())
+        elem_expr = init_expr->get_array()->members.front();
+    if (arr->element)
+        resolve_infer_array_len(*arr->element, elem_type, elem_expr);
+}
+
+void SemanticAnalyzer::report_infer_arrays() {
+    for (Expr* t : pending_infer_arrays_) {
+        if (!t || !t->is_array_type()) continue;
+        auto* arr = t->get_array_type();
+        if (arr->kind != ArrayKind::Infer || arr->length) continue;
+        error(t->loc, "cannot infer array length: give it an initializer of "
+                      "known length, or write T{} for a slice whose length is "
+                      "only known at run time");
+    }
+    pending_infer_arrays_.clear();
+}
+
 void SemanticAnalyzer::visit_var_list(VarList& vl) {
     // 模块级变量的存储是 LLVM 全局量，其类型必须是常量可表达的
     bool module_level = !current_params && !current_members;
@@ -578,21 +633,15 @@ void SemanticAnalyzer::visit_var_list(VarList& vl) {
                       "string: its storage would not outlive the initializer");
         }
     }
-    // 动态长度数组检查：运行时长度必须显式声明存储方式
-    if (vl.type && vl.type->is_array_type()) {
-        auto* arr = vl.type->get_array_type();
-        if (arr->length) {
-            // 检查长度是否为编译期常量（字面量，或引用 const 变量的标识符）
-            bool is_const_length = arr->length->is_literal();
-            if (!is_const_length && arr->length->sym && arr->length->sym->is_const()) {
-                is_const_length = true;
-            }
-        }
-    }
     // 初始化类型检查：显式声明类型时，初值须可转换到声明类型（let 推导跳过）
     for (VarItem* var : vl.vars) {
         if (!var) continue;
         Expr* dt = var->type ? var->type : vl.type;
+        // T[]：长度由初值推导。多个变量共用一个类型节点时按声明顺序取第一个
+        // 能定出长度的初值，各变量长度不一致由数组字面量长度检查报出
+        if (dt && dt->is_array_type())
+            resolve_infer_array_len(*dt, var->init ? var->init->type : nullptr,
+                                    var->init);
         // 引用必须创建时绑定：初值即绑定，绑定源必须是同目标类型的 lvalue。
         // 形参在进入函数时由实参绑定，字段在 INIT 中绑定，二者都不在声明处。
         // 绑定不走常规值转换。
@@ -634,7 +683,7 @@ void SemanticAnalyzer::visit_var_list(VarList& vl) {
                 var->init->type = dt;
         } else if (dt->is_array_type() && var->init->type &&
                    var->init->type->is_string_literal_type()) {
-            // 字符串字面量初值：只检查长度，保留其类型供 translator 生成切片
+            // 字符串字面量初值：只检查长度，保留其类型供 translator 构造 {ptr,i32}
             check_array_len_fit(var->init, dt, "declared", var->init->loc);
         }
         check_literal_range(var->init, dt, "initialization", var->init->loc);
@@ -692,7 +741,13 @@ void SemanticAnalyzer::visit_class(Class& c) {
         auto* vl = static_cast<VarList*>(m);
         bool is_static = vl->specs.has(SpecKind::Static);
         for (VarItem* vi : vl->vars) {
-            if (!vi || !vi->type || !vi->type->is_reference()) continue;
+            if (!vi) continue;
+            // 字段的存储大小要参与类布局，切片的长度运行期才知道
+            if (is_slice_type(vi->type ? vi->type : vl->type))
+                error(vi->loc, "array slice field '" + std::string(vi->name) +
+                      "' is not allowed: the size of the class would not be "
+                      "computable");
+            if (!vi->type || !vi->type->is_reference()) continue;
             std::string f = "reference field '" + std::string(vi->name) + "'";
             if (is_static) {
                 error(vi->loc, f + " cannot be static: a reference field can "
@@ -1250,7 +1305,7 @@ void SemanticAnalyzer::visit_expr_member(Expr::Member& m) {
         return;
     }
 
-    // 数组的 .len：返回长度
+    // 数组/切片的 .len：返回长度
     if (m.member == "len" && m.target->type && m.target->type->is_array_type()) {
         current_expr->sym = nullptr;
         current_expr->type = typeInt;
@@ -1258,7 +1313,7 @@ void SemanticAnalyzer::visit_expr_member(Expr::Member& m) {
         return;
     }
 
-    // 数组的 .ptr：提取底层指针（指向元素类型）
+    // 数组/切片的 .ptr：提取底层指针（指向元素类型）
     if (m.member == "ptr" && m.target->type && m.target->type->is_array_type()) {
         Expr* elem = m.target->type->get_array_type()->element;
         current_expr->sym = nullptr;
@@ -1393,13 +1448,13 @@ void SemanticAnalyzer::visit_expr_cast(Expr::Cast& cast) {
 
 void SemanticAnalyzer::visit_expr_array(Expr::Array& arr) {
     if (arr.members.empty()) {
-        if (arr.fill_value && arr.fill_value->type) {
-            current_expr->type = make_type(current_expr->loc,
-                Expr::ArrayType{arr.fill_value->type, nullptr});
-        } else {
-            current_expr->type = make_type(current_expr->loc,
-                Expr::ArrayType{typeInt, nullptr});
-        }
+        // 填充形式 [x ...] 的长度只能由目标类型给出，自身长度未知
+        Expr* elem = arr.fill_value && arr.fill_value->type
+            ? arr.fill_value->type : typeInt;
+        current_expr->type = make_type(current_expr->loc,
+            arr.fill_value
+                ? Expr::ArrayType{elem, nullptr, ArrayKind::Infer}
+                : Expr::ArrayType{elem, make_int_literal(current_expr->loc, 0)});
         current_expr->is_lvalue = false;
         return;
     }
@@ -1550,12 +1605,56 @@ void SemanticAnalyzer::visit_type_pointer(Expr::Pointer& p) {
     if (p.pointee && p.pointee->is_reference())
         error(current_expr->loc, "cannot form a pointer to a reference");
 }
+// 编译期常量长度：整数字面量，或最终绑定到整数字面量的 const 变量链；
+// 返回 nullptr 表示不是编译期常量
+Expr* SemanticAnalyzer::const_length_literal(Expr* len, int depth) {
+    if (!len || depth > 16) return nullptr;
+    if (len->is_literal()) {
+        bool sign = false; int bits = 0;
+        if (!literal_int_range(len->get_literal()->kind, sign, bits)) return nullptr;
+        unsigned long long v = 0;
+        if (!parse_uint_literal(len->get_literal()->value, v)) return nullptr;
+        return make_int_literal(len->loc, (size_t)v);
+    }
+    // const int N = 5; int[N] a —— 常量变量的字面量初值就是编译期常量
+    if (len->sym && len->sym->is_const()) {
+        auto* vi = dynamic_cast<VarItem*>(len->sym->node);
+        if (vi && vi->init) return const_length_literal(vi->init, depth + 1);
+    }
+    return nullptr;
+}
+
 void SemanticAnalyzer::visit_type_array(Expr::ArrayType& a) {
     // 数组元素没有逐个绑定的语法，元素类型为引用则无法初始化
     if (a.element && a.element->is_reference())
         error(current_expr->loc, "cannot form an array of references");
+    // T{}：长度在运行期才知道，不参与常量校验
+    if (a.kind == ArrayKind::Slice) return;
+    // T[]：长度待推导，推导不出来时由 report_infer_arrays 统一报错
+    if (!a.length) {
+        if (a.kind == ArrayKind::Infer) pending_infer_arrays_.push_back(current_expr);
+        return;
+    }
+    Expr* len = const_length_literal(a.length);
+    if (!len) {
+        error(current_expr->loc,
+              "array length must be a compile-time integer constant; "
+              "use T{} for a slice whose length is only known at run time");
+        return;
+    }
+    a.length = len;
 }
-void SemanticAnalyzer::visit_type_func_ptr(Expr::FuncPtr&) {}
+void SemanticAnalyzer::visit_type_func_ptr(Expr::FuncPtr& fp) {
+    // 函数指针与函数签名同规则：所有权不外泄，形参与返回类型都不许切片
+    for (Expr* p : fp.params) {
+        if (is_slice_type(p))
+            error(p->loc, "array slice parameter is not allowed in a function "
+                          "pointer type: pass a pointer instead");
+    }
+    if (is_slice_type(fp.return_type))
+        error(fp.return_type->loc, "array slice return type is not allowed in a "
+                                   "function pointer type: pass a pointer instead");
+}
 void SemanticAnalyzer::visit_type_func_ref(Expr::FuncRef&) {}
 // 引用不可重新绑定，引用不能再包引用
 void SemanticAnalyzer::visit_type_reference(Expr::Reference& r) {

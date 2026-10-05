@@ -12,7 +12,8 @@ Expr* CompUnit::clone_type(Expr* t) {
     if (auto* p = t->get_pointer()) return add_node<Expr>(loc, Expr::Pointer{clone_type(p->pointee)});
     if (auto* r = t->get_reference()) return add_node<Expr>(loc, Expr::Reference{clone_type(r->target)});
     if (auto* a = t->get_array_type()) {
-        return add_node<Expr>(loc, Expr::ArrayType{clone_type(a->element), clone_expr(a->length)});
+        return add_node<Expr>(loc, Expr::ArrayType{
+            clone_type(a->element), clone_expr(a->length), a->kind});
     }
     if (auto* f = t->get_func_ptr()) {
         std::vector<Expr*> params;

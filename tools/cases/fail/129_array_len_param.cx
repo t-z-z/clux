@@ -1,0 +1,3 @@
+// 形参没有初值可推导长度，长度必须写出来
+foo(int[] xs) int r { r = xs.len }
+main() int r { r = foo([1 2 3]) }

@@ -1,0 +1,10 @@
+// T[] 的长度由初值推导：字面量取元素数，字符串取字符数，空字面量取 0；
+// 元素本身是 T[] 时按初值的元素继续推导
+main() int r {
+    int[] a = [1 2 3]
+    char[] s = "abc"
+    int[] e = []
+    int[2] src = [4 5]
+    int{}[] nest = [src src]
+    r = a.len + s.len + e.len + nest[1].len
+}

@@ -846,7 +846,7 @@ bool Translator::emit_class_var(VarList* vl, VarItem* vi, Class* cls) {
 }
 
 
-// 定长数组无初值：分配 backing 并以 {ptr,i32} 切片形式存入槽
+// 定长数组无初值：分配 backing 并以 {ptr,i32} 形式存入槽
 bool Translator::emit_array_noinit(VarItem* vi, Expr* vtype, const std::string& slot) {
     int len = array_length_of(vtype);
     if (len <= 0) return false;
@@ -865,57 +865,18 @@ bool Translator::emit_array_noinit(VarItem* vi, Expr* vtype, const std::string& 
     return true;
 }
 
-// 运行期长度数组声明：按长度值 alloca，构造 {ptr,len}
-bool Translator::emit_array_rt_len(Expr* vtype, const std::string& slot) {
-    if (!vtype || !vtype->is_array_type()) return false;
-    Expr* len = vtype->get_array_type()->length;
-    if (!len || len->is_literal()) return false;
-    std::string n = eval(len);
-    std::string nt = len->type ? map_type(len->type) : "i32";
-    std::string len32 = n;
-    std::string n64 = n;
-    if (nt != "i64") {
-        n64 = ir_.reg();
-        emit_instr(n64 + " = sext " + nt + " " + n + " to i64");
-    } else {
-        len32 = ir_.reg();
-        emit_instr(len32 + " = trunc i64 " + n + " to i32");
-    }
-    Expr* el = vtype->get_array_type()->element;
-    std::string et = el ? map_type(el) : "i32";
-    std::string backing = ir_.reg();
-    emit_instr(backing + " = alloca " + et + ", i64 " + n64);
-    std::string s1 = ir_.reg();
-    emit_instr(s1 + " = insertvalue { ptr, i32 } undef, ptr " + backing + ", 0");
-    std::string s2 = ir_.reg();
-    emit_instr(s2 + " = insertvalue { ptr, i32 } " + s1 + ", i32 " + len32 + ", 1");
-    emit_instr("store { ptr, i32 } " + s2 + ", ptr " + slot);
-    return true;
-}
-
-// 由指针构造切片：目标类型提供长度，源指针提供 ptr
-bool Translator::emit_ptr_to_slice(Expr* vtype, Expr* ptr, const std::string& slot) {
+// 由指针构造定长数组：目标类型提供长度，源指针提供 ptr
+bool Translator::emit_ptr_to_array(Expr* vtype, Expr* ptr, const std::string& slot) {
     if (!vtype || !vtype->is_array_type()) return false;
     if (!ptr || !ptr->type || !ptr->type->is_pointer()) return false;
-    Expr* len = vtype->get_array_type()->length;
-    if (!len) return false;
+    int len = array_length_of(vtype);
+    if (len <= 0) return false;
     std::string p = eval(ptr);
-    std::string lv;
-    if (len->is_literal()) {
-        lv = std::string(len->get_literal()->value);
-    } else {
-        lv = eval(len);
-        std::string lt = len->type ? map_type(len->type) : "i32";
-        if (lt != "i32") {
-            std::string t = ir_.reg();
-            emit_instr(t + " = trunc " + lt + " " + lv + " to i32");
-            lv = t;
-        }
-    }
     std::string s1 = ir_.reg();
     emit_instr(s1 + " = insertvalue { ptr, i32 } undef, ptr " + p + ", 0");
     std::string s2 = ir_.reg();
-    emit_instr(s2 + " = insertvalue { ptr, i32 } " + s1 + ", i32 " + lv + ", 1");
+    emit_instr(s2 + " = insertvalue { ptr, i32 } " + s1 + ", i32 " +
+               std::to_string((long long)len) + ", 1");
     emit_instr("store { ptr, i32 } " + s2 + ", ptr " + slot);
     return true;
 }
@@ -927,7 +888,7 @@ bool Translator::emit_array_string_init(VarItem* vi, const std::string& slot) {
     size_t n = content.size();
     std::string sym = ir_.string_const(content);
     std::string backing = ir_.reg();
-    // 多分配 1 字节存放 NUL 终止符，使 .ptr / 切片转指针可作 C 字符串
+    // 多分配 1 字节存放 NUL 终止符，使 .ptr / 数组转指针可作 C 字符串
     emit_instr(backing + " = alloca i8, i64 " + std::to_string(n + 1));
     for (size_t k = 0; k <= n; ++k) {
         std::string src = ir_.reg();
@@ -977,7 +938,6 @@ void Translator::emit_var_decl(VarList* vl) {
         ctx_.slots[vi] = slot;
         if (vtype && vtype->is_array_type() && !vi->init) {
             if (emit_array_noinit(vi, vtype, slot)) continue;
-            if (emit_array_rt_len(vtype, slot)) continue;
         }
         if (vtype && vtype->is_array_type() && vi->init &&
             vi->init->type && vi->init->type->is_string_literal_type()) {
@@ -985,7 +945,7 @@ void Translator::emit_var_decl(VarList* vl) {
         }
         if (vtype && vtype->is_array_type() && vi->init &&
             vi->init->type && vi->init->type->is_pointer()) {
-            if (emit_ptr_to_slice(vtype, vi->init, slot)) continue;
+            if (emit_ptr_to_array(vtype, vi->init, slot)) continue;
         }
         if (vi->init) {
             bool converted = needs_convert(vi->init);
@@ -1227,7 +1187,7 @@ void Translator::emit_fields_copy(Class* cls, const std::string& src,
         std::string sa = ir_.reg();
         emit_instr(sa + " = getelementptr " + cls_ir + ", ptr " + src +
                    ", i32 0, i32 " + std::to_string(f.index));
-        // malloc 类的数组字段：切片里存的是 backing 指针，逐字段复制会让两个
+        // malloc 类的数组字段：{ptr,i32} 里存的是 backing 指针，逐字段复制会让两个
         // 对象共用同一段堆存储，其中一个释放后另一个悬垂，故重新分配并拷贝内容。
         // 非 malloc 类的对象与其 backing 同在栈帧内，共用是安全的，保持原状
         Expr* vt = f.var ? f.var->type : nullptr;
@@ -1918,7 +1878,7 @@ std::string Translator::eval_assign(Expr* e, Expr::Assign* a) {
     std::string ptr = eval_lvalue(a->target);
     if (ptr.empty()) return "0";
     std::string t = a->target && a->target->type ? map_type(a->target->type) : "i32";
-    // 字符串字面量赋给切片：构造 {ptr,i32}，而非把常量指针 @.str 直接存
+    // 字符串字面量赋给数组/切片：构造 {ptr,i32}，而非把常量指针 @.str 直接存
     std::string v;
     std::string vsrc = a->value && a->value->type
         ? map_type(a->value->type) : t;
@@ -1931,25 +1891,13 @@ std::string Translator::eval_assign(Expr* e, Expr::Assign* a) {
     else if (t == "{ ptr, i32 }" && a->value && a->value->type &&
         a->value->type->is_pointer() && a->target && a->target->type &&
         a->target->type->is_array_type()) {
-        // 指针 → 定长切片：由目标类型提供长度
-        Expr* len = a->target->type->get_array_type()->length;
+        // 指针 → 定长数组：由目标类型提供长度
         std::string p = eval(a->value);
-        std::string lv;
-        if (len && len->is_literal()) {
-            lv = std::string(len->get_literal()->value);
-        } else {
-            lv = len ? eval(len) : "0";
-            std::string lt = (len && len->type) ? map_type(len->type) : "i32";
-            if (lt != "i32") {
-                std::string tt = ir_.reg();
-                emit_instr(tt + " = trunc " + lt + " " + lv + " to i32");
-                lv = tt;
-            }
-        }
         std::string s1 = ir_.reg();
         emit_instr(s1 + " = insertvalue { ptr, i32 } undef, ptr " + p + ", 0");
         v = ir_.reg();
-        emit_instr(v + " = insertvalue { ptr, i32 } " + s1 + ", i32 " + lv + ", 1");
+        emit_instr(v + " = insertvalue { ptr, i32 } " + s1 + ", i32 " +
+                   std::to_string(array_length_of(a->target->type)) + ", 1");
     }
     else {
         v = eval(a->value);
@@ -2183,7 +2131,7 @@ std::string Translator::cast_value(const std::string& v,
                                    bool src_signed,
                                    bool dst_signed) {
     if (src == dst) return v;
-    // 切片 -> 指针：取底层指针域
+    // 数组/切片 -> 指针：取底层指针域
     if (src == "{ ptr, i32 }" && dst == "ptr") {
         std::string r0 = ir_.reg();
         emit_instr(r0 + " = extractvalue { ptr, i32 } " + v + ", 0");
@@ -2554,7 +2502,7 @@ std::string Translator::eval_ctor_call(Expr* e, Expr::Call* c, SpecialMethod* sm
         bool converted = needs_convert(a);
         std::string v = converted ? eval_converted(a) : eval(a);
         std::string at = a && a->type ? map_type(a->type) : "i32";
-        // 定位该实参对应的形参 IR 类型，用于字符串切片构造与数值 cast
+        // 定位该实参对应的形参 IR 类型，用于字符串数组构造与数值 cast
         Expr* pte = nullptr;
         {
             size_t k = 0;
@@ -2645,7 +2593,7 @@ std::string Translator::eval_plain_call(Expr* e, Expr::Call* c, Func* fn) {
         }
     }
     if (has_self) args.push_back("ptr " + self_arg);
-    // 形参 IR 类型表，用于字符串字面量按切片形参构造 {ptr,i32}；
+    // 形参 IR 类型表，用于字符串字面量按数组形参构造 {ptr,i32}；
     // param_ref 标记引用形参：实参传地址而非值
     std::vector<std::string> param_ir;
     std::vector<bool> param_ref;

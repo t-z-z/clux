@@ -40,6 +40,12 @@ int integer_rank(PrimitiveTypeKind k);
 // 填充形式 [x ...] 的长度由目标决定，返回 -1 表示无法静态确定
 long long const_array_len_of(Expr* e);
 
+// 所有权切片类型 T{}
+bool is_slice_type(Expr* t);
+
+// 数组类型的编译期长度；切片、无长度或长度非字面量返回 -1
+long long const_array_type_len(Expr* t);
+
 // 枚举类型（类型位置的标识符/限定名，解析为 Enum 声明）
 bool is_enum_type(Expr* t);
 
@@ -55,7 +61,7 @@ bool is_float_type(Expr* t);
 // 布尔类型
 bool is_bool_type(Expr* t);
 
-// 条件位置允许的类型：bool、指针、切片、null
+// 条件位置允许的类型：bool、指针、数组/切片、null
 bool is_condition_type(Expr* t);
 
 // 结构等价判定：基础类型同名，指针/引用/数组逐层递归，函数指针签名一致

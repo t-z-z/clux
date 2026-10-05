@@ -68,6 +68,12 @@
 //                        [写 P1 resolve_call] [读 P2 eval_call]
 //                      该调用是 malloc 类的 a.free()，P2 走释放路径。
 //
+//   Expr::ArrayType [写 P1 parse(语法) / visit_type_array(常量长度、签名校验) /
+//                    resolve_infer_array_len(T[] 推导)] [读 P1 P2]
+//                      T[N] 的 length 为编译期整数字面量；T{} 的 length 为空且只允许
+//                      出现在局部变量；T[] 推导成功后 length 变为字面量、kind 变为
+//                      Fixed，推导不出来时 kind 保持 Infer、length 为空并报错。
+//
 // 约定：
 //   - P1 之后，所有语义字段冻结，P2 不再写 AST（除 translator 自己的局部缓存）。
 //   - 有效表达式在 P1 结束时保证 type 与 sym 至少一个非空（见文件头规则）。
@@ -281,6 +287,14 @@ enum class OpKind{
     Index,
 };
 
+// 数组类型的长度种类：T[N] 定长、T[] 长度待推导、T{} 运行期长度的所有权切片。
+// T{} 只出现在局部变量上：所有权不外泄，故不能作形参、返回类型或类字段
+enum class ArrayKind : uint8_t {
+    Fixed,
+    Infer,
+    Slice,
+};
+
 inline OpKind token_to_op(TokenKind kind) {
     switch (kind) {
         #define X(name, str) \
@@ -330,7 +344,7 @@ struct Expr : ASTNode {
     struct Spawn        { Expr* call; };
     struct Primitive        { PrimitiveTypeKind kind; };
     struct Pointer          { Expr* pointee; };
-    struct ArrayType        { Expr* element; Expr* length; };
+    struct ArrayType        { Expr* element; Expr* length; ArrayKind kind = ArrayKind::Fixed; };
     struct StringLiteralType {};
     struct FuncPtr          { std::vector<Expr*> params; Expr* return_type; };
     struct FuncRef          { Func* func; };

@@ -1,5 +1,5 @@
 extern "c" {
-    g() int[] r { }
+    g() int[3] r { }
 }
 main() int r {
     r = 0
