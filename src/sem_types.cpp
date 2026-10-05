@@ -118,6 +118,23 @@ std::string sym_display_name(Symbol* sym) {
 }
 
 
+bool is_slice_type(Expr* t) {
+    if (!t || !t->is_array_type()) return false;
+    return t->get_array_type()->kind == ArrayKind::Slice;
+}
+
+long long const_array_type_len(Expr* t) {
+    if (!t || !t->is_array_type()) return -1;
+    Expr* len = t->get_array_type()->length;
+    if (!len || !len->is_literal()) return -1;
+    auto* lit = len->get_literal();
+    bool sign = false; int bits = 0;
+    if (!literal_int_range(lit->kind, sign, bits)) return -1;
+    unsigned long long v = 0;
+    if (!parse_uint_literal(lit->value, v)) return -1;
+    return (long long)v;
+}
+
 bool is_enum_type(Expr* t) {
     if (!t) return false;
     return t->is_type && (t->is_identifier() || t->is_member()) &&
@@ -204,8 +221,10 @@ bool is_same_type(Expr* a, Expr* b) {
     if (a->is_reference() && b->is_reference()) {
         return is_same_type(a->get_reference()->target, b->get_reference()->target);
     }
-    // 数组：元素类型相同即可（长度可推导，暂不严格比较）
+    // 数组：元素类型相同即可（长度由 check_array_len_fit / check_param_array_len 单独校验）；
+    // 切片与定长数组是不同类型，只能单向转换
     if (a->is_array_type() && b->is_array_type()) {
+        if (is_slice_type(a) != is_slice_type(b)) return false;
         return is_same_type(a->get_array_type()->element,
                             b->get_array_type()->element);
     }

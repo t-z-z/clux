@@ -1,5 +1,5 @@
 extern "c" { putchar(int c) int r {} }
-foo(char[][] vs) {
+foo(char[5][2] vs) {
     putchar(int(vs[0][0]))
 }
 main() int r {

@@ -194,8 +194,8 @@ void FlowChecker::init_stmt(InitCtx& ctx, Stmt* s) {
                 init_expr(ctx, vi->init);
                 if (sym) ctx.assigned.insert(sym);
             } else {
-                // 数组声明即分配 backing，视为已初始化（编译期/运行期长度皆然）；
-                // 切片 int[] 无长度、无 backing，保持未初始化
+                // 定长数组声明即分配 backing，视为已初始化；
+                // 所有权切片 T{} 无 backing，保持未初始化
                 Expr* vt = vi->type ? vi->type : vl->type;
                 if (sym && vt && vt->is_array_type()) {
                     Expr* len = vt->get_array_type()->length;

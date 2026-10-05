@@ -1,9 +1,9 @@
 extern "c" { putchar(int c) int r {} }
 main() int r {
-    char[] s
+    char{} s
     s = "abc"
     putchar(int(s[0]))
-    int[] a
+    int{} a
     a = [1 2 3]
     putchar(a.len + 48)
     int[3] b

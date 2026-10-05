@@ -104,7 +104,8 @@ std::string Mangler::type_key(Expr* t) {
     if (auto* r = t->get_reference()) return "R_" + type_key(r->target);
     if (auto* a = t->get_array_type()) {
         std::string lk = "x";
-        if (a->length && a->length->get_literal())
+        if (a->kind == ArrayKind::Slice) lk = "s";
+        else if (a->length && a->length->get_literal())
             lk = std::string(a->length->get_literal()->value);
         return "A_" + type_key(a->element) + "_" + lk;
     }

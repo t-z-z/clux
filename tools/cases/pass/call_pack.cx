@@ -1,5 +1,5 @@
 extern "c" { putchar(int c) int r {} }
-print(char[][] vs) {
+print(char[5][4] vs) {
     for int i = 0; i < vs.len; i += 1 {
         for int j = 0; j < vs[i].len; j += 1 {
             putchar(int(vs[i][j]))
@@ -7,6 +7,7 @@ print(char[][] vs) {
     }
 }
 main() int r {
-    print("hello" " " "world" "\n")
+    print("hello" "world" "abcde" "fghij")
+    putchar(10)
     r = 0
 }

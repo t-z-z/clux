@@ -1,12 +1,14 @@
 extern "c" { putchar(int c) int r {} }
-print(char[] s) {
-    for int i = 0; i < s.len; i += 1 { putchar(int(s[i])) }
+print(char-* s, int n) {
+    for int i = 0; i < n; i += 1 { putchar(int(s[i])) }
 }
 main() int r {
-    print("hello world")
-    print("\n")
-    char[] s = "safe text"
-    print(s)
-    print("\n")
+    char[] a = "hello world"
+    char[] b = "safe text"
+    char[] nl = "\n"
+    print(a, a.len)
+    print(nl, nl.len)
+    print(b, b.len)
+    print(nl, nl.len)
     r = 0
 }

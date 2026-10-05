@@ -12,6 +12,8 @@ CLUX=./bin/clux
 # 用例名（不含 .cx）→ 期望退出码
 declare -A EXPECT=(
     [78_array_decl_len]=10
+    [array_infer_len]=8
+    [array_infer_multi_var]=6
     [113_global_var]=14
     [114_global_namespace]=6
     [115_global_ptr]=16
@@ -22,7 +24,7 @@ declare -A EXPECT=(
     [121_self_conversion]=4
     [class_arg_pack]=1
     [ptr_int_cast]=20
-    [ptr_to_slice]=52
+    [ptr_to_array]=52
 )
 
 tmp=$(mktemp -d)

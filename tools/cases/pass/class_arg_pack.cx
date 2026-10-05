@@ -2,8 +2,8 @@
     pub:int a
     pub:int b
     pub:int c
-    pub:char[] str
-    INIT(int _a,int _b,int _c,char[] _s){
+    pub:char[2] str
+    INIT(int _a,int _b,int _c,char[2] _s){
         a=_a b=_b c=_c str=_s
     }
 }

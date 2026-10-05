@@ -1,11 +1,11 @@
 extern "c" { putchar(int c) int r {} }
 f(int[3] xs) { putchar(xs[0] + 48) }
-g(char[][3] vs) { putchar(int(vs[0][0])) }
+g(char[3][2] vs) { putchar(int(vs[0][0])) }
 main() int r {
     int[3] a = [1 2]
     f([1 2])
     f(1 2)
-    g("x" "y" "z")
+    g("abc" "xyz")
     char[3] s = "hi"
     putchar(s[0])
     putchar(10)

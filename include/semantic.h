@@ -263,6 +263,8 @@ class SemanticAnalyzer : public ASTVisitor {
 
     // 语义分析期生成的整数字面量文本存储（deque 保证元素地址稳定）
     std::deque<std::string> literal_pool_;
+    // T[] 的长度待推导；推导不出来时在收尾统一报错
+    std::vector<Expr*> pending_infer_arrays_;
 
     #define X(name,str) Expr* type##name;
     TYPE
@@ -377,6 +379,13 @@ private:
     Expr* make_named_type(const Location& loc, std::string_view name,
                           Decl* decl = nullptr, Scope* scope = nullptr);
     Expr* make_int_literal(const Location& loc, size_t value);
+    // 数组长度的编译期常量形式；非编译期常量返回 nullptr
+    Expr* const_length_literal(Expr* len, int depth = 0);
+    // T[]：按初值推导长度并就地改为定长数组，推导不出来时保持 Infer 待报错
+    void resolve_infer_array_len(Expr& type, Expr* init_type, Expr* init_expr);
+    void report_infer_arrays();
+    // 函数签名（形参/返回类型）里不允许出现所有权切片 T{}
+    void check_no_slice(const std::vector<VarList*>& lists, const char* what);
     std::string build_callkey(const std::string& name, const std::vector<VarList*>& params);
     std::string build_callkey(const std::string& name, const std::vector<Expr*>& args);
     
@@ -401,7 +410,7 @@ private:
     // 数组字面量/字符串字面量的编译期元素数不得超过目标数组类型的长度约束
     void check_array_len_fit(Expr* src, Expr* dst_type, const std::string& context,
                              const Location& loc);
-    // 形参定长时强制实参数组长度相同；形参未定长时实参长度任意
+    // 形参定长时强制实参数组长度相同；形参为所有权切片时实参长度任意
     void check_param_array_len(Expr* arg, Expr* at, Expr* pt, const Location& loc);
     // 整数字面量在转换到目标整数类型时是否溢出
     void check_literal_range(Expr* value, Expr* dst, const std::string& context,
@@ -438,7 +447,7 @@ private:
                            Symbol* callee_sym, const std::string& name);
     bool resolve_free_builtin(Expr* call_expr, Expr::Call& c,
                               const std::string& name);
-    void pack_slice_args(Func* func, Expr* call_expr, Expr::Call& c);
+    void pack_array_args(Func* func, Expr* call_expr, Expr::Call& c);
     void pack_class_args(Func* func, Expr* call_expr, Expr::Call& c);
     void resolve_named_call(Expr* call_expr, Expr::Call& c,
                             Symbol* callee_sym, const std::string& name);
