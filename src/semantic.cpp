@@ -1321,10 +1321,10 @@ void SemanticAnalyzer::visit_expr_member(Expr::Member& m) {
         return;
     }
 
-    // 数组/切片的 .len：返回长度
+    // 数组/切片的 .len：返回长度，长度非负故为 uint
     if (m.member == "len" && m.target->type && m.target->type->is_array_type()) {
         current_expr->sym = nullptr;
-        current_expr->type = typeInt;
+        current_expr->type = typeUInt;
         current_expr->is_lvalue = false;
         return;
     }

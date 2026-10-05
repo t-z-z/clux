@@ -1,0 +1,73 @@
+// cstdio.cx
+// C 标准输入输出的 clux 绑定，对应 <stdio.h>
+
+extern "C" {
+    // 标准流
+    void-* stdin
+    void-* stdout
+    void-* stderr
+
+    // 文件操作
+    fopen(const char-* filename const char-* mode) void-* r{}
+    freopen(const char-* filename const char-* mode void-* stream) void-* r{}
+    fclose(void-* stream) int r{}
+    fflush(void-* stream) int r{}
+    setbuf(void-* stream char-* buf) {}
+    setvbuf(void-* stream char-* buf int mode ulong size) int r{}
+
+    // 格式化输出
+    printf(const char-* fmt ...) int r{}
+    fprintf(void-* stream const char-* fmt ...) int r{}
+    sprintf(char-* buf const char-* fmt ...) int r{}
+    snprintf(char-* buf ulong size const char-* fmt ...) int r{}
+    vprintf(const char-* fmt ...) int r{}
+    vfprintf(void-* stream const char-* fmt ...) int r{}
+    vsprintf(char-* buf const char-* fmt ...) int r{}
+    vsnprintf(char-* buf ulong size const char-* fmt ...) int r{}
+
+    // 格式化输入
+    scanf(const char-* fmt ...) int r{}
+    fscanf(void-* stream const char-* fmt ...) int r{}
+    sscanf(const char-* s const char-* fmt ...) int r{}
+    vscanf(const char-* fmt ...) int r{}
+    vfscanf(void-* stream const char-* fmt ...) int r{}
+    vsscanf(const char-* s const char-* fmt ...) int r{}
+
+    // 字符输出
+    putchar(int c) int r{}
+    putc(int c void-* stream) int r{}
+    fputc(int c void-* stream) int r{}
+    puts(const char-* s) int r{}
+    fputs(const char-* s void-* stream) int r{}
+
+    // 字符输入
+    getchar() int r{}
+    getc(void-* stream) int r{}
+    fgetc(void-* stream) int r{}
+    ungetc(int c void-* stream) int r{}
+    fgets(char-* s int n void-* stream) char-* r{}
+    // gets 已从 C11 移除，不声明
+
+    // 二进制 I/O
+    fread(void-* ptr ulong size ulong nmemb void-* stream) ulong r{}
+    fwrite(const void-* ptr ulong size ulong nmemb void-* stream) ulong r{}
+
+    // 文件定位
+    fseek(void-* stream long offset int whence) int r{}
+    ftell(void-* stream) long r{}
+    rewind(void-* stream) {}
+    fgetpos(void-* stream void-* pos) int r{}
+    fsetpos(void-* stream const void-* pos) int r{}
+
+    // 错误与状态
+    clearerr(void-* stream) {}
+    feof(void-* stream) int r{}
+    ferror(void-* stream) int r{}
+    perror(const char-* s) {}
+
+    // 文件管理
+    remove(const char-* filename) int r{}
+    rename(const char-* oldname const char-* newname) int r{}
+    tmpfile() void-* r{}
+    tmpnam(char-* s) char-* r{}
+}
