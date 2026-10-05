@@ -15,8 +15,15 @@ class IRWriter;
 
 class Translator {
 public:
-    Translator(CompUnit& cu, IRWriter& ir) : cu_(cu), ir_(ir) {}
+    // 模块级变量名表：跨模块编译时由前端统一传入，各模块共享同一张表，
+    // 这样引用其他模块声明的变量也能查到它的 LLVM 符号名
+    using GlobalNames = std::unordered_map<const VarItem*, std::string>;
 
+    Translator(CompUnit& cu, IRWriter& ir, GlobalNames* shared = nullptr)
+        : cu_(cu), ir_(ir), global_of_(shared ? shared : &own_globals_) {}
+
+    // 登记本单元的符号名。跨模块编译时须先对所有单元调用 collect 再逐个 run
+    void collect();
     void run();
     void emit_decl(Decl* d);
 
@@ -39,15 +46,14 @@ private:
         // 存放实例字节数的全局常量，由 LLVM 常量表达式算出真实布局
         std::string size_global;
         std::vector<Field> fields;
-        std::unordered_map<std::string, int> field_index;
-        // static 字段：存储在模块级全局变量，不进实例 layout
+        // 实例字段按 VarItem 身份索引；__value 是 inject 合成的承载字段
+        std::unordered_map<const VarItem*, int> field_index;
+        int value_index = -1;
+        // static 字段：存储在模块级全局变量，不进实例 layout。
+        // 其 LLVM 符号名由 Mangler::field_of 统一分配
         std::vector<Field> static_fields;
-        std::unordered_map<const VarItem*, std::string> static_global_of;
-        std::unordered_map<std::string, std::string> static_global_by_name;
     };
     std::unordered_map<Class*, ClassInfo> classes_;
-    // static 字段变量 → 模块级全局符号名
-    std::unordered_map<const VarItem*, std::string> static_global_;
 
     struct GlobalVar {
         VarItem* var;
@@ -57,7 +63,8 @@ private:
     };
     // 顶层 / 命名空间 / extern 内的 VarList：模块级变量
     std::vector<GlobalVar> globals_;
-    std::unordered_map<const VarItem*, std::string> global_of_;
+    GlobalNames own_globals_;
+    GlobalNames* global_of_;
     void collect_globals_decl(Decl* d, const std::string& prefix,
                               bool is_extern = false);
 

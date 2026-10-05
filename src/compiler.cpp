@@ -201,11 +201,16 @@ bool translate(const std::string& source, const std::string& filename,
     IRWriter ir(out);
     ir.emit_header();
     bool ok = true;
-    for (auto& m : r.modules) {
-        Translator t(*m->cu, ir);
-        t.run();
-        for (const Diagnostic& d : t.diagnostics()) emit_diagnostic(d);
-        if (t.has_error()) ok = false;
+    // 变量名表跨模块共享：先收集所有模块的符号名，再逐个发射
+    Translator::GlobalNames globals;
+    std::vector<std::unique_ptr<Translator>> translators;
+    for (auto& m : r.modules)
+        translators.push_back(std::make_unique<Translator>(*m->cu, ir, &globals));
+    for (auto& t : translators) t->collect();
+    for (auto& t : translators) {
+        t->run();
+        for (const Diagnostic& d : t->diagnostics()) emit_diagnostic(d);
+        if (t->has_error()) ok = false;
     }
     ir.flush();
     if (libs) collect_extern_libs(r.modules, *libs);
