@@ -52,10 +52,19 @@ void Mangler::walk(Decl* d, const std::string& prefix) {
                 } else if (m->kind == DeclKind::Conversion) {
                     mangled_[m] = here + "_" +
                         conversion_name(static_cast<Conversion*>(m));
-                } else if (m->kind != DeclKind::VarList) {
+                } else if (m->kind == DeclKind::VarList) {
+                    // static 字段存于模块级全局变量，分配全局符号名；
+                    // 实例字段进实例 layout，无全局符号
+                    auto* vl = static_cast<VarList*>(m);
+                    if (vl->specs.has(SpecKind::Static)) {
+                        for (VarItem* vi : vl->vars) {
+                            if (!vi) continue;
+                            fields_[vi] = here + "__" + std::string(vi->name);
+                        }
+                    }
+                } else {
                     walk(m, here);
                 }
-                // VarList 是类字段：进实例 layout，不是模块级变量
             }
             break;
         }
@@ -97,8 +106,14 @@ std::string Mangler::global_of(const VarItem* vi) const {
     return it != globals_.end() ? it->second : std::string();
 }
 
+std::string Mangler::field_of(const VarItem* vi) const {
+    if (!vi) return "";
+    auto it = fields_.find(vi);
+    return it != fields_.end() ? it->second : std::string();
+}
+
 std::string Mangler::type_key(Expr* t) {
-    if (!t) return "void";
+    if (!t) return "null";
     if (auto* p = t->get_primitive()) return primitive_ir(p->kind);
     if (auto* p = t->get_pointer())   return "P_" + type_key(p->pointee);
     if (auto* r = t->get_reference()) return "R_" + type_key(r->target);

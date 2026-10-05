@@ -90,17 +90,20 @@ void Translator::error(const Location& loc, std::string msg) {
     has_error_ = true;
 }
 
-void Translator::run() {
+void Translator::collect() {
     mangler_.collect(cu_);
     collect_classes();
     collect_globals_decl(nullptr, "");
+}
+
+void Translator::run() {
     for (auto& g : globals_)
         ir_.emit_global(g.is_extern
             ? "@" + g.sym + " = external global " + g.ir_type
             : "@" + g.sym + " = global " + g.ir_type + " zeroinitializer");
     for (auto& [cls, info] : classes_) {
         for (auto& f : info.static_fields)
-            ir_.emit_global("@" + info.static_global_of.at(f.var) +
+            ir_.emit_global("@" + mangler_.field_of(f.var) +
                             " = global " + f.ir_type + " zeroinitializer");
     }
     for (Decl* d : cu_.top_decls) emit_decl(d);
@@ -140,7 +143,7 @@ void Translator::collect_globals_decl(Decl* d, const std::string& prefix,
         g.ir_type = vt ? object_type(vt) : "i32";
         g.is_extern = is_extern;
         globals_.push_back(g);
-        global_of_[vi] = sym;
+        (*global_of_)[vi] = sym;
     }
 }
 
@@ -198,13 +201,10 @@ void Translator::collect_classes_decl(Decl* d) {
                     f.ir_type = ft ? object_type(ft) : "i32";
                     if (is_static) {
                         // static 字段存于模块级全局变量，不进实例 layout
-                        std::string g = mangler_.of(c) + "__" + std::string(vi->name);
-                        info.static_global_of[vi] = g;
-                        info.static_global_by_name[std::string(vi->name)] = g;
-                        static_global_[vi] = g;
                         info.static_fields.push_back(f);
                     } else {
-                        info.field_index[std::string(vi->name)] = f.index;
+                        if (vi->name == "__value") info.value_index = f.index;
+                        info.field_index[vi] = f.index;
                         info.fields.push_back(f);
                     }
                 }
@@ -225,7 +225,12 @@ void Translator::collect_classes_decl(Decl* d) {
 }
 
 std::string Translator::map_type(Expr* t) {
-    if (!t) return "void";
+    // 语义通过的程序里表达式类型必然非空；走到这里说明翻译器内部有漏配类型，
+    // 静默当作 void 会生成非法 IR 且报错指向 .ll 而非源码，故显式报错
+    if (!t) {
+        error(Location(), "internal: map_type on null type");
+        return "i32";
+    }
     if (auto* p = t->get_primitive()) {
         switch (p->kind) {
             case PrimitiveTypeKind::Int8:
@@ -760,11 +765,8 @@ void Translator::emit_synth_operator(Func& f, Class* cls, VarItem* ret_var) {
     auto it = classes_.find(cls);
     std::string cls_ir = (it != classes_.end()) ? it->second.llvm_name
                                                  : "%" + mangler_.of(cls);
-    int idx = 0;
-    if (it != classes_.end()) {
-        auto fi = it->second.field_index.find("__value");
-        if (fi != it->second.field_index.end()) idx = fi->second;
-    }
+    int idx = (it != classes_.end()) ? it->second.value_index : 0;
+    if (idx < 0) idx = 0;
     std::string self = ctx_.self_ptr.empty() ? "%self" : ctx_.self_ptr;
     std::string addr = ir_.reg();
     emit_instr(addr + " = getelementptr " + cls_ir + ", ptr " + self +
@@ -1463,7 +1465,7 @@ void Translator::emit_static_inits() {
     for (auto& [cls, info] : classes_) {
         for (auto& f : info.static_fields) {
             if (!f.var || !field_has_default(f)) continue;
-            emit_field_default("@" + info.static_global_of.at(f.var), f);
+            emit_field_default("@" + mangler_.field_of(f.var), f);
         }
     }
 }
@@ -1539,11 +1541,8 @@ std::string Translator::emit_wrap_convert(Expr* e) {
         auto it = classes_.find(sw);
         std::string cls_ir = (it != classes_.end()) ? it->second.llvm_name
                                                      : "%" + mangler_.of(sw);
-        int idx = 0;
-        if (it != classes_.end()) {
-            auto fi = it->second.field_index.find("__value");
-            if (fi != it->second.field_index.end()) idx = fi->second;
-        }
+        int idx = (it != classes_.end()) ? it->second.value_index : 0;
+        if (idx < 0) idx = 0;
         std::string addr = ir_.reg();
         emit_instr(addr + " = getelementptr " + cls_ir + ", ptr " + inst +
                    ", i32 0, i32 " + std::to_string(idx));
@@ -1569,11 +1568,8 @@ std::string Translator::emit_wrap_convert(Expr* e) {
         auto it = classes_.find(dw);
         std::string cls_ir = (it != classes_.end()) ? it->second.llvm_name
                                                      : "%" + mangler_.of(dw);
-        int idx = 0;
-        if (it != classes_.end()) {
-            auto fi = it->second.field_index.find("__value");
-            if (fi != it->second.field_index.end()) idx = fi->second;
-        }
+        int idx = (it != classes_.end()) ? it->second.value_index : 0;
+        if (idx < 0) idx = 0;
         std::string slot;
         if (dw->specs.has(SpecKind::Malloc)) {
             ir_.need_malloc();
@@ -1643,17 +1639,20 @@ std::string Translator::field_addr_of(Expr* e) {
     if (!e || !e->sym) return "";
     auto* vi = dynamic_cast<VarItem*>(e->sym->node);
     if (!vi) return "";
-    auto sit = static_global_.find(vi);
-    if (sit != static_global_.end()) return "@" + sit->second;
-    auto git = global_of_.find(vi);
-    if (git != global_of_.end()) return "@" + git->second;
+    // static 字段：模块级全局符号，由 Mangler 统一命名
+    std::string sg = mangler_.field_of(vi);
+    if (!sg.empty()) return "@" + sg;
+    // 模块级变量
+    auto git = global_of_->find(vi);
+    if (git != global_of_->end()) return "@" + git->second;
+    // 实例字段：需要成员表达式的接收者
     auto* m = e->get_member();
     if (!m) return "";
     Class* cls = as_class(m->target ? m->target->type : nullptr);
     if (!cls) return "";
     auto it = classes_.find(cls);
     if (it == classes_.end()) return "";
-    auto fit = it->second.field_index.find(std::string(m->member));
+    auto fit = it->second.field_index.find(vi);
     if (fit == it->second.field_index.end()) return "";
     std::string base = eval(m->target);
     std::string addr = ir_.reg();
@@ -1721,16 +1720,15 @@ std::string Translator::eval_lvalue(Expr* e) {
                     return it->second;
                 }
                 // 模块级变量：其存储本身就是全局量，地址即该符号
-                auto git = global_of_.find(vi);
-                if (git != global_of_.end()) return "@" + git->second;
+                auto git = global_of_->find(vi);
+                if (git != global_of_->end()) return "@" + git->second;
+                // static 字段：模块级全局符号
+                std::string sg = mangler_.field_of(vi);
+                if (!sg.empty()) return field_lvalue(e, "@" + sg);
                 if (ctx_.current_class) {
                     auto cit = classes_.find(ctx_.current_class);
                     if (cit != classes_.end()) {
-                        auto sit = cit->second.static_global_by_name.find(
-                            std::string(vi->name));
-                        if (sit != cit->second.static_global_by_name.end())
-                            return field_lvalue(e, "@" + sit->second);
-                        auto fit = cit->second.field_index.find(std::string(vi->name));
+                        auto fit = cit->second.field_index.find(vi);
                         if (fit != cit->second.field_index.end()) {
                             std::string addr = ir_.reg();
                             emit_instr(addr + " = getelementptr " + cit->second.llvm_name +
@@ -1848,8 +1846,8 @@ std::string Translator::eval_identifier(Expr* e, Expr::Identifier* id) {
                 return r;
             }
             // 模块级变量：按 VarItem 身份判定，与同名的类字段区分
-            auto git = global_of_.find(vi);
-            if (git != global_of_.end()) {
+            auto git = global_of_->find(vi);
+            if (git != global_of_->end()) {
                 if (is_fixed_array(e->type)) return "@" + git->second;
                 std::string t = e->type ? map_type(e->type) : "i32";
                 std::string r = ir_.reg();
@@ -1859,29 +1857,29 @@ std::string Translator::eval_identifier(Expr* e, Expr::Identifier* id) {
             if (ctx_.current_class) {
                 auto cit = classes_.find(ctx_.current_class);
                 if (cit != classes_.end()) {
-                    auto sit = cit->second.static_global_by_name.find(
-                            std::string(vi->name));
-                        if (sit != cit->second.static_global_by_name.end()) {
-                            std::string addr = field_lvalue(e, "@" + sit->second);
-                            if (is_fixed_array(e->type)) return addr;
-                            std::string t = e->type ? map_type(e->type) : "i32";
-                            std::string r = ir_.reg();
-                            emit_instr(r + " = load " + t + ", ptr " + addr);
-                            return r;
-                        }
-                        auto fit = cit->second.field_index.find(std::string(vi->name));
-                        if (fit != cit->second.field_index.end()) {
-                            std::string addr = ir_.reg();
-                            emit_instr(addr + " = getelementptr " + cit->second.llvm_name +
-                                       ", ptr " + ctx_.self_ptr + ", i32 0, i32 " +
-                                       std::to_string(fit->second));
-                            std::string fa = field_lvalue(e, addr);
-                            // 定长数组成内联字段：值即字段地址
-                            if (is_fixed_array(e->type)) return fa;
-                            std::string t = e->type ? map_type(e->type) : "i32";
-                            std::string r = ir_.reg();
-                            emit_instr(r + " = load " + t + ", ptr " + fa);
-                            return r;
+                    // static 字段：模块级全局符号
+                    std::string sg = mangler_.field_of(vi);
+                    if (!sg.empty()) {
+                        std::string addr = field_lvalue(e, "@" + sg);
+                        if (is_fixed_array(e->type)) return addr;
+                        std::string t = e->type ? map_type(e->type) : "i32";
+                        std::string r = ir_.reg();
+                        emit_instr(r + " = load " + t + ", ptr " + addr);
+                        return r;
+                    }
+                    auto fit = cit->second.field_index.find(vi);
+                    if (fit != cit->second.field_index.end()) {
+                        std::string addr = ir_.reg();
+                        emit_instr(addr + " = getelementptr " + cit->second.llvm_name +
+                                   ", ptr " + ctx_.self_ptr + ", i32 0, i32 " +
+                                   std::to_string(fit->second));
+                        std::string fa = field_lvalue(e, addr);
+                        // 定长数组成内联字段：值即字段地址
+                        if (is_fixed_array(e->type)) return fa;
+                        std::string t = e->type ? map_type(e->type) : "i32";
+                        std::string r = ir_.reg();
+                        emit_instr(r + " = load " + t + ", ptr " + fa);
+                        return r;
                     }
                 }
             }
@@ -2204,12 +2202,10 @@ std::string Translator::eval_member(Expr* e, Expr::Member* m) {
     // static 字段与模块级变量：都是 LLVM 全局量
     if (e->sym && e->sym->kind == SymbolKind::Variable) {
         if (auto* vi = dynamic_cast<VarItem*>(e->sym->node)) {
-            std::string g;
-            auto sit = static_global_.find(vi);
-            if (sit != static_global_.end()) g = sit->second;
-            else {
-                auto git = global_of_.find(vi);
-                if (git != global_of_.end()) g = git->second;
+            std::string g = mangler_.field_of(vi);
+            if (g.empty()) {
+                auto git = global_of_->find(vi);
+                if (git != global_of_->end()) g = git->second;
             }
             if (!g.empty()) {
                 std::string addr = field_lvalue(e, "@" + g);
@@ -2242,25 +2238,24 @@ std::string Translator::eval_member(Expr* e, Expr::Member* m) {
     }
     // 类字段
     Expr* tgt = m->target;
+    auto* vi = (e->sym && e->sym->kind == SymbolKind::Variable)
+        ? dynamic_cast<VarItem*>(e->sym->node) : nullptr;
     // 类名限定访问 static 字段：C::counter
-    if (tgt && tgt->resolved_decl && tgt->resolved_decl->kind == DeclKind::Class) {
-        auto* c = static_cast<Class*>(tgt->resolved_decl);
-        auto it = classes_.find(c);
-        if (it != classes_.end()) {
-            auto sit = it->second.static_global_by_name.find(std::string(m->member));
-            if (sit != it->second.static_global_by_name.end()) {
-                if (is_fixed_array(e->type)) return "@" + sit->second;
-                std::string t = e->type ? map_type(e->type) : "i32";
-                std::string r = ir_.reg();
-                emit_instr(r + " = load " + t + ", ptr @" + sit->second);
-                return r;
-            }
+    if (tgt && tgt->resolved_decl && tgt->resolved_decl->kind == DeclKind::Class &&
+        vi) {
+        std::string sg = mangler_.field_of(vi);
+        if (!sg.empty()) {
+            if (is_fixed_array(e->type)) return "@" + sg;
+            std::string t = e->type ? map_type(e->type) : "i32";
+            std::string r = ir_.reg();
+            emit_instr(r + " = load " + t + ", ptr @" + sg);
+            return r;
         }
     }
     if (Class* cls = as_class(tgt ? tgt->type : nullptr)) {
         auto it = classes_.find(cls);
-        if (it != classes_.end()) {
-            auto fit = it->second.field_index.find(std::string(m->member));
+        if (it != classes_.end() && vi) {
+            auto fit = it->second.field_index.find(vi);
             if (fit != it->second.field_index.end()) {
                 std::string base = eval(tgt);
                 std::string addr = ir_.reg();
@@ -2540,7 +2535,12 @@ std::string Translator::emit_conversion_call(Expr* e, Conversion* cf) {
 
 std::string Translator::emit_operator_call(Expr* e, Operator* op,
                                            Expr* lhs, Expr* rhs) {
-    std::string ret_t = e && e->type ? object_type(e->type) : "void";
+    // 语义通过的程序里操作符表达式必有类型，缺失即内部错误
+    if (!e || !e->type) {
+        error(Location(), "internal: operator call without result type");
+        return "0";
+    }
+    std::string ret_t = object_type(e->type);
 
     // 合成的复合赋值：原地修改 self，无 sret、无返回值
     bool compound = op->synthesized &&
@@ -2985,7 +2985,12 @@ std::string Translator::eval_call(Expr* e, Expr::Call* c) {
 std::string Translator::call_func_ptr(Expr* e, Expr::Call* c, Expr::FuncPtr* fp) {
     std::string fpv = eval(c->callee);
     (void)e;
-    std::string ret_t = fp->return_type ? map_type(fp->return_type) : "void";
+    // 函数指针类型的返回类型由 parser 保证非空，缺失即内部错误
+    if (!fp->return_type) {
+        error(Location(), "internal: func-ptr type without return type");
+        return "0";
+    }
+    std::string ret_t = map_type(fp->return_type);
     bool via_reg = (ret_t != "void");
 
     std::vector<std::string> args;
