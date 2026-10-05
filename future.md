@@ -130,24 +130,6 @@ main(){
 }
 ```
 
-## extern 数组全局变量
-
-extern 块内的变量声明已支持，翻译为 `external global`：
-
-```cx
-extern "c" {
-    void-* stdout
-}
-```
-
-但 C 的数组全局变量无法表达。clux 的 `char[256]` 是胖指针值类型 `{ ptr, i32 }`（堆缓冲 + 长度），
-与 C 的 `char[256]` 布局不符，需要真正的 `[256 x i8]` 类型映射：
-
-```cx
-extern "c" { char[256] buf }   // C 的 char buf[256]，当前无法正确翻译
-extern "c" { char-* buf }      // C 的 char* buf，正确
-```
-
 ## let推导
 
 `let` 推导变量类型：

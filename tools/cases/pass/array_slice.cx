@@ -1,16 +1,17 @@
-// 所有权切片 T{}：长度存在运行期的 {ptr,len} 里，取 .len，隐式转换为指针；
-// 只出现在局部变量上，数组与切片之间只能单向转换：数组可以给切片，切片长度不定不能给数组
+// 所有权切片 T{} / T{n}：拥有自己的存储（默认 alloca，malloc 修饰则堆分配），
+// 取 .len、隐式转换为指针；数组可给切片，切片长度不定不能给数组
 extern "c" { putchar(int c) int r {} }
 main() int r {
-    int[3] arr = [1 2 3]
-    int{} s = arr
-    putchar(s.len + 48)
-    putchar(s[0] + 48)
-    int{} t
-    t = arr
-    putchar(t.len + 48)
-    int-* p = t
+    int n = 3
+    int{n} a = [1 2 3]
+    int{} b = a
+    putchar(b.len + 48)
+    putchar(b[0] + 48)
+    int-* p = b
     putchar(p[2] + 48)
+    b = [7 8]
+    putchar(b[0] + 48)
+    putchar(b.len + 48)
     putchar(10)
     r = 0
 }

@@ -1,7 +1,7 @@
 extern "c" { putchar(int c) int r {} }
 main() int r {
     int[] a = [1 2 3]
-    if a { putchar(89) }
+    if a { putchar(89) }        // 数组不是 bool：隐式转换会报警告
     int-*p = null
     if !p { putchar(111) }
     int x = 5

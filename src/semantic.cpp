@@ -1,8 +1,8 @@
 #include "../include/semantic.h"
-#include "ast.h"
-#include "sem_types.h"
-#include "inject.h"
-#include "flow_check.h"
+#include "../include/ast.h"
+#include "../include/sem_types.h"
+#include "../include/inject.h"
+#include "../include/flow_check.h"
 
 #include <unordered_set>
 #include <unordered_map>
@@ -63,8 +63,19 @@ void SemanticAnalyzer::analyze_rest() {
     process_using_namespaces();
     injector_->expand_all();
     for (Decl* d : cu_.top_decls) collect_global_order(d);
+    collect_extern_vars();
     walk(cu_);
     report_infer_arrays();
+}
+
+// extern 块内的变量由外部库定义，存储不在本模块，其类型不受模块级限制
+void SemanticAnalyzer::collect_extern_vars() {
+    extern_vars_.clear();
+    for (Decl* d : cu_.top_decls) {
+        if (!d || d->kind != DeclKind::Extern) continue;
+        for (Decl* m : static_cast<Extern*>(d)->members)
+            if (m && m->kind == DeclKind::VarList) extern_vars_.insert(m);
+    }
 }
 
 // 模块级变量按声明顺序编号：初值只能引用序号更小的变量
@@ -599,7 +610,8 @@ void SemanticAnalyzer::report_infer_arrays() {
 
 void SemanticAnalyzer::visit_var_list(VarList& vl) {
     // 模块级变量的存储是 LLVM 全局量，其类型必须是常量可表达的
-    bool module_level = !current_params && !current_members;
+    bool module_level = !current_params && !current_members &&
+                        !extern_vars_.count(&vl);
     if (module_level) {
         // 初值在 main 入口按声明顺序求值，引用后方声明的变量只会读到零值
         for (VarItem* var : vl.vars) {
@@ -642,6 +654,14 @@ void SemanticAnalyzer::visit_var_list(VarList& vl) {
         if (dt && dt->is_array_type())
             resolve_infer_array_len(*dt, var->init ? var->init->type : nullptr,
                                     var->init);
+        // T{} / T{n}：长度必须在声明处确定，否则没有可分配的存储
+        if (is_slice_type(dt) && !dt->get_array_type()->length &&
+            !(var->init && var->init->type &&
+              (var->init->type->is_array_type() ||
+               var->init->type->is_string_literal_type())))
+            error(var->loc, "cannot determine the length of this slice: give "
+                            "it an initializer of known length, or write T{n}");
+
         // 引用必须创建时绑定：初值即绑定，绑定源必须是同目标类型的 lvalue。
         // 形参在进入函数时由实参绑定，字段在 INIT 中绑定，二者都不在声明处。
         // 绑定不走常规值转换。
@@ -677,13 +697,9 @@ void SemanticAnalyzer::visit_var_list(VarList& vl) {
         // 数组字面量：元素数不得超过声明的编译期常量长度
         if (dt->is_array_type() && var->init->is_array()) {
             check_array_len_fit(var->init, dt, "declared", var->init->loc);
-            // 字面量类型对齐声明类型，使长度以声明为准
-            if (dt->get_array_type()->length &&
-                dt->get_array_type()->length->is_literal())
-                var->init->type = dt;
         } else if (dt->is_array_type() && var->init->type &&
                    var->init->type->is_string_literal_type()) {
-            // 字符串字面量初值：只检查长度，保留其类型供 translator 构造 {ptr,i32}
+            // 字符串字面量初值：只检查长度，拷贝交给 translator
             check_array_len_fit(var->init, dt, "declared", var->init->loc);
         }
         check_literal_range(var->init, dt, "initialization", var->init->loc);
@@ -1628,8 +1644,14 @@ void SemanticAnalyzer::visit_type_array(Expr::ArrayType& a) {
     // 数组元素没有逐个绑定的语法，元素类型为引用则无法初始化
     if (a.element && a.element->is_reference())
         error(current_expr->loc, "cannot form an array of references");
-    // T{}：长度在运行期才知道，不参与常量校验
-    if (a.kind == ArrayKind::Slice) return;
+    // T{}：长度可以在 {n} 里给出（运行期），不参与常量校验
+    if (a.kind == ArrayKind::Slice) {
+        // {n} 里的长度能折叠成常量就折叠，运行期的长度原样保留
+        if (a.length) {
+            if (Expr* lit = const_length_literal(a.length)) a.length = lit;
+        }
+        return;
+    }
     // T[]：长度待推导，推导不出来时由 report_infer_arrays 统一报错
     if (!a.length) {
         if (a.kind == ArrayKind::Infer) pending_infer_arrays_.push_back(current_expr);
@@ -1639,7 +1661,7 @@ void SemanticAnalyzer::visit_type_array(Expr::ArrayType& a) {
     if (!len) {
         error(current_expr->loc,
               "array length must be a compile-time integer constant; "
-              "use T{} for a slice whose length is only known at run time");
+              "use T{n} for a slice whose length is only known at run time");
         return;
     }
     a.length = len;

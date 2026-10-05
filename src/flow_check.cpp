@@ -194,13 +194,11 @@ void FlowChecker::init_stmt(InitCtx& ctx, Stmt* s) {
                 init_expr(ctx, vi->init);
                 if (sym) ctx.assigned.insert(sym);
             } else {
-                // 定长数组声明即分配 backing，视为已初始化；
-                // 所有权切片 T{} 无 backing，保持未初始化
+                // 数组声明即分配存储：定长数组内联，切片按长度另行分配，
+                // 长度与首元素地址都已在声明处定下，视为已初始化
                 Expr* vt = vi->type ? vi->type : vl->type;
-                if (sym && vt && vt->is_array_type()) {
-                    Expr* len = vt->get_array_type()->length;
-                    if (len) ctx.assigned.insert(sym);
-                }
+                if (sym && vt && vt->is_array_type())
+                    ctx.assigned.insert(sym);
             }
             if (sym) ctx.declared.insert(sym);
         }

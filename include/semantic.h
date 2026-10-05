@@ -265,6 +265,9 @@ class SemanticAnalyzer : public ASTVisitor {
     std::deque<std::string> literal_pool_;
     // T[] 的长度待推导；推导不出来时在收尾统一报错
     std::vector<Expr*> pending_infer_arrays_;
+    // extern 块内的变量声明：存储在外部库，不受模块级变量限制
+    std::unordered_set<const Decl*> extern_vars_;
+    void collect_extern_vars();
 
     #define X(name,str) Expr* type##name;
     TYPE

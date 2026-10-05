@@ -447,6 +447,8 @@ conversion(Vec2 a)Vec2 b{
 malloc的对象会有free()方法，malloc类在初始化时会额外触发REF，析构时会额外触发DEREF。
 malloc类在被赋值时会复制堆上的对象。
 
+注意：malloc分配的内存不会自动释放。
+
 ```cx
 malloc @rcInt #rc #int{}
 main(){

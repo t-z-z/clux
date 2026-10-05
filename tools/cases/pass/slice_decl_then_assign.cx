@@ -1,9 +1,10 @@
+// 切片的长度在声明处给出，之后可整体赋值
 extern "c" { putchar(int c) int r {} }
 main() int r {
-    char{} s
+    char{3} s
     s = "abc"
     putchar(int(s[0]))
-    int{} a
+    int{3} a
     a = [1 2 3]
     putchar(a.len + 48)
     int[3] b

@@ -13,6 +13,7 @@ CLUX=./bin/clux
 declare -A EXPECT=(
     [78_array_decl_len]=10
     [array_infer_len]=8
+    [slice_runtime_len]=6
     [array_infer_multi_var]=6
     [113_global_var]=14
     [114_global_namespace]=6
@@ -95,6 +96,46 @@ else
     fi
 fi
 
+# extern 数组全局：定长数组的布局须与 C 一致，能与 C 侧共享同一段存储
+arr_ok=0
+arr_n=0
+
+cat > "$tmp/cbuf.c" <<'EOF'
+char clux_buf[256];
+void clux_fill(void) { clux_buf[0] = 'X'; clux_buf[1] = 0; }
+EOF
+
+cat > "$tmp/use_cbuf.cx" <<'EOF'
+extern "c" {
+    char[256] clux_buf
+    clux_fill() int r { }
+    puts(char-* s) { }
+}
+main() int r {
+    clux_fill()
+    clux_buf[0] = 'H'
+    clux_buf[1] = 10
+    puts(clux_buf)
+    r = 0
+}
+EOF
+
+arr_n=$((arr_n + 1))
+if ! clang++ -c -x c "$tmp/cbuf.c" -o "$tmp/cbuf.o" >/dev/null 2>&1; then
+    bad_list+=("生成 cbuf.o 失败")
+elif ! "$CLUX" --emit-obj "$tmp/use_cbuf.cx" -o "$tmp/use_cbuf.o" >/dev/null 2>&1; then
+    bad_list+=("extern 数组用例翻译失败")
+elif ! clang++ "$tmp/use_cbuf.o" "$tmp/cbuf.o" -o "$tmp/use_cbuf" >/dev/null 2>&1; then
+    bad_list+=("extern 数组用例链接失败")
+else
+    out=$("$tmp/use_cbuf")
+    if [ "$out" = "H" ]; then
+        arr_ok=$((arr_ok + 1))
+    else
+        bad_list+=("extern 数组用例输出 '$out'，期望 'H'")
+    fi
+fi
+
 end_ns=$(date +%s%N)
 elapsed_ms=$(( (end_ns - start_ns) / 1000000 ))
 sec=$((elapsed_ms / 1000))
@@ -105,6 +146,7 @@ fi
 
 echo "smoke: $ok/$n"
 echo "lib: $lib_ok/$lib_n"
+echo "extern数组: $arr_ok/$arr_n"
 echo "耗时: ${sec}.${ms}s"
 if [ ${#bad_list[@]} -gt 0 ]; then
     printf '\n%s\n' "${bad_list[@]}"
