@@ -178,7 +178,9 @@ bool is_bool_type(Expr* t) {
 bool is_condition_type(Expr* t) {
     if (is_bool_type(t)) return true;
     if (!t) return false;
-    return t->is_pointer() || t->is_array_type() || t->is_null();
+    // 数组不进条件：定长数组恒有存储，切片的长度语义也不该隐式当真假用，
+    // 一律按“不是 bool”报隐式转换
+    return t->is_pointer() || t->is_null();
 }
 
 bool is_same_type(Expr* a, Expr* b) {

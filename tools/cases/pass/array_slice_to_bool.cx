@@ -1,7 +1,8 @@
+// 条件位置：数组不是 bool，会报隐式转换告警；转换后定长数组恒真，切片按长度判断
 extern "c" { putchar(int c) int r {} }
 main() int r {
     int[] a = [1 2 3]
-    int[] e = []
+    int{} e = []
     if a { putchar(89) } else { putchar(78) }
     if e { putchar(78) } else { putchar(70) }
     putchar(e.len + 48)

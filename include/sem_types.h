@@ -61,7 +61,7 @@ bool is_float_type(Expr* t);
 // 布尔类型
 bool is_bool_type(Expr* t);
 
-// 条件位置允许的类型：bool、指针、数组/切片、null
+// 条件位置允许的类型：bool、指针、null（数组按隐式转换报警告）
 bool is_condition_type(Expr* t);
 
 // 结构等价判定：基础类型同名，指针/引用/数组逐层递归，函数指针签名一致

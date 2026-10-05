@@ -1,5 +1,5 @@
 #include "../include/semantic.h"
-#include "sem_types.h"
+#include "../include/sem_types.h"
 
 namespace cx {
 
@@ -179,11 +179,14 @@ void SemanticAnalyzer::check_array_len_fit(Expr* src, Expr* dst_type,
     if (!src || !dst_type || !dst_type->is_array_type()) return;
     long long decl_len = const_array_type_len(dst_type);
     if (decl_len <= 0) return;
+    // 字面量按元素数算；定长数组实参见其类型长度
     long long n = const_array_len_of(src);
+    bool literal = n >= 0;
+    if (!literal) n = const_array_type_len(src->type);
     if (n >= 0 && n > decl_len) {
-        error(loc, "array literal has " + std::to_string(n) +
-              " elements but " + context + " length is " +
-              std::to_string(decl_len));
+        error(loc, std::string(literal ? "array literal has " : "array has ") +
+              std::to_string(n) + " elements but " + context +
+              " length is " + std::to_string(decl_len));
     }
 }
 

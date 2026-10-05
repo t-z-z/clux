@@ -1350,18 +1350,28 @@ Expr* Parser::parse_postfix(Expr* left, bool is_type) {
                 }
                 continue;
             }
-            // 所有权切片类型: T{}
-            // 与函数体起始的 '{' 区分：只有紧跟 '}' 的 '{' 才是切片类型
+            // 所有权切片类型: T{} 或 T{n}
+            // 与函数体起始的 '{' 区分：只有形如 {} 或 {长度} 的才当切片类型
             case TokenKind::BraceL: {
-                if (!is_type || peek().kind != TokenKind::BraceR) return left;
+                if (!is_type) return left;
+                if (peek().kind != TokenKind::BraceR && !peek().is_ident() &&
+                    !peek().is_literal()) return left;
                 step();
+                Expr* length = nullptr;
+                if (curr().kind != TokenKind::BraceR) {
+                    length = parse_array_length();
+                    if (!length) {
+                        add_error("expected slice length expression");
+                        return left;
+                    }
+                }
                 if (curr().kind != TokenKind::BraceR) {
                     add_error("expected '}' to close slice type");
                     return left;
                 }
                 step();
                 Expr* node = cu_.add_node<Expr>(loc,
-                    Expr::ArrayType{left, nullptr, ArrayKind::Slice});
+                    Expr::ArrayType{left, length, ArrayKind::Slice});
                 node->is_type = true;
                 left = node;
                 continue;

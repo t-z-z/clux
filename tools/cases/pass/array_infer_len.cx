@@ -4,7 +4,7 @@ main() int r {
     int[] a = [1 2 3]
     char[] s = "abc"
     int[] e = []
-    int[2] src = [4 5]
-    int{}[] nest = [src src]
+    int{} s1 = [4 5]
+    int{}[2] nest = [s1 s1]
     r = a.len + s.len + e.len + nest[1].len
 }

@@ -1,0 +1,18 @@
+// 存储回收：定长存储整个函数只分配一次（入口块 alloca），
+// 运行期长度的切片仍是栈上分配，用 stacksave/stackrestore 在作用域结束归还，
+// 循环里逐轮分配逐轮回收，不回收的话下面的 n 一轮就爆栈
+extern "c" { putchar(int c) int r {} }
+main() int r {
+    int n = 20000
+    int sum = 0
+    for int i = 0; i < 200; i += 1 {
+        int{n} s = [1 2 3]
+        int[3] f = [4 5 6]
+        if i == 5 { continue }
+        sum += s[0] + f[0]
+    }
+    putchar(sum + 48)
+    putchar(sum / 7 % 10 + 48)
+    putchar(10)
+    r = 0
+}

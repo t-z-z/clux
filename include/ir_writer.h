@@ -14,8 +14,9 @@ class IRWriter {
 public:
     explicit IRWriter(std::ostream& out) : out_(out) {}
 
-    // 进入新函数：重置具名寄存器/标签计数
-    void begin_func() { next_reg_ = 0; next_label_ = 0; }
+    // 进入新函数：先把上一个函数待提升的 alloca 补进它的入口块，
+    // 再重置具名寄存器/标签计数
+    void begin_func() { splice_entry(); next_reg_ = 0; next_label_ = 0; }
 
     std::string reg() { return "%t" + std::to_string(next_reg_++); }
     std::string named_label(const std::string& hint) {
@@ -26,6 +27,12 @@ public:
 
     void emit(std::string_view s) { (*cur_) << s << '\n'; }
     void blank() { (*cur_) << '\n'; }
+
+    // 入口块 alloca 缓冲：循环体内的定长 alloca 提升到入口，整个函数只分配
+    // 一次，迭代之间复用同一块存储，不会逐轮吃栈。缓冲在函数收尾时补进该函数
+    // 入口块的开头（入口块支配函数体，故对其内所有使用点都可见）
+    void emit_entry(std::string_view s) { entry_ << "  " << s << '\n'; }
+    void splice_entry();
 
     // 闭包等延后发射的函数体：每层延迟段各自持有独立缓冲，退出时把该段
     // 完整追加到 late_，flush 时 late_ 追加到 body_ 之后。
@@ -54,6 +61,7 @@ public:
     void need_malloc()  { uses_malloc_ = true; }
     void need_free()    { uses_free_ = true; }
     void need_memcpy()  { uses_memcpy_ = true; }
+    void need_stackrw() { uses_stackrw_ = true; }
     void emit_type(const std::string& s) { header_ << s << '\n'; }
     void emit_global(const std::string& s) { globals_ << s << '\n'; }
     void emit_module_tail(const std::string& s) { tail_ << s << '\n'; }
@@ -63,6 +71,7 @@ private:
     std::ostream& out_;
     std::ostringstream header_;
     std::ostringstream globals_;
+    std::ostringstream entry_;
     std::ostringstream body_;
     std::ostringstream late_;
     std::ostringstream tail_;
@@ -73,6 +82,7 @@ private:
     bool uses_malloc_ = false;
     bool uses_free_ = false;
     bool uses_memcpy_ = false;
+    bool uses_stackrw_ = false;
     int next_label_ = 0;
     int next_str_ = 0;
     std::vector<int> reg_stack_;
