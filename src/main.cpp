@@ -44,6 +44,15 @@ void usage() {
 
 const char* kVersion = "clux 0.1.0";
 
+// 默认导入路径：可执行文件所在目录的上一级下的 lib/，即 bin/clux → lib/
+std::string default_lib_dir() {
+    char buf[4096];
+    ssize_t n = readlink("/proc/self/exe", buf, sizeof(buf) - 1);
+    if (n <= 0) return "";
+    buf[n] = '\0';
+    return (fs::path(buf).parent_path().parent_path() / "lib").string();
+}
+
 std::string replace_ext(const std::string& path, const std::string& ext) {
     fs::path p(path);
     p.replace_extension(ext);
@@ -58,7 +67,6 @@ bool read_file(const std::string& path, std::string& out) {
     return true;
 }
 
-// 把 IR 文本经 stdin 管道交给 clang++，不生成中间 .ll 文件
 // 把 IR 文本经 stdin 管道交给 clang++，不生成中间 .ll 文件
 int run_clang_ir(const std::string& ir, const std::string& out_path,
                  const std::vector<std::string>& extra, bool verbose) {
@@ -240,6 +248,9 @@ int main(int argc, char** argv) {
 
     if (input.empty()) { usage(); return 1; }
     if (action == Action::None) { usage(); return 1; }
+
+    // 未给 -I 时默认导入 bin/../lib/
+    if (lib_dir.empty()) lib_dir = default_lib_dir();
 
     std::string source;
     if (!read_file(input, source)) {

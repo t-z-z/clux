@@ -341,7 +341,7 @@ std::string Translator::min_count(const std::string& a, const std::string& b) {
     if (ac) return min_with_const(b, av);
     if (bc) return min_with_const(a, bv);
     std::string cmp = ir_.reg();
-    emit_instr(cmp + " = icmp slt i64 " + a + ", " + b);
+    emit_instr(cmp + " = icmp ult i64 " + a + ", " + b);
     std::string r = ir_.reg();
     emit_instr(r + " = select i1 " + cmp + ", i64 " + a + ", i64 " + b);
     return r;
@@ -350,7 +350,7 @@ std::string Translator::min_count(const std::string& a, const std::string& b) {
 // 运行期长度 v 与常量 k 取小
 std::string Translator::min_with_const(const std::string& v, long long k) {
     std::string cmp = ir_.reg();
-    emit_instr(cmp + " = icmp slt i64 " + v + ", " + std::to_string(k));
+    emit_instr(cmp + " = icmp ult i64 " + v + ", " + std::to_string(k));
     std::string r = ir_.reg();
     emit_instr(r + " = select i1 " + cmp + ", i64 " + v + ", i64 " +
                std::to_string(k));
@@ -376,9 +376,9 @@ void Translator::copy_init_into(const std::string& backing, Expr* el,
     if (src.empty() || src == "null" || slen.empty()) return;
     long long sv = 0;
     if (!const_count(slen, sv)) {
-        // 切片长度是运行期的 i32，先提升到 i64 再比
+        // 切片长度是运行期的 uint，先零扩展到 i64 再比
         std::string s64 = ir_.reg();
-        emit_instr(s64 + " = sext i32 " + slen + " to i64");
+        emit_instr(s64 + " = zext i32 " + slen + " to i64");
         slen = s64;
     }
     copy_elements(backing, src, el, min_count(len64, slen));
@@ -1077,13 +1077,15 @@ void Translator::emit_slice_init(VarList* vl, const std::string& slot,
     if (!len.empty() && len[0] == '%') {
         std::string lt = len_expr && len_expr->type
             ? map_type(len_expr->type) : "i32";
+        bool lu = len_expr ? expr_is_unsigned(len_expr->type) : true;
         if (lt == "i64") {
             std::string t = ir_.reg();
             emit_instr(t + " = trunc i64 " + len + " to i32");
             len32 = t;
         } else {
             std::string t = ir_.reg();
-            emit_instr(t + " = sext " + lt + " " + len + " to i64");
+            emit_instr(t + " = " + std::string(lu ? "zext " : "sext ") + lt + " " +
+                       len + " to i64");
             len64 = t;
         }
     }
@@ -1751,7 +1753,9 @@ std::string Translator::eval_lvalue(Expr* e) {
                        ? map_type(ix->index->type) : "i32";
         if (it != "i64" && !idx.empty() && idx[0] == '%') {
             std::string ext = ir_.reg();
-            emit_instr(ext + " = sext " + it + " " + idx + " to i64");
+            bool iu = expr_is_unsigned(ix->index ? ix->index->type : nullptr);
+            emit_instr(ext + " = " + std::string(iu ? "zext " : "sext ") + it + " " +
+                       idx + " to i64");
             idx = ext;
         }
         std::string et = map_type(e->type);
@@ -2108,7 +2112,7 @@ std::string Translator::eval_assign(Expr* e, Expr::Assign* a) {
         std::string sn = ir_.reg();
         emit_instr(sn + " = extractvalue { ptr, i32 } " + sv + ", 1");
         std::string sn64 = ir_.reg();
-        emit_instr(sn64 + " = sext i32 " + sn + " to i64");
+        emit_instr(sn64 + " = zext i32 " + sn + " to i64");
         copy_init_into(sp, el, sn64, a->value);
         return ptr;
     }
