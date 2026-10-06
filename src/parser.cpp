@@ -1274,7 +1274,7 @@ Expr* Parser::parse_prefix() {
 
 // 统一后缀链：is_type 决定 [] 与 -*/-& 的解释，并决定可逆 walk 还是 advance
 Expr* Parser::parse_postfix(Expr* left, bool is_type) {
-    auto step = [&]() { if (is_type) walk(); else advance(); };
+    // 类型位置的可逆性由 parse_type 的 trial 守卫保证，advance 在 trial 中即 walk
     for (;;) {
         Location loc = get_loc();
         switch (curr().kind) {
@@ -1313,7 +1313,7 @@ Expr* Parser::parse_postfix(Expr* left, bool is_type) {
             }
             // 索引 vs 数组类型: []
             case TokenKind::BracketL: {
-                step();
+                advance();
                 if (is_type) {
                     Expr* length = nullptr;
                     if (curr().kind != TokenKind::BracketR) {
@@ -1327,7 +1327,7 @@ Expr* Parser::parse_postfix(Expr* left, bool is_type) {
                             return nullptr;
                         }
                     }
-                    step();
+                    advance();
                     Expr* node = cu_.add_node<Expr>(loc, Expr::ArrayType{
                         left, length,
                         length ? ArrayKind::Fixed : ArrayKind::Infer});
@@ -1356,7 +1356,7 @@ Expr* Parser::parse_postfix(Expr* left, bool is_type) {
                 if (!is_type) return left;
                 if (peek().kind != TokenKind::BraceR && !peek().is_ident() &&
                     !peek().is_literal()) return left;
-                step();
+                advance();
                 Expr* length = nullptr;
                 if (curr().kind != TokenKind::BraceR) {
                     length = parse_array_length();
@@ -1369,7 +1369,7 @@ Expr* Parser::parse_postfix(Expr* left, bool is_type) {
                     add_error("expected '}' to close slice type");
                     return left;
                 }
-                step();
+                advance();
                 Expr* node = cu_.add_node<Expr>(loc,
                     Expr::ArrayType{left, length, ArrayKind::Slice});
                 node->is_type = true;
@@ -1379,13 +1379,13 @@ Expr* Parser::parse_postfix(Expr* left, bool is_type) {
             // 成员/作用域: . ::
             case TokenKind::Dot:
             case TokenKind::ColonColon: {
-                step();
+                advance();
                 if (!curr().is_ident()) {
                     add_error("expected member name after '.' or '::'");
                     return left;
                 }
                 std::string_view member = curr().get_val();
-                step();
+                advance();
                 Expr* node = cu_.add_node<Expr>(
                     loc,
                     Expr::Member{left, member}
@@ -1397,7 +1397,7 @@ Expr* Parser::parse_postfix(Expr* left, bool is_type) {
             // -* 解引用/指针，-& 取地址/引用
             case TokenKind::Minus: {
                 if (peek().kind == TokenKind::Mul || peek().kind == TokenKind::BitAnd) {
-                    step();
+                    advance();
                     if (is_type) {
                         while(curr().kind == TokenKind::Mul || curr().kind == TokenKind::BitAnd) {
                             Location uloc = get_loc();
@@ -1420,7 +1420,7 @@ Expr* Parser::parse_postfix(Expr* left, bool is_type) {
                     continue;
                 }
                 if (is_type && peek().kind == TokenKind::BracketL) {
-                    step();
+                    advance();
                     continue;
                 }
                 return left;
@@ -1567,34 +1567,7 @@ std::vector<VarList*> Parser::parse_value_params(bool* variadic) {
 
 // 数组长度：只做可逆解析（walk），避免在探测性 parse_var_decl 失败后 restore() 过期
 Expr* Parser::parse_array_length() {
-    if (curr().kind == TokenKind::IntLiteral
-        || curr().kind == TokenKind::UIntLiteral
-        || curr().kind == TokenKind::Int8Literal
-        || curr().kind == TokenKind::ShortLiteral
-        || curr().kind == TokenKind::LongLiteral
-        || curr().kind == TokenKind::FloatLiteral
-        || curr().kind == TokenKind::DoubleLiteral) {
-        Location loc = get_loc();
-        LiteralKind kind;
-        switch (curr().kind) {
-            case TokenKind::Int8Literal: kind = LiteralKind::Int8; break;
-            case TokenKind::ShortLiteral: kind = LiteralKind::Short; break;
-            case TokenKind::IntLiteral: kind = LiteralKind::Int; break;
-            case TokenKind::LongLiteral: kind = LiteralKind::Long; break;
-            case TokenKind::UIntLiteral: kind = LiteralKind::UInt; break;
-            default: kind = LiteralKind::Int; break;
-        }
-        std::string_view value = curr().get_val();
-        walk();
-        return cu_.add_node<Expr>(loc, Expr::Literal{kind, value});
-    }
-    if (curr().is_ident()) {
-        Location loc = get_loc();
-        std::string_view name = curr().get_val();
-        walk();
-        return cu_.add_node<Expr>(loc, Expr::Identifier{name});
-    }
-    return nullptr;
+    return parse_expr();
 }
 
 Expr* Parser::parse_type_atom() {
@@ -1611,8 +1584,14 @@ Expr* Parser::parse_type_atom() {
     return parse_postfix(t, true);
 }
 
+// 类型解析全程可逆：探测性 parse_decl 失败后 restore 必须仍然有效。
+// 期间 advance 退化为 walk，退出时恢复。
 Expr* Parser::parse_type() {
-    return parse_type_atom();
+    bool saved = trial_;
+    trial_ = true;
+    Expr* t = parse_type_atom();
+    trial_ = saved;
+    return t;
 }
 
 Expr* Parser::parse_primitive_type() {

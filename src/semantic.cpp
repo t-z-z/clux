@@ -3,6 +3,7 @@
 #include "../include/sem_types.h"
 #include "../include/inject.h"
 #include "../include/flow_check.h"
+#include "../include/const_eval.h"
 
 #include <unordered_set>
 #include <unordered_map>
@@ -1625,23 +1626,16 @@ void SemanticAnalyzer::visit_type_pointer(Expr::Pointer& p) {
     if (p.pointee && p.pointee->is_reference())
         error(current_expr->loc, "cannot form a pointer to a reference");
 }
-// 编译期常量长度：整数字面量，或最终绑定到整数字面量的 const 变量链；
-// 返回 nullptr 表示不是编译期常量
+// 编译期常量长度：经常量求值器折叠为整数字面量；
+// 返回 nullptr 表示不是编译期整数常量
 Expr* SemanticAnalyzer::const_length_literal(Expr* len, int depth) {
     if (!len || depth > 16) return nullptr;
-    if (len->is_literal()) {
-        bool sign = false; int bits = 0;
-        if (!literal_int_range(len->get_literal()->kind, sign, bits)) return nullptr;
-        unsigned long long v = 0;
-        if (!parse_uint_literal(len->get_literal()->value, v)) return nullptr;
-        return make_int_literal(len->loc, (size_t)v);
-    }
-    // const int N = 5; int[N] a —— 常量变量的字面量初值就是编译期常量
-    if (len->sym && len->sym->is_const()) {
-        auto* vi = dynamic_cast<VarItem*>(len->sym->node);
-        if (vi && vi->init) return const_length_literal(vi->init, depth + 1);
-    }
-    return nullptr;
+    ConstEvalSink sink;
+    sink.warn  = [this](const Location& l, const std::string& m) { warning(l, m); };
+    sink.error = [this](const Location& l, const std::string& m) { error(l, m); };
+    auto v = eval_const(len, sink);
+    if (!v || !v->is_int()) return nullptr;
+    return make_int_literal(len->loc, (size_t)v->u);
 }
 
 void SemanticAnalyzer::visit_type_array(Expr::ArrayType& a) {
