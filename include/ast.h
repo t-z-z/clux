@@ -660,6 +660,8 @@ struct ASTVisitor {
     Stmt* current_stmt = nullptr;
     // 当前嵌套循环深度，供需要循环上下文的派生 pass 使用
     int loop_depth_ = 0;
+    // 匿名作用域（block/for）计数器：避免同名子作用域被复用
+    int anon_scope_ = 0;
     // 正在遍历调用表达式的被调用者，供标识符解析区分函数名与普通变量
     bool in_callee_ = false;
     void walk(CompUnit& cu) {
@@ -917,7 +919,7 @@ struct ASTVisitor {
         std::visit([this](auto& v) {
             using T = std::decay_t<decltype(v)>;
             if constexpr (std::is_same_v<T, Stmt::Block>) {
-                scope_in("block");
+                scope_in("block#" + std::to_string(anon_scope_++));
                 for (auto* s : v.stmts) if (s) walk(*s);
                 visit_stmt_block(v);
                 scope_out();
@@ -936,7 +938,7 @@ struct ASTVisitor {
                 visit_stmt_while(v);
                 --loop_depth_;
             } else if constexpr (std::is_same_v<T, Stmt::For>) {
-                scope_in("for");
+                scope_in("for#" + std::to_string(anon_scope_++));
                 ++loop_depth_;
                 if (v.init) walk(*v.init);
                 if (v.condition) walk(*v.condition);

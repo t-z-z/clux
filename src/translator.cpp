@@ -273,8 +273,11 @@ bool Translator::is_fixed_array(Expr* t) const {
 std::string Translator::object_type(Expr* t) {
     if (!is_fixed_array(t)) return map_type(t);
     auto* a = t->get_array_type();
+    // 元素本身也可能是定长数组（多维数组）：必须递归展开成内联存储，
+    // 用 map_type 会把内层数组退化成 ptr，生成 [N x ptr] 这种没有实际
+    // 存储的悬空类型。
     return "[" + std::to_string(array_length_of(t)) + " x " +
-           (a->element ? map_type(a->element) : "i32") + "]";
+           (a->element ? object_type(a->element) : "i32") + "]";
 }
 
 // 入口块 alloca：长度是编译期常量的存储在这里分配，整个函数一次，
@@ -451,6 +454,9 @@ void Translator::emit_term(const std::string& s) {
     ctx_.term = true;
 }
 
+// 开启新的基本块。调用前当前块必须已经用 br/ret 终结：本函数无条件复位
+// ctx_.term，若当前块尚未终结就调用，会把本该丢弃的后续指令重新发射出来，
+// 而此前消耗掉的寄存器号已无法回收，最终产生悬空引用。
 void Translator::open_block(const std::string& label) {
     ir_.emit(label + ":");
     ctx_.term = false;
@@ -882,6 +888,17 @@ void Translator::emit_synth_operator(Func& f, Class* cls, VarItem* ret_var) {
 
 void Translator::emit_stmt(Stmt* s) {
     if (!s) return;
+    // 当前块已终结：后续语句是死代码，不再生成。
+    // 不能放任死代码进入 emit_var_decl / emit_for 等分支：那些分支照常调用
+    // ir_.reg() 消耗寄存器号，但指令被 emit_instr 丢弃；随后 open_block 又
+    // 无条件复位 ctx_.term 复活控制流，就会发射出引用未定义寄存器的指令。
+    // Flag 是 goto 跳转目标，Block 内部可能含 Flag，二者必须继续处理，
+    // 否则跳转目标无法重新开启新块。
+    if (ctx_.term &&
+        !std::holds_alternative<Stmt::Flag>(s->data) &&
+        !std::holds_alternative<Stmt::Block>(s->data)) {
+        return;
+    }
     std::visit([this](auto& v) {
         using T = std::decay_t<decltype(v)>;
         if constexpr (std::is_same_v<T, Stmt::Block>) {
@@ -993,7 +1010,9 @@ bool Translator::emit_class_var(VarList* vl, VarItem* vi, Class* cls) {
 void Translator::emit_fixed_array_init(const std::string& slot, Expr* el,
                                        int n, Expr* init) {
     if (!init || n <= 0) return;
-    std::string et = el ? map_type(el) : "i32";
+    // 元素本身可能是多维数组，必须用内联存储类型；map_type 会退化成 ptr，
+    // 导致元素间 GEP 的步长按指针大小算，初始化写错位置
+    std::string et = el ? object_type(el) : "i32";
     // 单个元素的写入：元素本身是数组而成员是字符串字面量时按字符拷贝
     auto write_elem = [&](const std::string& dst, Expr* mem) {
         auto* lit = mem->get_literal();
@@ -1756,7 +1775,8 @@ std::string Translator::eval_lvalue(Expr* e) {
                        idx + " to i64");
             idx = ext;
         }
-        std::string et = map_type(e->type);
+        // 元素是多维数组时必须用内联存储类型，map_type 会退化成 ptr
+        std::string et = object_type(e->type);
         std::string addr = ir_.reg();
         emit_instr(addr + " = getelementptr " + et + ", ptr " + base + ", i64 " + idx);
         return addr;

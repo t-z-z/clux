@@ -60,18 +60,25 @@ Token Lexer::read_char() {
     advance();
     // 跳过第一个单引号
     size_t s_pos=pos_;
-    std::string_view view(source_);
     size_t len=0;
-    bool escape=false;
     //识别转义的单引号
-    for(char c=curr_char(); c!='\''&&!escape; advance(),c=curr_char()){
+    for(;;){
         if(is_eof()){
             add_error("missing terminating \' character");
             break;
         }
-        escape=(c=='\\');
-        ++len;
+        char c=curr_char();
+        if(c=='\\'&&peek_char()=='\''){
+            advance(2);
+            len+=2;
+        }else if(c=='\''){
+            break;
+        }else{
+            advance();
+            ++len;
+        }
     }
+    std::string_view view(source_);
     std::string_view sub=view.substr(s_pos,len);
     std::string_view sv=translate_escape_sequences(sub);
     if(sv.size()>1) add_waring("multi-character char content");
@@ -86,17 +93,24 @@ Token Lexer::read_string(){
     //字符串的读取逻辑和字符基本相同
     advance();
     size_t s_pos=pos_;
-    std::string_view view(source_);
     size_t len=0;
-    bool escape=false;
-    for(char c=curr_char(); c!='\"'||escape; advance(),c=curr_char()){
+    for(;;){
         if(is_eof()){
             add_error("missing terminating \" character");
             break;
         }
-        escape=(c=='\\');
-        ++len;
+        char c=curr_char();
+        if(c=='\\'&&peek_char()=='"'){
+            advance(2);
+            len+=2;
+        }else if(c=='"'){
+            break;
+        }else{
+            advance();
+            ++len;
+        }
     }
+    std::string_view view(source_);
     std::string_view sub=view.substr(s_pos,len);
     std::string_view sv=translate_escape_sequences(sub);
     advance();

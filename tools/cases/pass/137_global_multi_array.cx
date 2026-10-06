@@ -1,0 +1,15 @@
+// 多维定长数组：内层数组必须内联展开为 [N x [M x T]]，不能退化成 [N x ptr]。
+// 全局数组尤其明显：退化成 ptr 后初值是 null，写入直接段错误
+extern "c" { putchar(int c) int r {} }
+char[2][3]g
+main() int r {
+    g[0][0] = 'A'
+    g[0][1] = 0
+    g[1][0] = 'B'
+    g[1][1] = 0
+    g[2][0] = 'C'
+    g[2][1] = 0
+    for int i = 0; i < 3; i += 1 { putchar(int(g[i][0])) }
+    putchar(10)
+    r = 0
+}

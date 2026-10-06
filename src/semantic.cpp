@@ -633,14 +633,18 @@ void SemanticAnalyzer::visit_var_list(VarList& vl) {
         }
     }
     if (module_level && (vl.type == nullptr || !vl.type->is_inferred())) {
+        // 无初值的模块级数组/字符串是零初始化的全局量，存储合法；只有
+        // 带数组/字符串字面量初值时才无法常量求值（常量解释器尚未实现），
+        // 暂予禁止
         for (VarItem* var : vl.vars) {
-            Expr* dt = var && var->type ? var->type : vl.type;
-            if (!dt) continue;
-            if (dt->is_array_type() || dt->is_string_literal_type() ||
-                (var && var->init &&
-                 (var->init->is_array() ||
-                  (var->init->type &&
-                   var->init->type->is_string_literal_type()))))
+            if (!var || !var->init) continue;
+            Expr* dt = var->type ? var->type : vl.type;
+            bool init_aggregate = var->init->is_array() ||
+                (var->init->type &&
+                 var->init->type->is_string_literal_type());
+            bool decl_aggregate = dt && (dt->is_array_type() ||
+                                         dt->is_string_literal_type());
+            if (init_aggregate || decl_aggregate)
                 error(var->loc, "module-level variable cannot be an array or "
                       "string: its storage would not outlive the initializer");
         }
