@@ -14,6 +14,7 @@ struct Diagnostic{
     Location loc;
     Diagnostic(DiagLevel level,const std::string &message,const Location &location):
         lvl(level), msg(message), loc(location){}
+    Diagnostic() = default;
     std::vector<Location> secondary_locations;
     std::vector<Diagnostic> children;
     std::optional<std::string> suggestion;

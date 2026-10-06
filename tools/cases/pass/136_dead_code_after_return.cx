@@ -1,0 +1,13 @@
+// return 之后的死代码不再生成 IR，也不得消耗寄存器号
+// （死代码里的 for 会让 emit_var_decl 占用寄存器号，而 alloca 被丢弃，
+//   随后 open_block 复活控制流会发射引用未定义寄存器的 load）
+check(int n)bool r=true{
+    return
+    for int i=1 i<n i+=1 {
+        r=false
+    }
+    r=true
+}
+main() {
+    check(3)
+}

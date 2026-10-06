@@ -138,10 +138,12 @@ private:
     struct Mark {
         size_t walk_pos;
         size_t nodes;
+        size_t error;
     };
     inline void restore(const Mark & m) {
         walk_pos_ = m.walk_pos;
         if (cu_.nodes.size() > m.nodes) cu_.nodes.resize(m.nodes);
+        if (errors_.size() > m.error) errors_.resize(m.error);
     }
     inline void admit() {
         if(walk_pos_ > 0) {
@@ -156,7 +158,7 @@ private:
         return dq_[walk_pos_];
     }
     inline Mark point() const {
-        return Mark{walk_pos_, cu_.nodes.size()};
+        return Mark{walk_pos_, cu_.nodes.size(), errors_.size()};
     }
     inline bool is_eof() {
         return curr().kind == TokenKind::Eof;
