@@ -1,0 +1,7 @@
+const int A = 3
+const int B = A * 2
+main() {
+    int[B + 1] arr
+    arr[0] = 1
+    arr[6] = 2
+}

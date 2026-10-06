@@ -28,6 +28,9 @@ private:
     std::vector<Diagnostic> warnings_;
     std::deque<Token> dq_;
     size_t walk_pos_ = 0;
+    // trial 模式：advance 退化为 walk，用于探测性/类型解析，
+    // 保证 restore(point) 仍能回退。由 parse_type 的守卫设置。
+    bool trial_ = false;
     StringPool& pool_;
     struct AliasDecl{
         std::string_view name;
@@ -101,6 +104,7 @@ private:
     }
     // 不可逆前进
     inline void advance(const int &step) {
+        if (trial_) { walk(step); return; }
         walk_pos_ += step;
         if(walk_pos_ < dq_.size()) {
             if(walk_pos_ > 0) {

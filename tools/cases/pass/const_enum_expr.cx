@@ -1,0 +1,6 @@
+enum E { A B C D }
+main() {
+    int[E::A + E::B + E::C] arr
+    arr[0] = 1
+    arr[2] = 2
+}
