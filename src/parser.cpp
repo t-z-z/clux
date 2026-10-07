@@ -310,6 +310,34 @@ VarList* Parser::parse_var_decl(SpecList &ml, Location &loc) {
             std::string_view name = curr().get_val();
             Expr* init = nullptr;
             walk();
+            // 后缀数组维度：T name[d1][d2] 等价于 T[d1][d2] name。
+            // 与前缀形式混写（T[a] name[b]）没有唯一解释，直接报错
+            Expr* vtype = type;
+            bool mixed_dim = type && type->is_array_type() &&
+                             curr().kind == TokenKind::BracketL;
+            if (mixed_dim)
+                add_error("cannot combine prefix and postfix array dimensions");
+            while (curr().kind == TokenKind::BracketL) {
+                Location aloc = get_loc();
+                advance();
+                Expr* len = nullptr;
+                if (curr().kind != TokenKind::BracketR) {
+                    len = parse_array_length();
+                    if (!len) {
+                        add_error("expected array length expression");
+                        break;
+                    }
+                }
+                if (curr().kind != TokenKind::BracketR) {
+                    add_error("expected ']' after array length");
+                    break;
+                }
+                advance();
+                // 混用已报错，后缀维度只消费不再叠加，避免级联错误
+                if (!mixed_dim)
+                    vtype = append_array_dim(aloc, vtype, len,
+                        len ? ArrayKind::Fixed : ArrayKind::Infer);
+            }
             if (curr().kind == TokenKind::Assign) {
                 walk();
                 init = parse_expr();
@@ -320,7 +348,7 @@ VarList* Parser::parse_var_decl(SpecList &ml, Location &loc) {
             } else if(type->is_inferred()) {
                 add_error("can not infer type");
             }
-            vars.push_back(cu_.add_node<VarItem>(get_loc(), name, init, type));
+            vars.push_back(cu_.add_node<VarItem>(get_loc(), name, init, vtype));
         } else if (vars.empty()) {
             restore(sp);
             return nullptr;
@@ -1270,6 +1298,24 @@ Expr* Parser::parse_prefix() {
         );
     }
     return nullptr;
+}
+
+// 追加一维数组类型：先写的维度在外层，后写的在内层。
+// int[A][B] 里 A 是最外层长度、B 是最内层长度；后缀声明 int a[A][B] 同理。
+// 故新维度总是插入已有数组类型最内层 element 的位置
+Expr* Parser::append_array_dim(const Location& loc, Expr* base,
+                               Expr* len, ArrayKind kind) {
+    // 递归到最内层再插入：新维度永远是最内层。
+    // int a[A][B][C] 的三次追加依次得到 A->int、A->B->int、A->B->C->int，
+    // 即书写顺序从外到内，与 C 的定长数组声明一致
+    if (base && base->is_array_type()) {
+        auto* a = base->get_array_type();
+        a->element = append_array_dim(loc, a->element, len, kind);
+        return base;
+    }
+    Expr* node = cu_.add_node<Expr>(loc, Expr::ArrayType{base, len, kind});
+    node->is_type = true;
+    return node;
 }
 
 // 统一后缀链：is_type 决定 [] 与 -*/-& 的解释，并决定可逆 walk 还是 advance

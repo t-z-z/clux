@@ -975,11 +975,10 @@ bool Translator::emit_class_var(VarList* vl, VarItem* vi, Class* cls) {
                    emit_size_of(it->second.llvm_name) + ")");
         created = true;
     } else {
-        inst = ir_.reg();
-        emit_instr(inst + " = alloca " + it->second.llvm_name);
+        // 变量绑定的实例存储：整个函数一次，循环里复用同一块
+        inst = entry_alloca(it->second.llvm_name);
     }
-    std::string slot = ir_.reg();
-    emit_instr(slot + " = alloca ptr");
+    std::string slot = entry_alloca("ptr");
     emit_instr("store ptr " + inst + ", ptr " + slot);
     ctx_.slots[vi] = slot;
     if (is_malloc_cls) {
@@ -1156,8 +1155,7 @@ void Translator::emit_var_decl(VarList* vl) {
         Expr* vtype = vi->type ? vi->type : vl->type;
         // 引用声明：分配槽存被引用对象地址；有初值则立即绑定
         if (vtype && vtype->is_reference()) {
-            std::string slot = ir_.reg();
-            emit_instr(slot + " = alloca ptr");
+            std::string slot = entry_alloca("ptr");
             ctx_.slots[vi] = slot;
             if (vi->init) {
                 std::string addr = eval_lvalue(vi->init);
@@ -1186,8 +1184,7 @@ void Translator::emit_var_decl(VarList* vl) {
             emit_slice_init(vl, slot, vtype, vi->init);
             continue;
         }
-        std::string slot = ir_.reg();
-        emit_instr(slot + " = alloca " + vt);
+        std::string slot = entry_alloca(vt);
         ctx_.slots[vi] = slot;
         if (vi->init) {
             bool converted = needs_convert(vi->init);
@@ -1539,8 +1536,7 @@ std::string Translator::emit_class_copy(Class* cls, const std::string& src) {
                    emit_size_of(cls_ir) + ")");
         emit_bind_ref(cls, dst, SpecialMethod::Kind::Ref);
     } else {
-        dst = ir_.reg();
-        emit_instr(dst + " = alloca " + cls_ir);
+        dst = entry_alloca(cls_ir);
     }
     emit_fields_copy(cls, src, dst);
     return dst;
@@ -1597,8 +1593,7 @@ std::string Translator::emit_wrap_convert(Expr* e) {
                        emit_size_of(cls_ir) + ")");
             emit_bind_ref(dw, slot, SpecialMethod::Kind::Ref);
         } else {
-            slot = ir_.reg();
-            emit_instr(slot + " = alloca " + cls_ir);
+            slot = entry_alloca(cls_ir);
         }
         std::string addr = ir_.reg();
         emit_instr(addr + " = getelementptr " + cls_ir + ", ptr " + slot +
@@ -1941,8 +1936,7 @@ std::string Translator::eval_binary(Expr* e, Expr::Binary* b) {
     if (b->op == OpKind::And || b->op == OpKind::Or) {
         bool is_and = (b->op == OpKind::And);
         std::string l = to_bool(b->left, eval_operand(b->left));
-        std::string slot = ir_.reg();
-        emit_instr(slot + " = alloca i1");
+        std::string slot = entry_alloca("i1");
         emit_instr("store i1 " + l + ", ptr " + slot);
         std::string rhs_l = ir_.named_label("logic.rhs");
         std::string end_l = ir_.named_label("logic.end");
@@ -2365,9 +2359,8 @@ std::string Translator::build_string_slice(Expr* lit) {
     std::string content = l ? std::string(l->value) : std::string();
     size_t n = content.size();
     std::string sym = ir_.string_const(content);
-    std::string backing = ir_.reg();
-    // 多分配 1 字节存放 NUL 终止符
-    emit_instr(backing + " = alloca i8, i64 " + std::to_string(n + 1));
+    // 多分配 1 字节存放 NUL 终止符；长度是编译期常量，放入口块
+    std::string backing = entry_alloca("i8, i64 " + std::to_string(n + 1));
     for (size_t k = 0; k <= n; ++k) {
         std::string src = ir_.reg();
         emit_instr(src + " = getelementptr i8, ptr @" + sym +
@@ -2496,13 +2489,12 @@ std::string Translator::emit_conversion_call(Expr* e, Conversion* cf) {
     std::string sret_slot;
     std::vector<std::string> args;
     if (!via_reg) {
-        sret_slot = ir_.reg();
         if (ret_cls) {
-            emit_instr(sret_slot + " = alloca " + classes_[ret_cls].llvm_name);
+            sret_slot = entry_alloca(classes_[ret_cls].llvm_name);
             args.push_back("ptr sret(" + classes_[ret_cls].llvm_name + ") " +
                            sret_slot);
         } else {
-            emit_instr(sret_slot + " = alloca " + ret_ir);
+            sret_slot = entry_alloca(ret_ir);
             args.push_back("ptr sret(" + ret_ir + ") " + sret_slot);
         }
     }
@@ -2601,13 +2593,12 @@ std::string Translator::emit_operator_call(Expr* e, Operator* op,
     std::string sret_slot;
     std::vector<std::string> args;
     if (!via_reg) {
-        sret_slot = ir_.reg();
         if (ret_cls) {
-            emit_instr(sret_slot + " = alloca " + classes_[ret_cls].llvm_name);
+            sret_slot = entry_alloca(classes_[ret_cls].llvm_name);
             args.push_back("ptr sret(" + classes_[ret_cls].llvm_name + ") " +
                            sret_slot);
         } else {
-            emit_instr(sret_slot + " = alloca " + ret_t);
+            sret_slot = entry_alloca(ret_t);
             args.push_back("ptr sret(" + ret_t + ") " + sret_slot);
         }
     }
@@ -2736,8 +2727,7 @@ std::string Translator::eval_default_ctor(Expr* e, Expr::Call* c) {
                    emit_size_of(it->second.llvm_name) + ")");
         emit_bind_ref(cls, slot, SpecialMethod::Kind::Ref);
     } else {
-        slot = ir_.reg();
-        emit_instr(slot + " = alloca " + it->second.llvm_name);
+        slot = entry_alloca(it->second.llvm_name);
     }
     emit_field_defaults(cls, slot);
     return slot;
@@ -2758,8 +2748,7 @@ std::string Translator::eval_ctor_call(Expr* e, Expr::Call* c, SpecialMethod* sm
         emit_instr(slot + " = call ptr @malloc(i64 " +
                    emit_size_of(it->second.llvm_name) + ")");
     } else {
-        slot = ir_.reg();
-        emit_instr(slot + " = alloca " + it->second.llvm_name);
+        slot = entry_alloca(it->second.llvm_name);
     }
     emit_field_defaults(cls, slot);
     std::vector<std::string> args;
@@ -2849,13 +2838,12 @@ std::string Translator::eval_plain_call(Expr* e, Expr::Call* c, Func* fn) {
     Class* ret_cls = (!via_reg && ret_var) ? as_class(ret_expr) : nullptr;
     std::string sret_slot;
     if (ret_var && !via_reg) {
-        sret_slot = ir_.reg();
         if (ret_cls) {
-            emit_instr(sret_slot + " = alloca " + classes_[ret_cls].llvm_name);
+            sret_slot = entry_alloca(classes_[ret_cls].llvm_name);
             args.push_back("ptr sret(" + classes_[ret_cls].llvm_name + ") " +
                            sret_slot);
         } else {
-            emit_instr(sret_slot + " = alloca " + ret_t);
+            sret_slot = entry_alloca(ret_t);
             args.push_back("ptr sret(" + ret_t + ") " + sret_slot);
         }
     }
@@ -3058,8 +3046,7 @@ std::string Translator::call_func_ptr(Expr* e, Expr::Call* c, Expr::FuncPtr* fp)
 
 std::string Translator::eval_ternary(Expr* e, Expr::Ternary* t) {
     std::string ttype = e->type ? map_type(e->type) : "i32";
-    std::string res_slot = ir_.reg();
-    emit_instr(res_slot + " = alloca " + ttype);
+    std::string res_slot = entry_alloca(ttype);
 
     std::string cond = eval_cond(t->cond);
     std::string then_l = ir_.named_label("tern.then");
@@ -3197,8 +3184,7 @@ std::string Translator::eval_spawn(Expr*, Expr::Spawn* s) {
     ir_.release_late();
     ctx_ = saved;
 
-    std::string tid = ir_.reg();
-    emit_instr(tid + " = alloca i64");
+    std::string tid = entry_alloca("i64");
     emit_instr("call i32 @pthread_create(ptr " + tid + ", ptr null, ptr @" +
                IRWriter::quote(wrapper) + ", ptr " + pack + ")");
     return "0";
