@@ -26,3 +26,4 @@ test*
 probe/
 *.ll
 *.in
+!architecture.md
