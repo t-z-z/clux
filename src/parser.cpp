@@ -1194,14 +1194,16 @@ Expr* Parser::parse_prefix() {
         }
         return cu_.add_node<Expr>(c_loc, Expr::Cast{target, operand});
     }
-    
+
+    if (curr().kind == TokenKind::Null) {
+        advance();
+        return cu_.add_node<Expr>(loc, Expr::Null{});
+    }
+
     // 标识符
     if (curr().is_ident()) {
         std::string_view name = curr().get_val();
         advance();
-        if (name == "null") {
-            return cu_.add_node<Expr>(loc, Expr::Null{});
-        }
         return cu_.add_node<Expr>(
             loc,
             Expr::Identifier{name}
