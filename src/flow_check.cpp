@@ -4,6 +4,8 @@
 
 #include "../include/sem_types.h"
 
+#include <cstdio>
+#include <cstdlib>
 #include <functional>
 #include <string>
 #include <utility>
@@ -340,7 +342,16 @@ bool FlowChecker::can_use_register_ret(Func& f) {
     if (rl->vars.empty()) return false;
     VarItem* ret_var = rl->vars.back();
     Expr* ty = ret_var->type ? ret_var->type : rl->type;
-    if (!ty || !ty->get_primitive()) return false;
+    if (!ty) return false;
+    bool scalar_ret = false;
+    if (auto* p = ty->get_primitive())
+        scalar_ret = p->kind != PrimitiveTypeKind::Void;
+    else if (ty->get_pointer() || ty->get_reference() ||
+             ty->get_func_ptr() || ty->get_func_ref() || ty->is_null())
+        scalar_ret = true;
+    else if (is_enum_type(ty))
+        scalar_ret = true;
+    if (!scalar_ret) return false;
     Symbol* sym = sym_of(ret_var);
     if (!sym) return false;
     // 返回值声明处带初始化表达式：初始化即唯一一次写入，函数体不再改写

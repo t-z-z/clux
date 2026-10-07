@@ -66,6 +66,7 @@ namespace cx{
     X(Alias, "alias") \
     X(Conversion, "conversion") \
     X(Init, "INIT") \
+    X(Null, "null") \
     MODIFIER \
     TYPE
 
