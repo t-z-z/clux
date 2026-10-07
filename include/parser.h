@@ -213,6 +213,8 @@ private:
     bool is_statement_boundary();
     Expr* parse_prefix();
     Expr* parse_postfix(Expr* left, bool is_type);
+    Expr* append_array_dim(const Location& loc, Expr* base,
+                            Expr* len, ArrayKind kind);
     Expr* parse_block_expr();
     Expr* parse_func_literal();
     Expr* parse_literal();

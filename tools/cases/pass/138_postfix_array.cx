@@ -1,0 +1,11 @@
+// 后缀声明 int a[N][M]：维度按书写顺序从外到内，.len 取最外层长度
+extern "c" { putchar(int c) int r {} }
+main() int r {
+    int a[2][3]
+    a[1][2] = 65
+    putchar(a.len + 48)
+    putchar(a[0].len + 48)
+    putchar(a[1][2])
+    putchar(10)
+    r = 0
+}
