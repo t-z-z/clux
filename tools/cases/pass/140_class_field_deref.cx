@@ -1,0 +1,21 @@
+import cstdio
+// 对象销毁时清理其指针字段：字段指向的类有 DEREF 才触发，null 字段不触发；
+// 字段清理先于对象自身的 DROP
+@Res {
+    pub DROP { printf("D") }
+    pub DEREF { printf("R") }
+}
+@Owner {
+    pub Res-* held
+
+    pub INIT() { self.held = null }
+}
+main() {
+    Res v = Res()
+    Owner o = Owner()
+    o.held = v-&
+    o.held = null
+    Res w = Res()
+    Owner p = Owner()
+    p.held = w-&
+}

@@ -1,0 +1,10 @@
+// 引用返回不能绑 null：引用必须指向一个对象，
+// null 引用解引用无从判断，编译期即拦下
+func() Node-& r {
+    r = null
+    return
+}
+main() int x {
+    x = 0
+    return
+}

@@ -1,0 +1,20 @@
+// 非引用的类指针形参只是借用：不新增持有也不登记退出解引用，
+// 计数由调用方与字段赋值各计一次
+import cstdio
+@Res {
+    pub int n = 0
+
+    pub REF { n += 1  printf("REF %d\n", n) }
+    pub DEREF { n -= 1  printf("DEREF %d\n", n) }
+}
+hold(Res-* p) {
+    printf("in hold\n")
+    return
+}
+main() int r {
+    Res v = Res()
+    Res-* p = v-&
+    hold(p)
+    r = 0
+    return
+}

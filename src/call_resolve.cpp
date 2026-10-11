@@ -26,7 +26,7 @@ bool SemanticAnalyzer::resolve_funcptr_call(Expr* call_expr, Expr::Call& c) {
         Expr* at = c.args[i] ? c.args[i]->type : nullptr;
         Expr* pt = fp->params[i];
         if (check_ref_param(c.args[i], pt)) continue;
-        if (at && pt && !is_same_type(at, pt) && !can_convert_to(at, pt)) {
+        if (at && pt && !can_convert_to(at, pt)) {
             warning(c.args[i]->loc, "argument type mismatch in call");
         }
     }
@@ -72,7 +72,7 @@ bool SemanticAnalyzer::resolve_ctor_call(Expr* call_expr, Expr::Call& c,
         call_fail(call_expr, "class '" + name + "' has no scope");
         return true;
     }
-    auto* cls = static_cast<Class*>(cls_decl);
+    Class* cls = static_cast<Class*>(cls_decl);
 
     SpecialMethod* ctor = nullptr;
     bool has_init = false;
@@ -97,7 +97,7 @@ bool SemanticAnalyzer::resolve_ctor_call(Expr* call_expr, Expr::Call& c,
     return true;
 }
 
-// malloc 类的内置 free()：a.free() 释放堆实例；
+// malloc 实例的内置 free()：a.free() 释放堆实例；
 // 类方法内的裸 free() 同样指向内置实现（self 即被释放对象）
 bool SemanticAnalyzer::resolve_free_builtin(Expr* call_expr, Expr::Call& c,
                                             const std::string& name) {
@@ -107,13 +107,14 @@ bool SemanticAnalyzer::resolve_free_builtin(Expr* call_expr, Expr::Call& c,
     if (auto* m = c.callee->get_member()) {
         cls = m->target && m->target->type
             ? wrap_or_plain_class(m->target->type) : nullptr;
+        if (!is_malloc_value(m->target)) return false;
     } else if (c.callee->is_identifier() && current_class) {
         cls = current_class;
         on_self = true;
     } else {
         return false;
     }
-    if (!cls || !cls->specs.has(SpecKind::Malloc)) return false;
+    if (!cls) return false;
     call_expr->sym = nullptr;
     call_expr->type = typeVoid;
     call_expr->is_lvalue = false;
@@ -140,8 +141,7 @@ void SemanticAnalyzer::pack_array_args(Func* func, Expr* call_expr, Expr::Call& 
     bool ok = elem != nullptr;
     for (Expr* a : c.args) {
         if (!a || !a->type) { ok = false; break; }
-        if (!is_same_type(a->type, elem) &&
-            !can_convert_to(a->type, elem)) { ok = false; break; }
+        if (!can_convert_to(a->type, elem)) { ok = false; break; }
         check_array_len_fit(a, elem, "parameter element", a->loc);
     }
     if (!ok) return;
@@ -355,8 +355,8 @@ bool SemanticAnalyzer::args_match(const std::vector<VarList*>& params_lists,
         Expr* at = args[i] ? args[i]->type : nullptr;
         Expr* pt = params[i];
         if (!at || !pt) continue;
-        if (!is_same_type(at, pt) && !can_convert_to(at, pt)) return false;
+        if (!can_convert_to(at, pt)) return false;
     }
     return true;
 }
-}
+} // namespace cx

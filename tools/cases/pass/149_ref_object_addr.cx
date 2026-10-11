@@ -1,0 +1,61 @@
+// 引用统一存被引用对象的地址。绑定处必须走 eval_ref_addr：用 eval_lvalue
+// 会存成槽地址（模块级变量则是全局符号地址），读时多绕一层导致错位。
+// 覆盖：模块级引用变量、局部引用绑局部/模块级类变量、引用形参、引用字段、
+// 定长数组与标量引用，以及引用赋类值的写穿语义。
+@Node {
+    pub int v = 0
+
+    pub INIT(int s) { self.v = s }
+}
+Node g = Node(1)
+Node gr = Node(2)
+Node-& gref = gr
+@Holder {
+    pub Node-& n
+
+    pub INIT() { self.n = gr }
+}
+relay(Node-& x) int v { v = x.v }
+take(Node-& x) int v { x.v = x.v + 1  v = x.v }
+main() int r {
+    r = 0
+    // 模块级引用变量
+    if gref.v != 2 { r = 1 }
+    gref.v = 8
+    if gr.v != 8 { r = r + 10 }
+    // 局部引用绑局部类变量
+    Node a = Node(3)
+    Node b = Node(9)
+    Node-& s = a
+    if s.v != 3 { r = r + 100 }
+    s.v = 5
+    if a.v != 5 { r = r + 1000 }
+    if s-& != a-& { r = r + 10000 }
+    // 引用赋类值是写穿：改的是 s 指向的对象，s 本身不重新绑定
+    s = b
+    if a.v != 9 { r = r + 100000 }
+    if s.v != 9 { r = r + 1000000 }
+    // 局部引用绑模块级类变量
+    Node-& lr = g
+    if lr.v != 1 { r = r + 10000000 }
+    lr.v = 6
+    if g.v != 6 { r = r + 100000000 }
+    // 引用形参
+    if relay(lr) != 6 { r = r + 1000000000 }
+    if take(lr) != 7 { r = r + 10000000000 }
+    // 引用字段
+    Holder h = Holder()
+    if h.n.v != 8 { r = r - 1 }
+    // 定长数组引用的存储在被引用对象处
+    int[3] arr = [1 2 3]
+    int[3]-& ar = arr
+    if ar[1] != 2 { r = r + 1 }
+    ar[1] = 7
+    if arr[1] != 7 { r = r + 2 }
+    // 标量引用写穿
+    int i = 1
+    int-& ir = i
+    ir = 4
+    if i != 4 { r = r + 4 }
+    return
+}

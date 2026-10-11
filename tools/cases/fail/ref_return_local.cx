@@ -1,0 +1,16 @@
+// 引用返回不能绑本函数的局部变量：局部变量的存储在栈帧上，
+// 函数一返回，返回出去的地址即悬垂
+@Node {
+    pub int v = 0
+
+    pub INIT(int s) { self.v = s }
+}
+func() Node-& r {
+    Node local = Node(1)
+    r = local
+    return
+}
+main() int x {
+    x = 0
+    return
+}

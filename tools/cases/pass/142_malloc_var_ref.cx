@@ -1,0 +1,20 @@
+import cstdio
+// malloc 写在变量声明上：堆分配、分配即 REF、free() 结束引用、
+// 作用域结束不再解引用
+malloc @Rc {
+    pub int n = 0
+
+    pub REF { n += 1 }
+    pub DEREF { n -= 1 }
+}
+main() int r {
+    malloc Rc a = Rc()
+    r = 0
+    if a.n != 1 { r = 1 }
+    Rc copy = a
+    if copy.n != 2 { r = r + 10 }
+    if a.n != 1 { r = r + 100 }
+    copy.free()
+    a.free()
+    return
+}

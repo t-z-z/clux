@@ -1,0 +1,32 @@
+// 类引用的取地址：引用形参与 self 的地址即被引用对象地址，类值取地址同解引用
+@Node {
+    pub int v
+
+    pub INIT(int s) { self.v = s }
+
+    pub self_addr() Node-* p {
+        Node-* q = self-&
+        p = q
+    }
+}
+@Box {
+    pub Node item
+
+    pub INIT(Node s) { self.item = s }
+}
+relay(Node-& x) Node-* p {
+    p = x-&
+}
+main() int r {
+    Node n = Node(3)
+    Node-* pn = n-&
+    Box b = Box(n)
+    r = 0
+    if pn != n-& { r = 1 }
+    if relay(n) != pn { r = r + 10 }
+    if n.self_addr() != pn { r = r + 100 }
+    if b.item-& != b.item { r = r + 1000 }
+    if n.v != 3 { r = r + 10000 }
+    if b.item.v != 3 { r = r + 100000 }
+    return
+}

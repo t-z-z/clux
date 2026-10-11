@@ -43,6 +43,15 @@ Class* SemanticAnalyzer::wrap_or_plain_class(Expr* t) {
     return static_cast<Class*>(t->resolved_decl);
 }
 
+bool SemanticAnalyzer::is_malloc_value(Expr* e) {
+    if (!e || !e->type) return false;
+    if (Class* c = wrap_or_plain_class(e->type)) {
+        if (c->specs.has(SpecKind::Malloc)) return true;
+    }
+    // malloc 修饰写在变量声明上时由符号带出（VarItem 借所属 VarList 的修饰）
+    return e->sym && e->sym->specs && e->sym->specs->has(SpecKind::Malloc);
+}
+
 Class* SemanticAnalyzer::wrap_class_of(Expr* t) {
     if (!t || !t->is_type) return nullptr;
     if (!t->resolved_decl || t->resolved_decl->kind != DeclKind::Class)
@@ -58,9 +67,18 @@ Expr* SemanticAnalyzer::wrap_base_type(Class* c) {
     return e;
 }
 
+// 实际上包含了is_same_type，使用之前不用再判is_same_type
 bool SemanticAnalyzer::can_convert_to(Expr* src, Expr* dst) {
     if (!src || !dst) return false;
-    if (!src || !dst) return false;
+    if (!src && !dst) return true;
+    if (auto* r=src->get_reference()) {
+        src = r->target;
+        if (!src) return false;
+    }
+    if (auto* r=dst->get_reference()) {
+        dst = r->target;
+        if (!dst) return false;
+    }
     if (is_same_type(src, dst)) return true;
 
     // 数值类型之间可隐式转换

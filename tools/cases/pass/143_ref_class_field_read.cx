@@ -1,0 +1,25 @@
+// 类引用字段的读取：引用字段取出被引用对象地址后，字段类型为类时值即该
+// 地址，不再按 map_type 做一次 load。h.n.v 必须读到被引用对象的 v。
+@Node {
+    pub int v = 0
+    pub int w = 0
+
+    pub INIT() { self.v = 0 }
+}
+make() Node p {
+    Node t = Node()
+    t.v = 42
+    t.w = 7
+    p = t
+}
+@Holder {
+    pub Node-& n
+
+    pub INIT() { self.n = make() }
+}
+main() int r {
+    r = 0
+    Holder h = Holder()
+    if h.n.v != 42 { r = 1 }
+    return
+}

@@ -1,0 +1,30 @@
+// 类赋值是值拷贝：赋值式与声明式一样逐字段复制出新的一份持有，
+// 两个对象不共享实例，字段 DEREF 也各计各的
+import cstdio
+@Res {
+    pub int n = 0
+
+    pub REF { n += 1 }
+    pub DEREF { n -= 1 }
+}
+@Owner {
+    pub Res-* held
+
+    pub INIT() { self.held = null }
+}
+main() int r {
+    Res v = Res()
+    Owner a = Owner()
+    a.held = v-&
+    Owner c
+    c = a
+    r = 0
+    // 赋值式已复制：改 a 不影响 c
+    a.held = null
+    if c.held == null { r = 1 }
+    if v.n != 2 { r = r + 10 }
+    // 自赋值不应释放对象
+    c = c
+    if v.n != 2 { r = r + 100 }
+    return
+}
