@@ -1,0 +1,50 @@
+// 引用可以像指针一样返回：返回的是被引用对象的地址，机制同指针。
+// 绑定源允许形参、模块级变量、字段与解引用；返回后仍可写穿。
+@Node {
+    pub int v = 0
+
+    pub INIT(int s) { self.v = s }
+}
+@Pair {
+    pub Node n
+
+    pub INIT(int s) { self.n = Node(s) }
+    // 字段的引用
+    pub ref_n() Node-& r { r = n }
+}
+Node g = Node(7)
+// 绑形参：类形参指向调用方实例
+pick(Node a) Node-& r { r = a }
+// 绑模块级变量
+pickg() Node-& r { r = g }
+// 绑解引用
+deref(Node-* p) Node-& r { r = p-* }
+// 整型引用返回
+picki(int-& a) int-& r { r = a }
+main() int r {
+    r = 0
+    Node a = Node(3)
+    Node-& x = pick(a)
+    if x.v != 3 { r = r + 1 }
+    Node-& xg = pickg()
+    if xg.v != 7 { r = r + 2 }
+    Pair p = Pair(5)
+    Node-& xn = p.ref_n()
+    if xn.v != 5 { r = r + 4 }
+    Node-& xd = deref(a-&)
+    if xd.v != 3 { r = r + 8 }
+    // 返回的引用写穿到原对象
+    x.v = 9
+    if a.v != 9 { r = r + 16 }
+    // 两个引用指向同一对象
+    Node-& y = pick(a)
+    if y.v != 9 { r = r + 32 }
+    y.v = 11
+    if a.v != 11 { r = r + 64 }
+    // 整型引用
+    int i = 1
+    int-& ir = picki(i)
+    ir = 5
+    if i != 5 { r = r + 128 }
+    return
+}

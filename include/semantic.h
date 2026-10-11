@@ -387,6 +387,17 @@ private:
     // T[]：按初值推导长度并就地改为定长数组，推导不出来时保持 Infer 待报错
     void resolve_infer_array_len(Expr& type, Expr* init_type, Expr* init_expr);
     void report_infer_arrays();
+    // 类字段按值内嵌另一个类：自身内联或相互内联使布局无解，须报错
+    void check_embedded_layout();
+    // 引用返回的绑定约束：不能绑本函数的局部变量，也不能绑 null
+    void check_ref_return(Func& f);
+    void scan_ref_ret(Stmt* s, const VarItem* ret_var,
+                      std::unordered_set<const VarItem*>& locals,
+                      std::vector<std::pair<Expr*, Location>>& ret_values);
+    // 内嵌依赖图上的 DFS：返回 false 表示已报错
+    bool embed_visit(Class* c, std::unordered_map<Class*, int>& state);
+    std::unordered_map<Class*, std::vector<std::pair<Class*, VarItem*>>> embed_;
+    std::vector<Class*> embed_order_;
     // 函数签名（形参/返回类型）里不允许出现所有权切片 T{}
     void check_no_slice(const std::vector<VarList*>& lists, const char* what);
     std::string build_callkey(const std::string& name, const std::vector<VarList*>& params);
@@ -395,11 +406,14 @@ private:
     Symbol* find_operator_overload(OpKind op, Expr& type, Expr& other,
                                    Expr** matched_param = nullptr);
     Symbol* find_operator_overload(OpKind op, Expr& type);
+    // 实际上包含了 is_same_type ，使用之前不用再判 is_same_type
     bool can_convert_to(Expr* src, Expr* dst);
     // 基础类型来源的包装类判定；非包装类返回 nullptr
     Class* wrap_class_of(Expr* t);
     // 任意类（含非包装类）的解析
     Class* wrap_or_plain_class(Expr* t);
+    // 表达式是否持有 malloc 实例：类本身是 malloc 类，或变量声明带 malloc 修饰
+    bool is_malloc_value(Expr* e);
     // 包装类的承载类型表达式
     Expr* wrap_base_type(Class* c);
     bool has_conversion(Expr* src, Expr* dst);

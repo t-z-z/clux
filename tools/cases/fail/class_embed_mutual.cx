@@ -1,0 +1,12 @@
+// 相互内嵌同样无解：A 的大小依赖 B，B 的大小依赖 A
+@A {
+    pub B b
+}
+@B {
+    pub A a
+}
+main() int r {
+    A x = A()
+    r = 0
+    return
+}

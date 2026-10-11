@@ -97,6 +97,9 @@ void Translator::collect() {
 }
 
 void Translator::run() {
+    // 类布局有环时已报错，不再发射任何 IR
+    if (has_error_) return;
+    emit_class_types();
     for (auto& g : globals_)
         ir_.emit_global(g.is_extern
             ? "@" + g.sym + " = external global " + g.ir_type
@@ -178,6 +181,63 @@ void Translator::collect_classes() {
     for (Decl* d : cu_.top_decls) collect_classes_decl(d);
 }
 
+// 内联类字段的类型依赖：A 内联 B 要求 %B 先于 %A 定义。
+// 出现回边说明布局本身无解（自身内联或相互内联），由 cycle_at 带出 culprit
+static void topo_visit(const std::unordered_map<Class*, std::vector<Class*>>& deps,
+                       Class* c, std::unordered_map<Class*, int>& state,
+                       std::vector<Class*>& out, Class** cycle_at) {
+    int& st = state[c];
+    if (st == 2) return;
+    if (st == 1) { *cycle_at = c; return; }
+    st = 1;
+    auto it = deps.find(c);
+    if (it != deps.end()) {
+        for (Class* d : it->second) {
+            topo_visit(deps, d, state, out, cycle_at);
+            if (*cycle_at) return;
+        }
+    }
+    st = 2;
+    out.push_back(c);
+}
+
+// 每个类的内联类字段所指向的类
+std::unordered_map<Class*, std::vector<Class*>> Translator::inline_deps() const {
+    std::unordered_map<Class*, std::vector<Class*>> deps;
+    for (Class* c : class_order_) {
+        auto it = classes_.find(c);
+        if (it == classes_.end()) continue;
+        for (const auto& f : it->second.fields) {
+            if (!f.var) continue;
+            // 自身内联也记为依赖：语义阶段已拦下成环的情况，这里只用于排序
+            if (as_class(f.type)) deps[c].push_back(as_class(f.type));
+        }
+    }
+    return deps;
+}
+
+// 全部类结构体类型集中发射一次：LLVM 文本 IR 要求被引用的类型先定义，
+// 逐个随 emit_class 发射会在内联字段引用后声明的类时产生前向引用
+void Translator::emit_class_types() {
+    auto deps = inline_deps();
+    std::unordered_map<Class*, int> state;
+    std::vector<Class*> order;
+    for (Class* c : class_order_) {
+        Class* cycle_at = nullptr;
+        topo_visit(deps, c, state, order, &cycle_at);
+    }
+    for (Class* c : order) {
+        const auto& info = classes_[c];
+        std::string ty = info.llvm_name + " = type {";
+        for (size_t i = 0; i < info.fields.size(); ++i) {
+            if (i) ty += ", ";
+            ty += info.fields[i].ir_type;
+        }
+        ty += "}";
+        ir_.emit_type(ty);
+    }
+}
+
 void Translator::collect_classes_decl(Decl* d) {
     if (!d) return;
     switch (d->kind) {
@@ -185,7 +245,6 @@ void Translator::collect_classes_decl(Decl* d) {
             Class* c = static_cast<Class*>(d);
             ClassInfo info;
             info.llvm_name = "%" + mangler_.of(c);
-            info.size_global = "__clux_size_" + mangler_.of(c);
             int idx = 0;
             for (Decl* m : c->members) {
                 if (!m || m->kind != DeclKind::VarList) continue;
@@ -196,9 +255,14 @@ void Translator::collect_classes_decl(Decl* d) {
                     Field f;
                     f.var = vi;
                     f.index = is_static ? -1 : idx++;
-                    // 定长数组成内联字段：布局里占真实空间
+                    // 定长数组与内联类字段在布局里占真实空间。类字段内联后
+                    // 随宿主对象一起活着，不会像指针字段那样指向 INIT 栈帧上
+                    // 的临时实例；指针与引用字段仍是 ptr，槽里存地址
                     Expr* ft = vi->type ? vi->type : vl->type;
-                    f.ir_type = ft ? object_type(ft) : "i32";
+                    Class* fc = as_class(ft);
+                    f.type = ft;
+                    f.ir_type = fc ? ("%" + mangler_.of(fc))
+                                   : (ft ? object_type(ft) : "i32");
                     if (is_static) {
                         // static 字段存于模块级全局变量，不进实例 layout
                         info.static_fields.push_back(f);
@@ -210,6 +274,7 @@ void Translator::collect_classes_decl(Decl* d) {
                 }
             }
             classes_[c] = std::move(info);
+            class_order_.push_back(c);
             for (Decl* m : c->members) {
                 if (m && m->kind == DeclKind::Class)
                     collect_classes_decl(m);
@@ -441,6 +506,37 @@ void Translator::register_deref(const std::string& slot, Class* cls, int depth) 
     ctx_.drops.push_back(e);
 }
 
+// 对象销毁时其指针字段持有的对象也结束引用：字段指向的类有 DEREF 才登记。
+// 内联类字段逐级下钻，path 记录从宿主实例到目标指针字段的 getelementptr 链
+void Translator::register_field_derefs(
+        const std::string& slot, Class* cls, int depth,
+        std::vector<std::pair<std::string, int>> path) {
+    if (!cls) return;
+    auto it = classes_.find(cls);
+    if (it == classes_.end()) return;
+    for (const auto& f : it->second.fields) {
+        if (!f.type) continue;
+        // 内联类字段：字段存储即嵌套对象，继续往下一层找它内部的指针字段
+        if (as_class(f.type)) {
+            auto sub = path;
+            sub.emplace_back(it->second.llvm_name, f.index);
+            register_field_derefs(slot, as_class(f.type), depth, sub);
+            continue;
+        }
+        if (!f.type->is_pointer()) continue;
+        Class* pc = pointee_class(f.type);
+        if (!find_special(pc, SpecialMethod::Kind::Deref)) continue;
+        CleanupEntry e;
+        e.kind = CleanupEntry::Deref;
+        e.slot = slot;
+        e.cls = pc;
+        e.path = path;
+        e.path.emplace_back(it->second.llvm_name, f.index);
+        e.scope_depth = depth >= 0 ? depth : ctx_.scope_depth;
+        ctx_.drops.push_back(e);
+    }
+}
+
 // 指令发射
 
 void Translator::emit_instr(const std::string& s) {
@@ -471,8 +567,22 @@ void Translator::emit_drops_to(int depth) {
             if (d.kind == CleanupEntry::Restore) {
                 emit_instr("call void @llvm.stackrestore(ptr " + d.ptr + ")");
             } else if (d.kind == CleanupEntry::Deref) {
-                std::string v = ir_.reg();
-                emit_instr(v + " = load ptr, ptr " + d.slot);
+                std::string obj = ir_.reg();
+                emit_instr(obj + " = load ptr, ptr " + d.slot);
+                std::string v = obj;
+                // 逐级 getelementptr 走到目标指针字段，内联类字段的中间层
+                // 是存储地址而非指针，只有最后一级需要 load
+                for (size_t i = 0; i < d.path.size(); ++i) {
+                    std::string f = ir_.reg();
+                    emit_instr(f + " = getelementptr " + d.path[i].first + ", ptr " + v +
+                               ", i32 0, i32 " + std::to_string(d.path[i].second));
+                    if (i + 1 == d.path.size()) {
+                        v = ir_.reg();
+                        emit_instr(v + " = load ptr, ptr " + f);
+                    } else {
+                        v = f;
+                    }
+                }
                 emit_guard_call(find_special(d.cls, SpecialMethod::Kind::Deref), v);
             } else {
                 std::string v = ir_.reg();
@@ -517,6 +627,10 @@ void Translator::emit_func(Func& f, Class* cls) {
         ctx_.ret_obj_ptr = "%ret";
         ctx_.ret_obj_cls = ret_cls;
     }
+    // 引用返回变量只是把被引用对象的地址带出去的通道：给它赋值是绑定，
+    // 存的是地址而非被引用对象的值
+    if (ret_var && ret_expr && ret_expr->is_reference())
+        ctx_.ret_ref_var = ret_var;
 
     std::vector<std::string> params;
     std::vector<std::tuple<VarItem*, std::string, std::string>> arg_inits;
@@ -576,14 +690,8 @@ void Translator::emit_func(Func& f, Class* cls) {
             ctx_.ref_bound.insert(vi);
             continue;
         }
-        if (vt == "ptr") {
-            Expr* vt_expr = vi->type;
-            Class* pc = pointee_class(vt_expr);
-            if (pc) {
-                emit_bind_ref(pc, argn, SpecialMethod::Kind::Ref);
-                register_deref(slot, pc, 1);
-            }
-        }
+        // 非引用的类指针形参只是借用：不新增持有，也不登记退出时的解引用。
+        // 持有关系由调用方与字段赋值各自计一次，形参重复计会把同一次持有数两遍
     }
     // static 字段与模块级变量的默认值：在任何 INIT 执行前写入
     if (is_main) {
@@ -618,10 +726,10 @@ void Translator::emit_func(Func& f, Class* cls) {
     }
     for (VarItem* rv : ret_vars) {
         if (!rv->init) continue;
-        // 类返回变量：把初值对象逐字段拷进调用方存储
+        // 类返回变量：把初值对象逐字段拷进调用方存储，不产生新的一份持有
         if (ret_cls && rv == ret_var) {
             std::string v = eval(rv->init);
-            emit_fields_copy(ret_cls, v, "%ret");
+            emit_fields_copy(ret_cls, v, "%ret", false);
             continue;
         }
         auto sit = ctx_.slots.find(rv);
@@ -708,13 +816,7 @@ void Translator::emit_special(SpecialMethod& sm, Class* cls) {
             ctx_.ref_bound.insert(vi);
             continue;
         }
-        if (vt == "ptr") {
-            Class* pc = pointee_class(vi->type);
-            if (pc) {
-                emit_bind_ref(pc, argn, SpecialMethod::Kind::Ref);
-                register_deref(slot, pc, 1);
-            }
-        }
+        // 非引用的类指针形参只是借用：INIT 内的字段赋值才是那次持有
     }
 
     if (sm.body) emit_stmt(sm.body);
@@ -729,21 +831,6 @@ void Translator::emit_special(SpecialMethod& sm, Class* cls) {
 void Translator::emit_class(Class* c) {
     auto& info = classes_[c];
     if (info.llvm_name.empty()) info.llvm_name = "%" + mangler_.of(c);
-
-    std::string ty = info.llvm_name + " = type {";
-    for (size_t i = 0; i < info.fields.size(); ++i) {
-        if (i) ty += ", ";
-        ty += info.fields[i].ir_type;
-    }
-    ty += "}";
-    ir_.emit_type(ty);
-    // 向前一步的偏移即实例字节数：交给 LLVM 计算，避免手写布局推导。
-    // 只有 malloc 类需要它来定分配量
-    if (c->specs.has(SpecKind::Malloc)) {
-        ir_.emit_global("@" + info.size_global +
-                        " = private constant i64 ptrtoint (ptr getelementptr (" +
-                        info.llvm_name + ", ptr null, i32 1) to i64)");
-    }
 
     std::unordered_set<std::string> emitted;
     for (Decl* m : c->members) {
@@ -946,8 +1033,9 @@ bool Translator::emit_class_var(VarList* vl, VarItem* vi, Class* cls) {
     auto it = classes_.find(cls);
     if (it == classes_.end()) { ctx_.slots[vi] = "null"; return true; }
     std::string inst;
-    bool is_malloc_cls = cls->specs.has(SpecKind::Malloc);
-    bool created = false;
+    // malloc 可以写在类上，也可以写在变量声明上，两者都是堆分配实例
+    bool is_malloc = cls->specs.has(SpecKind::Malloc) ||
+                     (vl && vl->specs.has(SpecKind::Malloc));
     if (vi->init) {
         Class* src_cls = as_class(vi->init->type);
         // 初值是 INIT 调用时是构造而非拷贝：构造结果就是本实例，
@@ -956,24 +1044,21 @@ bool Translator::emit_class_var(VarList* vl, VarItem* vi, Class* cls) {
         if (auto* call = vi->init->get_call())
             ctor_call = call->resolved &&
                         call->resolved->kind == DeclKind::SpecialMethod;
-        if (!ctor_call && src_cls == cls && !needs_convert(vi->init)) {
+        if (is_malloc) {
+            // 堆存储是新的一份持有：构造调用已分配实例可直接沿用，
+            // 其余初值逐字段搬进新分配的堆块
+            inst = ctor_call ? eval_converted(vi->init)
+                             : emit_class_copy(cls, eval_converted(vi->init), true);
+        } else if (!ctor_call && src_cls == cls && !needs_convert(vi->init)) {
             // 同类初始化：拷贝构造，新建实例并逐字段复制
-            std::string src = eval(vi->init);
-            inst = emit_class_copy(cls, src);
-            created = true;
+            inst = emit_class_copy(cls, eval(vi->init));
         } else {
-            if (vi->init->implicit_to && as_wrap_class(vi->init->implicit_to))
-                created = true;
-            else if (ctor_call)
-                created = true;
             inst = eval_converted(vi->init);
         }
-    } else if (is_malloc_cls) {
-        ir_.need_malloc();
-        inst = ir_.reg();
-        emit_instr(inst + " = call ptr @malloc(i64 " +
-                   emit_size_of(it->second.llvm_name) + ")");
-        created = true;
+    } else if (is_malloc) {
+        inst = emit_malloc_inst(cls);
+        emit_field_defaults(cls, inst);
+        emit_bind_ref(cls, inst, SpecialMethod::Kind::Ref);
     } else {
         // 变量绑定的实例存储：整个函数一次，循环里复用同一块
         inst = entry_alloca(it->second.llvm_name);
@@ -981,9 +1066,10 @@ bool Translator::emit_class_var(VarList* vl, VarItem* vi, Class* cls) {
     std::string slot = entry_alloca("ptr");
     emit_instr("store ptr " + inst + ", ptr " + slot);
     ctx_.slots[vi] = slot;
-    if (is_malloc_cls) {
-        if (!created) emit_bind_ref(cls, inst, SpecialMethod::Kind::Ref);
-        register_deref(slot, cls);
+    if (is_malloc) {
+        // 堆存储的分配与初值拷贝都在 emit_malloc_inst 内触发过一次 REF；
+        // 释放由 free() 显式进行，作用域结束不解引用
+        ctx_.malloc_vars.insert(vi);
     } else if (!vl->specs.has(SpecKind::Malloc)) {
         for (Decl* m : cls->members) {
             if (m && m->kind == DeclKind::SpecialMethod) {
@@ -1001,6 +1087,9 @@ bool Translator::emit_class_var(VarList* vl, VarItem* vi, Class* cls) {
             }
         }
     }
+    // 字段清理后登记：清理是栈式的，后登记者先执行，
+    // 字段要在对象自身的 DROP / DEREF 之前释放
+    register_field_derefs(slot, cls);
     return true;
 }
 
@@ -1158,7 +1247,9 @@ void Translator::emit_var_decl(VarList* vl) {
             std::string slot = entry_alloca("ptr");
             ctx_.slots[vi] = slot;
             if (vi->init) {
-                std::string addr = eval_lvalue(vi->init);
+                // 引用一律存被引用对象的地址：类实例变量要取出槽里的实例
+                // 指针，直接用 eval_lvalue 会存成槽地址，读时多绕一层错位
+                std::string addr = eval_ref_addr(vi->init);
                 if (addr.empty()) addr = eval(vi->init);
                 emit_instr("store ptr " + addr + ", ptr " + slot);
                 ctx_.ref_bound.insert(vi);
@@ -1425,7 +1516,7 @@ Class* Translator::as_wrap_class(Expr* t) {
 
 // 逐字段拷贝 src 所指对象到 dst 所指对象
 void Translator::emit_fields_copy(Class* cls, const std::string& src,
-                                  const std::string& dst) {
+                                  const std::string& dst, bool copy_holds) {
     auto it = classes_.find(cls);
     if (it == classes_.end()) return;
     const std::string& cls_ir = it->second.llvm_name;
@@ -1433,20 +1524,33 @@ void Translator::emit_fields_copy(Class* cls, const std::string& src,
         std::string sa = ir_.reg();
         emit_instr(sa + " = getelementptr " + cls_ir + ", ptr " + src +
                    ", i32 0, i32 " + std::to_string(f.index));
-        std::string sv = ir_.reg();
-        emit_instr(sv + " = load " + f.ir_type + ", ptr " + sa);
         std::string da = ir_.reg();
         emit_instr(da + " = getelementptr " + cls_ir + ", ptr " + dst +
                    ", i32 0, i32 " + std::to_string(f.index));
+        // 内联类字段：字段存储即嵌套对象，整体搬进目标存储，
+        // 其内部的指针字段持有要递归计入，故下沉一层而不是按 ptr 拷
+        if (Class* fc = as_class(f.type)) {
+            emit_fields_copy(fc, sa, da, copy_holds);
+            continue;
+        }
+        std::string sv = ir_.reg();
+        emit_instr(sv + " = load " + f.ir_type + ", ptr " + sa);
         emit_instr("store " + f.ir_type + " " + sv + ", ptr " + da);
+        // 复制出新的一份持有时指针字段才各计一次 REF；把已构造好的对象搬进
+        // 另一处存储（返回值落进调用方 sret 槽）不产生新持有，计一次即多一次
+        if (copy_holds && f.type && f.type->is_pointer())
+            emit_bind_ref(pointee_class(f.type), sv,
+                          SpecialMethod::Kind::Ref);
     }
 }
 
 // 字段是否有需要写入的声明处默认值：无初值的引用字段写 null，
-// 使未绑定时的读取确定性地失败而非读到垃圾
+// 使未绑定时的读取确定性地失败而非读到垃圾。内联类字段即使自身无初值，
+// 也要为嵌套对象写入它自己的字段默认值
 bool Translator::field_has_default(const Field& f) {
     if (!f.var) return false;
     if (f.var->type && f.var->type->is_reference()) return true;
+    if (as_class(f.type)) return true;
     return f.var->init != nullptr;
 }
 
@@ -1457,6 +1561,24 @@ void Translator::emit_field_default(const std::string& dst_addr, const Field& f)
         // 引用字段一律在 INIT 中绑定，构造开始前写 null：
         // INIT 绑定语句之前就读取会确定性地失败而非读到垃圾
         emit_instr("store ptr null, ptr " + dst_addr);
+        return;
+    }
+    // 内联类字段：字段存储即嵌套对象，构造就地写进这块存储，
+    // 不会像指针字段那样在构造帧退出后悬垂
+    if (Class* fc = as_class(f.type)) {
+        emit_field_defaults(fc, dst_addr);
+        if (!f.var->init) return;
+        auto* call = f.var->init->get_call();
+        if (call && call->resolved &&
+            call->resolved->kind == DeclKind::SpecialMethod) {
+            emit_ctor_into(call, static_cast<SpecialMethod*>(call->resolved),
+                           fc, dst_addr);
+            return;
+        }
+        bool conv = needs_convert(f.var->init);
+        std::string src = conv ? eval_converted(f.var->init)
+                                : eval(f.var->init);
+        emit_fields_copy(fc, src, dst_addr, true);
         return;
     }
     if (!f.var->init) return;
@@ -1524,21 +1646,25 @@ void Translator::emit_field_defaults(Class* cls, const std::string& slot) {
 }
 
 // 隐式包装/解包：源或目标为包装类，先解包到承载类型，数值 cast，再打包
-std::string Translator::emit_class_copy(Class* cls, const std::string& src) {
+std::string Translator::emit_class_copy(Class* cls, const std::string& src, bool heap) {
     auto it = classes_.find(cls);
     std::string cls_ir = (it != classes_.end()) ? it->second.llvm_name
                                                  : "%" + mangler_.of(cls);
-    std::string dst;
-    if (cls->specs.has(SpecKind::Malloc)) {
-        ir_.need_malloc();
-        dst = ir_.reg();
-        emit_instr(dst + " = call ptr @malloc(i64 " +
-                   emit_size_of(cls_ir) + ")");
-        emit_bind_ref(cls, dst, SpecialMethod::Kind::Ref);
-    } else {
-        dst = entry_alloca(cls_ir);
-    }
-    emit_fields_copy(cls, src, dst);
+    std::string dst = heap ? emit_malloc_inst(cls) : entry_alloca(cls_ir);
+    emit_fields_copy(cls, src, dst, true);
+    // 堆存储是新的一份持有：字段就位之后才引用，否则 REF 改的计数会被拷贝覆盖
+    if (heap) emit_bind_ref(cls, dst, SpecialMethod::Kind::Ref);
+    return dst;
+}
+
+// malloc 实例：堆上一块实例存储
+std::string Translator::emit_malloc_inst(Class* cls) {
+    auto it = classes_.find(cls);
+    std::string cls_ir = (it != classes_.end()) ? it->second.llvm_name
+                                                 : "%" + mangler_.of(cls);
+    ir_.need_malloc();
+    std::string dst = ir_.reg();
+    emit_instr(dst + " = call ptr @malloc(i64 " + emit_size_of(cls_ir) + ")");
     return dst;
 }
 
@@ -1624,15 +1750,11 @@ long Translator::type_bytes_of(const std::string& t) {
 }
 
 // 实例字节数：交给 LLVM 用常量表达式算出真实布局（含聚合类型与对齐），
-// 手写字段分派无法覆盖任意聚合类型且会漏掉对齐填充
+// 手写字段分派无法覆盖任意聚合类型且会漏掉对齐填充。
+// 直接内联成常量表达式，不必为每个类发射尺寸全局
 std::string Translator::emit_size_of(const std::string& llvm_name) {
-    for (auto& [cls, info] : classes_) {
-        if (info.llvm_name != llvm_name) continue;
-        std::string r = ir_.reg();
-        emit_instr(r + " = load i64, ptr @" + info.size_global);
-        return r;
-    }
-    return "1";
+    return "ptrtoint (ptr getelementptr (" + llvm_name +
+           ", ptr null, i32 1) to i64)";
 }
 
 bool Translator::needs_convert(Expr* e) {
@@ -1684,6 +1806,27 @@ std::string Translator::field_lvalue(Expr* e, const std::string& slot_addr) {
     return addr;
 }
 
+// 引用字段的目标是类：取出被引用对象的地址后，字段的值即该地址本身。
+// 与 eval_identifier 的 ref_bound 分支一致，此时不能再按 map_type 做一次 load，
+// 否则会把实例存储当成指针槽再读一次。
+static bool ref_targets_class(Expr* decl_type) {
+    auto* r = decl_type ? decl_type->get_reference() : nullptr;
+    return r && as_class(r->target);
+}
+
+// 字段读取：定长数组、内联类字段、引用字段的类目标的值都是存储地址，无需 load
+std::string Translator::eval_field_value(Expr* e, const std::string& slot_addr) {
+    std::string addr = field_lvalue(e, slot_addr);
+    if (is_fixed_array(e->type)) return addr;
+    // 内联类字段：字段存储就是对象本身
+    if (as_class(e->type)) return addr;
+    if (ref_targets_class(e->sym ? e->sym->get_type() : nullptr)) return addr;
+    std::string t = e->type ? map_type(e->type) : "i32";
+    std::string r = ir_.reg();
+    emit_instr(r + " = load " + t + ", ptr " + addr);
+    return r;
+}
+
 // 引用字段绑定：见 bind_ref_field。
 // 引用字段的绑定：仅 INIT 内对字段的直接赋值是绑定，其余位置都是写穿。
 // 局部引用与引用形参都在创建时已绑定（声明处 / 进入函数时），不经过这里
@@ -1700,15 +1843,26 @@ std::string Translator::bind_ref_field(Expr* target, Expr* value) {
 }
 
 // 被引用对象的地址：引用绑定、引用形参传参、取地址都走这里。
-// 与 eval_lvalue 的唯一分歧是类实例变量——它的槽存的是实例指针，
-// 作为被引用对象时要取出该指针而非槽地址
+// 与 eval_lvalue 的唯一分歧是类值——类实例变量的槽、模块级变量与 static
+// 字段存的都只是实例指针，作为被引用对象时要取出该指针而非槽地址
 std::string Translator::eval_ref_addr(Expr* e) {
     if (e && e->sym && e->sym->kind == SymbolKind::Variable && as_class(e->type)) {
         if (auto* vi = dynamic_cast<VarItem*>(e->sym->node)) {
+            std::string g;
             auto it = ctx_.slots.find(vi);
-            if (it != ctx_.slots.end() && !ctx_.ref_bound.count(vi)) {
+            if (it != ctx_.slots.end() && !ctx_.ref_bound.count(vi))
+                g = it->second;
+            else {
+                auto git = global_of_->find(vi);
+                if (git != global_of_->end()) g = "@" + git->second;
+                else {
+                    std::string sg = mangler_.field_of(vi);
+                    if (!sg.empty()) g = "@" + sg;
+                }
+            }
+            if (!g.empty()) {
                 std::string addr = ir_.reg();
-                emit_instr(addr + " = load ptr, ptr " + it->second);
+                emit_instr(addr + " = load ptr, ptr " + g);
                 return addr;
             }
         }
@@ -1874,27 +2028,14 @@ std::string Translator::eval_identifier(Expr* e, Expr::Identifier* id) {
                 if (cit != classes_.end()) {
                     // static 字段：模块级全局符号
                     std::string sg = mangler_.field_of(vi);
-                    if (!sg.empty()) {
-                        std::string addr = field_lvalue(e, "@" + sg);
-                        if (is_fixed_array(e->type)) return addr;
-                        std::string t = e->type ? map_type(e->type) : "i32";
-                        std::string r = ir_.reg();
-                        emit_instr(r + " = load " + t + ", ptr " + addr);
-                        return r;
-                    }
+                    if (!sg.empty()) return eval_field_value(e, "@" + sg);
                     auto fit = cit->second.field_index.find(vi);
                     if (fit != cit->second.field_index.end()) {
                         std::string addr = ir_.reg();
                         emit_instr(addr + " = getelementptr " + cit->second.llvm_name +
                                    ", ptr " + ctx_.self_ptr + ", i32 0, i32 " +
                                    std::to_string(fit->second));
-                        std::string fa = field_lvalue(e, addr);
-                        // 定长数组成内联字段：值即字段地址
-                        if (is_fixed_array(e->type)) return fa;
-                        std::string t = e->type ? map_type(e->type) : "i32";
-                        std::string r = ir_.reg();
-                        emit_instr(r + " = load " + t + ", ptr " + fa);
-                        return r;
+                        return eval_field_value(e, addr);
                     }
                 }
             }
@@ -2038,14 +2179,9 @@ std::string Translator::eval_unary(Expr* e, Expr::Unary* u) {
         }
     }
     if (u->op == OpKind::BitAnd) {
-        Expr* op = u->operand;
-        if (op && as_class(op->type)) {
-            std::string slot = eval_lvalue(op);
-            std::string r = ir_.reg();
-            emit_instr(r + " = load ptr, ptr " + slot);
-            return r;
-        }
-        return eval_ref_addr(op);
+        // 类值的槽与字段存的都是实例地址，取地址统一走 eval_ref_addr：
+        // 类实例变量由它取出槽里的指针，内联类字段直接就是字段存储地址
+        return eval_ref_addr(u->operand);
     }
     std::string ot = u->operand && u->operand->type ? map_type(u->operand->type) : "i32";
     std::string ov = eval(u->operand);
@@ -2083,13 +2219,14 @@ std::string Translator::eval_unary(Expr* e, Expr::Unary* u) {
 }
 
 std::string Translator::eval_assign(Expr* e, Expr::Assign* a) {
-    // 类返回变量：r = v 把 v 所指对象逐字段拷进调用方存储，不改 r 的指针
+    // 类返回变量：r = v 把 v 所指对象逐字段拷进调用方存储，不改 r 的指针。
+    // 这只是把已构造好的对象搬进调用方的存储，不产生新的一份持有
     if (a->op == OpKind::Assign && a->target && a->target->sym &&
         !ctx_.ret_obj_ptr.empty()) {
         if (auto* vi = dynamic_cast<VarItem*>(a->target->sym->node)) {
             if (vi == ctx_.ret_obj_var) {
                 std::string v = eval(a->value);
-                emit_fields_copy(ctx_.ret_obj_cls, v, ctx_.ret_obj_ptr);
+                emit_fields_copy(ctx_.ret_obj_cls, v, ctx_.ret_obj_ptr, false);
                 return v;
             }
         }
@@ -2108,6 +2245,16 @@ std::string Translator::eval_assign(Expr* e, Expr::Assign* a) {
         return bound;
     std::string ptr = eval_lvalue(a->target);
     if (ptr.empty()) return "0";
+    // 引用返回变量：赋值即绑定，存被引用对象的地址（与引用声明同一路径），
+    // 否则存进去的是对象的值，返回出去就是一个被当作地址的数值。
+    // 必须先于下面的类赋值：引用返回变量的表达式类型是目标类，
+    // as_class 同样为真，会被误当成值拷贝
+    if (a->target->sym && a->target->sym->node == ctx_.ret_ref_var) {
+        std::string addr = eval_ref_addr(a->value);
+        if (addr.empty()) addr = eval(a->value);
+        emit_instr("store ptr " + addr + ", ptr " + ptr);
+        return addr;
+    }
     // 数组赋值：定长数组写进自己的存储，切片写进它拥有的存储
     if (a->op == OpKind::Assign && a->target && a->target->type &&
         a->target->type->is_array_type()) {
@@ -2128,6 +2275,14 @@ std::string Translator::eval_assign(Expr* e, Expr::Assign* a) {
         copy_init_into(sp, el, sn64, a->value);
         return ptr;
     }
+    // 类赋值是值拷贝：字段就地搬进内联存储，变量另分配副本，与声明式
+    // `Node b = a` 同一语义。否则两个变量共享同一实例，各自登记的字段
+    // DEREF 会把同一对象析构两次。变量目标 + 需转换时交回通用路径：
+    // 同类 conversion 代替等号拷贝（spec.md）
+    if (a->op == OpKind::Assign && a->target && a->value &&
+        as_class(a->target->type) &&
+        (a->target->get_member() || !needs_convert(a->value)))
+        return assign_class_value(a->target, a->value);
     std::string t = a->target && a->target->type ? map_type(a->target->type) : "i32";
     // 字符串字面量赋给切片：构造 {ptr,i32}，而非把常量指针 @.str 直接存
     std::string v;
@@ -2196,6 +2351,51 @@ std::string Translator::eval_assign(Expr* e, Expr::Assign* a) {
     return v;
 }
 
+// 类左值 = 类右值
+// 字段是内联存储：把源对象逐字段搬进字段自身，不另分配，字段因此不悬垂。
+// 变量是实例指针槽：另分配副本逐字段复制，源对象保持不变。
+std::string Translator::assign_class_value(Expr* target, Expr* value) {
+    Class* pc = as_class(target->type);
+    if (!pc) return "0";
+    std::string src = eval_converted(value);
+    std::string ptr = eval_lvalue(target);
+    if (ptr.empty()) return "0";
+    // 存储形态决定写法：引用左值与内联字段指向的就是对象本身，逐字段搬进去；
+    // 类实例变量的槽存的是实例指针，须另分配副本后改写指针。
+    // 引用左值是写穿而非重新绑定，与 int-& 一致（s = b 改的是 s 指向的对象）
+    Expr* dt = target->sym ? target->sym->get_type() : nullptr;
+    bool ref_target = dt && dt->is_reference();
+    if (ref_target || target->get_member()) {
+        emit_fields_copy(pc, src, ptr, true);
+        return ptr;
+    }
+    std::string old = ir_.reg();
+    emit_instr(old + " = load ptr, ptr " + ptr);
+    std::string same = ir_.reg();
+    emit_instr(same + " = icmp eq ptr " + old + ", " + src);
+    std::string copy_l = ir_.named_label("assign.copy");
+    std::string cont_l = ir_.named_label("assign.cont");
+    // 自赋值：源与目标同址，复制后再释放会毁掉复制源本身，直接跳过
+    emit_term("br i1 " + same + ", label %" + cont_l + ", label %" + copy_l);
+    open_block(copy_l);
+    // 先释放目标原有实例：副本存储在循环里可能就是这一块，
+    // 拷贝会覆盖它，先拷贝后释放等于对刚被覆盖的对象调 DROP
+    emit_guard_call(find_special(pc, SpecialMethod::Kind::Drop), old);
+    // malloc 类（或 malloc 变量）被赋值时复制的是堆上的对象（spec.md），
+    // 否则副本落在栈上，free() 会拿到栈指针
+    bool heap = pc->specs.has(SpecKind::Malloc);
+    if (!heap && target->sym)
+        heap = ctx_.malloc_vars.count(static_cast<const VarItem*>(
+                    target->sym->node)) > 0;
+    std::string dst = emit_class_copy(pc, src, heap);
+    emit_instr("store ptr " + dst + ", ptr " + ptr);
+    emit_term("br label %" + cont_l);
+    open_block(cont_l);
+    std::string r = ir_.reg();
+    emit_instr(r + " = load ptr, ptr " + ptr);
+    return r;
+}
+
 std::string Translator::eval_index(Expr* e, Expr::Index*) {
     std::string addr = eval_lvalue(e);
     if (addr.empty()) return "0";
@@ -2221,14 +2421,7 @@ std::string Translator::eval_member(Expr* e, Expr::Member* m) {
                 auto git = global_of_->find(vi);
                 if (git != global_of_->end()) g = git->second;
             }
-            if (!g.empty()) {
-                std::string addr = field_lvalue(e, "@" + g);
-                if (is_fixed_array(e->type)) return addr;
-                std::string t = e->type ? map_type(e->type) : "i32";
-                std::string r = ir_.reg();
-                emit_instr(r + " = load " + t + ", ptr " + addr);
-                return r;
-            }
+            if (!g.empty()) return eval_field_value(e, "@" + g);
         }
     }
     // 数组/切片的 .len：定长数组的长度是编译期常量
@@ -2276,13 +2469,7 @@ std::string Translator::eval_member(Expr* e, Expr::Member* m) {
                 emit_instr(addr + " = getelementptr " + it->second.llvm_name +
                            ", ptr " + base + ", i32 0, i32 " +
                            std::to_string(fit->second));
-                std::string fa = field_lvalue(e, addr);
-                // 定长数组成内联字段：值即字段地址
-                if (is_fixed_array(e->type)) return fa;
-                std::string t = e->type ? map_type(e->type) : "i32";
-                std::string v = ir_.reg();
-                emit_instr(v + " = load " + t + ", ptr " + fa);
-                return v;
+                return eval_field_value(e, addr);
             }
         }
     }
@@ -2677,7 +2864,7 @@ void Translator::emit_declare(Func& f) {
     ir_.emit_type(sig);
 }
 
-// 内置 free：释放 malloc 类实例。类方法内的裸 free() 释放 self
+// 内置 free：释放 malloc 实例。类方法内的裸 free() 释放 self
 std::string Translator::eval_free_builtin(Expr* e, Expr::Call* c) {
     (void)e;
     if (!c->free_builtin || !c->callee) return "";
@@ -2692,6 +2879,7 @@ std::string Translator::eval_free_builtin(Expr* e, Expr::Call* c) {
         }
         ir_.need_free();
         emit_instr("call void @free(ptr " + s + ")");
+        if (c2) self_free_cls_.insert(c2);
         return "0";
     }
     auto* m = c->callee->get_member();
@@ -2705,7 +2893,11 @@ std::string Translator::eval_free_builtin(Expr* e, Expr::Call* c) {
         if (SpecialMethod* drop = find_special(cls, SpecialMethod::Kind::Drop))
             emit_instr("call void @" + IRWriter::quote(mangler_.of(drop)) +
                        "(ptr " + self + ")");
+        // 释放即结束这一次持有，与分配时的 REF 配对
+        emit_guard_call(find_special(cls, SpecialMethod::Kind::Deref), self);
     }
+    // DEREF 内部自行 free 过就不再重复释放
+    if (cls && self_free_cls_.count(cls)) return "0";
     ir_.need_free();
     emit_instr("call void @free(ptr " + self + ")");
     return "0";
@@ -2733,23 +2925,9 @@ std::string Translator::eval_default_ctor(Expr* e, Expr::Call* c) {
     return slot;
 }
 
-// 类构造：C(...) — resolved 是 INIT 特殊方法
-std::string Translator::eval_ctor_call(Expr* e, Expr::Call* c, SpecialMethod* sm) {
-    if (sm->kind != SpecialMethod::Kind::Init) return "0";
-    Class* cls = as_class(e->type);
-    if (!cls) return "0";
-    auto it = classes_.find(cls);
-    if (it == classes_.end()) return "0";
-    std::string slot;
-    bool is_malloc = cls->specs.has(SpecKind::Malloc);
-    if (is_malloc) {
-        ir_.need_malloc();
-        slot = ir_.reg();
-        emit_instr(slot + " = call ptr @malloc(i64 " +
-                   emit_size_of(it->second.llvm_name) + ")");
-    } else {
-        slot = entry_alloca(it->second.llvm_name);
-    }
+// 把 C(...) 的 INIT 就地发到已分配好的 slot 上：字段内联构造与普通构造共用
+void Translator::emit_ctor_into(Expr::Call* c, SpecialMethod* sm, Class* cls,
+                                const std::string& slot) {
     emit_field_defaults(cls, slot);
     std::vector<std::string> args;
     args.push_back("ptr " + slot);
@@ -2795,6 +2973,26 @@ std::string Translator::eval_ctor_call(Expr* e, Expr::Call* c, SpecialMethod* sm
     }
     sig += ")";
     emit_instr(sig);
+}
+
+// 类构造：C(...) — resolved 是 INIT 特殊方法
+std::string Translator::eval_ctor_call(Expr* e, Expr::Call* c, SpecialMethod* sm) {
+    if (sm->kind != SpecialMethod::Kind::Init) return "0";
+    Class* cls = as_class(e->type);
+    if (!cls) return "0";
+    auto it = classes_.find(cls);
+    if (it == classes_.end()) return "0";
+    std::string slot;
+    bool is_malloc = cls->specs.has(SpecKind::Malloc);
+    if (is_malloc) {
+        ir_.need_malloc();
+        slot = ir_.reg();
+        emit_instr(slot + " = call ptr @malloc(i64 " +
+                   emit_size_of(it->second.llvm_name) + ")");
+    } else {
+        slot = entry_alloca(it->second.llvm_name);
+    }
+    emit_ctor_into(c, sm, cls, slot);
     if (is_malloc) emit_bind_ref(cls, slot, SpecialMethod::Kind::Ref);
     return slot;
 }

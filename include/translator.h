@@ -40,11 +40,10 @@ private:
     std::vector<Diagnostic> diags_;
     bool has_error_ = false;
 
-    struct Field { VarItem* var; int index; std::string ir_type; };
+    // 字段类型取自 VarItem 或其所在 VarList，故解析后存在 Field 上统一使用
+    struct Field { VarItem* var; int index; Expr* type; std::string ir_type; };
     struct ClassInfo {
         std::string llvm_name;
-        // 存放实例字节数的全局常量，由 LLVM 常量表达式算出真实布局
-        std::string size_global;
         std::vector<Field> fields;
         // 实例字段按 VarItem 身份索引；__value 是 inject 合成的承载字段
         std::unordered_map<const VarItem*, int> field_index;
@@ -54,6 +53,12 @@ private:
         std::vector<Field> static_fields;
     };
     std::unordered_map<Class*, ClassInfo> classes_;
+    // 类按声明顺序登记：类结构体类型要按内联字段依赖拓扑发射，
+    // unordered_map 的遍历顺序不稳定，故另存一份有序表
+    std::vector<Class*> class_order_;
+    // 特殊方法内出现过裸 free() 的类：这些类的实例由钩子自行释放，
+    // a.free() 触发完钩子后不再重复 @free。类的发射早于所有函数，故此处可查
+    std::unordered_set<Class*> self_free_cls_;
 
     struct GlobalVar {
         VarItem* var;
@@ -76,6 +81,9 @@ private:
         std::string slot;         // Drop: 实例指针槽；Deref: 指针变量槽
         std::string drop_fn;      // Drop 用
         std::string ptr;          // Restore: llvm.stacksave 的返回值
+        // Deref 用：从宿主实例逐级 getelementptr 到目标指针字段。
+        // 空路径表示清理指针变量本身（槽里直接就是那个指针）
+        std::vector<std::pair<std::string, int>> path;
         Class*      cls = nullptr; // Deref 用
         int         scope_depth = 0;
     };
@@ -95,11 +103,16 @@ private:
         // 无返回变量的 main：签名是 i32 但体内按 void 走，裸 return 需补 i32 0
         bool plain_main = false;
         std::vector<CleanupEntry> drops;
+        // 本函数内按 malloc 分配实例的类变量：赋值时副本同样要落在堆上，
+        // 否则 free() 会拿到栈指针
+        std::unordered_set<const VarItem*> malloc_vars;
         int scope_depth = 0;
         // 类返回：返回变量 r 即 sret 目标对象，r 的值是 %ret 指针
         const VarItem* ret_obj_var = nullptr;
         std::string ret_obj_ptr;
         Class* ret_obj_cls = nullptr;
+        // 引用返回变量：对其赋值是绑定，存被引用对象的地址
+        const VarItem* ret_ref_var = nullptr;
     };
     Ctx ctx_;
     std::vector<LoopCtx> loops_;
@@ -108,6 +121,10 @@ private:
 
     void collect_classes();
     void collect_classes_decl(Decl* d);
+    // 每个类的内联类字段所指向的类
+    std::unordered_map<Class*, std::vector<Class*>> inline_deps() const;
+    // 按内联字段依赖拓扑发射全部类结构体类型
+    void emit_class_types();
 
     SpecialMethod* find_special(Class* cls, SpecialMethod::Kind k) const;
     Class*         pointee_class(Expr* t);
@@ -115,6 +132,11 @@ private:
     void           emit_bind_ref(Class* cls, const std::string& val,
                                  SpecialMethod::Kind k);
     void           register_deref(const std::string& slot, Class* cls, int depth = -1);
+    // 对象销毁时清理其指针字段：字段指向的类有 DEREF 才登记。
+    // 内联类字段逐级下钻，path 记录从宿主实例到目标指针字段的导航
+    void           register_field_derefs(const std::string& slot, Class* cls,
+                                         int depth = -1,
+                                         std::vector<std::pair<std::string, int>> path = {});
 
     std::string map_type(Expr* t);
 
@@ -151,10 +173,19 @@ private:
     // 包装类隐式转换的 IR：解包 -> 数值 cast -> 打包
     std::string emit_wrap_convert(Expr* e);
     // 类拷贝构造：新建实例并逐字段复制
-    std::string emit_class_copy(Class* cls, const std::string& src);
+    // heap 为真时副本分配在堆上并按 malloc 实例触发 REF
+    std::string emit_class_copy(Class* cls, const std::string& src,
+                                bool heap = false);
+    std::string emit_malloc_inst(Class* cls);
+    // 把 C(...) 的 INIT 就地发到已分配好的 slot 上
+    void emit_ctor_into(Expr::Call* c, SpecialMethod* sm, Class* cls,
+                        const std::string& slot);
     // 逐字段拷贝 src 所指对象到 dst 所指对象
+    // copy_holds 为真表示复制出新的一份持有（指针字段各计一次 REF）；
+    // 为假表示只是把已构造好的对象搬进 dst 所指存储（如返回值落到调用方
+    // 的 sret 槽），不产生新的持有
     void emit_fields_copy(Class* cls, const std::string& src,
-                          const std::string& dst);
+                          const std::string& dst, bool copy_holds);
     // 构造时为实例字段写入声明处默认值（INIT body 之前）
     void emit_field_defaults(Class* cls, const std::string& slot);
     // 模块入口为所有 static 字段写入声明处默认值
@@ -235,6 +266,10 @@ private:
     std::string field_addr_of(Expr* e);
     // 引用字段的槽存被引用对象的地址，取其 lvalue 需先取出该地址
     std::string field_lvalue(Expr* e, const std::string& slot_addr);
+    // 字段读取：slot_addr 为字段槽地址，返回字段的值
+    std::string eval_field_value(Expr* e, const std::string& slot_addr);
+    // 类左值 = 类右值：副本另行分配存储后逐字段复制，源对象保持不变
+    std::string assign_class_value(Expr* target, Expr* value);
     // 引用字段绑定：仅 INIT 内对字段的直接赋值是绑定，返回被绑定对象的地址
     std::string bind_ref_field(Expr* target, Expr* value);
     std::string cast_value(const std::string& v,

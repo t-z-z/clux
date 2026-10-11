@@ -1,0 +1,16 @@
+// malloc 写在变量声明上时，赋值副本同样落在堆上：否则副本是栈指针，
+// free() 会拿到非法地址
+import cstdio
+@Plain {
+    pub int n = 0
+}
+main() int r {
+    malloc Plain a = Plain()
+    Plain b = Plain()
+    b.n = 5
+    a = b
+    r = a.n
+    a.free()
+    printf("freed\n")
+    return
+}

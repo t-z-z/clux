@@ -1,0 +1,24 @@
+import cstdio
+// 类复制即多一份持有：被复制的指针字段为目标类的 REF 计一次，
+// 引用计数在全部持有者销毁后回到 0
+@Res {
+    pub int n = 0
+
+    pub REF { n += 1 }
+    pub DEREF { n -= 1 }
+}
+@Owner {
+    pub Res-* held
+
+    pub INIT(Res-* p) { self.held = p }
+}
+main() int r {
+    Res v = Res()
+    Owner a = Owner(null)
+    a.held = v-&
+    Owner b = a
+    Owner c = b
+    r = 0
+    if v.n != 3 { r = 1 }
+    return
+}

@@ -67,6 +67,7 @@ void SemanticAnalyzer::analyze_rest() {
     collect_extern_vars();
     walk(cu_);
     report_infer_arrays();
+    check_embedded_layout();
 }
 
 // extern 块内的变量由外部库定义，存储不在本模块，其类型不受模块级限制
@@ -492,15 +493,16 @@ void SemanticAnalyzer::visit_func(Func& f) {
         }
         return;
     }
-    // 引用返回类型：和 C++ 一样只能返回左值，返回的是被引用对象的别名。
-    // 返回变量的存储随栈帧消失，绑定它没有意义，故直接拒绝
+    // 引用返回：返回的是被引用对象的地址。返回变量只是把该地址带出去的
+    // 通道，其存储仍在栈帧上，所以必须用寄存器返回；能否绑定见 check_ref_return
     if (!f.returns.empty() && f.returns.back()) {
         VarList* rl = f.returns.back();
-        Expr* ty = rl->vars.empty() ? rl->type
-                                    : rl->vars.back()->type;
-        if (ty && ty->is_reference())
-            error(rl->vars.empty() ? rl->loc : rl->vars.back()->loc,
-                  "cannot return a reference type");
+        VarItem* rv = rl->vars.empty() ? nullptr : rl->vars.back();
+        Expr* ty = rv ? (rv->type ? rv->type : rl->type) : rl->type;
+        if (ty && ty->is_reference()) {
+            f.ret_via_reg = true;
+            check_ref_return(f);
+        }
     }
     // body 为空（未写 {}）时不检查返回值是否被赋值
     if (!f.body) return;
@@ -511,6 +513,117 @@ void SemanticAnalyzer::visit_func(Func& f) {
 
 
 
+
+// 引用返回绑定的根变量：逐层剥到最外层。
+// 局部变量的存储在栈帧上，返回即悬垂；形参、全局量、字段沿此路径都被剥掉
+static const VarItem* ref_ret_root(Expr* e) {
+    while (e) {
+        if (e->sym && e->sym->kind == SymbolKind::Variable)
+            if (auto* vi = dynamic_cast<VarItem*>(e->sym->node)) return vi;
+        if (auto* m = e->get_member()) { e = m->target; continue; }
+        if (auto* ix = e->get_index()) { e = ix->target; continue; }
+        if (auto* u = e->get_unary()) { e = u->operand; continue; }
+        break;
+    }
+    return nullptr;
+}
+
+static void scan_ref_ret_expr(Expr* e, const VarItem* ret_var,
+                              std::vector<std::pair<Expr*, Location>>& out) {
+    if (!e) return;
+    if (auto* a = e->get_assign()) {
+        if (a->target && a->target->sym && a->target->sym->node == ret_var)
+            out.emplace_back(a->value, a->value ? a->value->loc : e->loc);
+        scan_ref_ret_expr(a->target, ret_var, out);
+        scan_ref_ret_expr(a->value, ret_var, out);
+        return;
+    }
+    if (auto* b = e->get_binary()) {
+        scan_ref_ret_expr(b->left, ret_var, out);
+        scan_ref_ret_expr(b->right, ret_var, out);
+    } else if (auto* u = e->get_unary()) {
+        scan_ref_ret_expr(u->operand, ret_var, out);
+    } else if (auto* c = e->get_call()) {
+        scan_ref_ret_expr(c->callee, ret_var, out);
+        for (Expr* a : c->args) scan_ref_ret_expr(a, ret_var, out);
+    } else if (auto* t = e->get_ternary()) {
+        scan_ref_ret_expr(t->cond, ret_var, out);
+        scan_ref_ret_expr(t->then_expr, ret_var, out);
+        scan_ref_ret_expr(t->else_expr, ret_var, out);
+    } else if (auto* ix = e->get_index()) {
+        scan_ref_ret_expr(ix->target, ret_var, out);
+        scan_ref_ret_expr(ix->index, ret_var, out);
+    } else if (auto* m = e->get_member()) {
+        scan_ref_ret_expr(m->target, ret_var, out);
+    } else if (auto* ca = e->get_cast()) {
+        scan_ref_ret_expr(ca->operand, ret_var, out);
+    } else if (auto* ar = e->get_array()) {
+        for (Expr* mem : ar->members) scan_ref_ret_expr(mem, ret_var, out);
+        scan_ref_ret_expr(ar->fill_value, ret_var, out);
+    }
+}
+
+void SemanticAnalyzer::scan_ref_ret(
+        Stmt* s, const VarItem* ret_var,
+        std::unordered_set<const VarItem*>& locals,
+        std::vector<std::pair<Expr*, Location>>& ret_values) {
+    if (!s) return;
+    if (auto* b = s->get_block()) {
+        for (Stmt* x : b->stmts) scan_ref_ret(x, ret_var, locals, ret_values);
+        return;
+    }
+    if (auto* v = s->get_var_decl()) {
+        if (v->vars)
+            for (VarItem* vi : v->vars->vars)
+                if (vi) locals.insert(vi);
+        return;
+    }
+    if (auto* e = s->get_expr()) {
+        scan_ref_ret_expr(e->expr, ret_var, ret_values);
+        return;
+    }
+    if (auto* i = s->get_if()) {
+        scan_ref_ret_expr(i->condition, ret_var, ret_values);
+        scan_ref_ret(i->then_branch, ret_var, locals, ret_values);
+        scan_ref_ret(i->else_branch, ret_var, locals, ret_values);
+        return;
+    }
+    if (auto* w = s->get_while()) {
+        scan_ref_ret_expr(w->condition, ret_var, ret_values);
+        scan_ref_ret(w->body, ret_var, locals, ret_values);
+        return;
+    }
+    if (auto* fo = s->get_for()) {
+        scan_ref_ret(fo->init, ret_var, locals, ret_values);
+        scan_ref_ret_expr(fo->condition, ret_var, ret_values);
+        scan_ref_ret(fo->next, ret_var, locals, ret_values);
+        scan_ref_ret(fo->body, ret_var, locals, ret_values);
+    }
+}
+
+// 返回值只能经返回变量带出（return 不带表达式），故核对返回变量的每次赋值：
+// 绑定目标既不能是本函数的局部变量，也不能是 null
+void SemanticAnalyzer::check_ref_return(Func& f) {
+    VarList* rl = f.returns.back();
+    VarItem* rv = (rl && !rl->vars.empty()) ? rl->vars.back() : nullptr;
+    if (!rv) return;
+    std::unordered_set<const VarItem*> locals;
+    std::vector<std::pair<Expr*, Location>> ret_values;
+    if (rv->init) ret_values.emplace_back(rv->init, rv->init->loc);
+    if (f.body) scan_ref_ret(f.body, rv, locals, ret_values);
+    for (auto& [val, loc] : ret_values) {
+        if (!val) continue;
+        if (val->type && val->type->is_null()) {
+            error(loc, "cannot return a null reference");
+            continue;
+        }
+        const VarItem* root = ref_ret_root(val);
+        if (root && locals.count(root))
+            error(loc, "cannot return a reference to local variable '" +
+                       std::string(root->name) + "': its storage is gone once "
+                       "the function returns");
+    }
+}
 
 void SemanticAnalyzer::visit_special_method(SpecialMethod& sm) {
     check_no_slice(sm.params, "parameter");
@@ -671,13 +784,19 @@ void SemanticAnalyzer::visit_var_list(VarList& vl) {
         // 形参在进入函数时由实参绑定，字段在 INIT 中绑定，二者都不在声明处。
         // 绑定不走常规值转换。
         if (dt && dt->is_reference()) {
-            // 返回变量的存储随栈帧消失，绑定它没有意义（visit_func 已单独报错）
             if (is_return_var_item(var)) continue;
             if (!var->init) {
                 if (!is_param_item(var) && !is_field_item(var))
                     error(var->loc, "reference must be initialized");
             } else if (!var->init->type) {
                 // 解析器已报错
+            } else if (var->init->type->is_reference()) {
+                // 初值本身已是引用（如引用返回值的接收）：沿用它的绑定即可，
+                // 调用结果不是 lvalue，但绑定对象确已存在
+                Expr* it = var->init->type->get_reference()->target;
+                Expr* tgt = dt->get_reference()->target;
+                if (tgt && it && !is_same_type(it, tgt))
+                    error(var->init->loc, "reference target type mismatch");
             } else if (!var->init->is_lvalue) {
                 error(var->init->loc,
                       "reference must be initialized with an lvalue");
@@ -768,6 +887,11 @@ void SemanticAnalyzer::visit_class(Class& c) {
                 error(vi->loc, "array slice field '" + std::string(vi->name) +
                       "' is not allowed: the size of the class would not be "
                       "computable");
+            // 按值内嵌的类字段参与类布局，登记下来供 check_embedded_layout 查环
+            if (Class* fc = as_class(vi->type ? vi->type : vl->type)) {
+                if (!embed_.count(&c)) embed_order_.push_back(&c);
+                embed_[&c].emplace_back(fc, vi);
+            }
             if (!vi->type || !vi->type->is_reference()) continue;
             std::string f = "reference field '" + std::string(vi->name) + "'";
             if (is_static) {
@@ -784,6 +908,34 @@ void SemanticAnalyzer::visit_class(Class& c) {
                 error(vi->loc, f + " must be bound by an assignment at the "
                       "top level of INIT");
         }
+    }
+}
+
+// 类字段按值内嵌使类型定义彼此嵌套：自身内联或相互内联时既算不出实例大小，
+// 也生成不出合法的布局，只能报错要求改用指针
+bool SemanticAnalyzer::embed_visit(Class* c, std::unordered_map<Class*, int>& state) {
+    state[c] = 1;
+    auto it = embed_.find(c);
+    if (it != embed_.end()) {
+        for (auto& [fc, vi] : it->second) {
+            if (state[fc] == 1) {
+                error(vi->loc, "class field of type '" + std::string(fc->name) +
+                      "' is embedded in itself: a class cannot contain itself "
+                      "by value, use a pointer instead");
+                return false;
+            }
+            if (state[fc] == 0 && !embed_visit(fc, state)) return false;
+        }
+    }
+    state[c] = 2;
+    return true;
+}
+
+void SemanticAnalyzer::check_embedded_layout() {
+    std::unordered_map<Class*, int> state;
+    for (Class* c : embed_order_) {
+        if (state[c]) continue;
+        if (!embed_visit(c, state)) return;
     }
 }
 
@@ -934,7 +1086,7 @@ Symbol* SemanticAnalyzer::find_operator_overload(OpKind op, Expr& type, Expr& ot
         if (pl->vars.empty() || !pl->vars[0]) continue;
         Expr* pt = pl->vars[0]->type ? pl->vars[0]->type : pl->type;
         if (!pt) continue;
-        if (is_same_type(&other, pt) || can_convert_to(&other, pt)) {
+        if (can_convert_to(&other, pt)) {
             if (matched_param) *matched_param = pt;
             return &member;
         }
@@ -1343,10 +1495,9 @@ void SemanticAnalyzer::visit_expr_member(Expr::Member& m) {
         return;
     }
 
-    // malloc 类的内置 free：a.free() 释放堆实例
+    // malloc 实例的内置 free：a.free() 释放堆实例
     if (m.member == "free" && m.target->type) {
-        Class* cls = wrap_or_plain_class(m.target->type);
-        if (cls && cls->specs.has(SpecKind::Malloc)) {
+        if (is_malloc_value(m.target)) {
             current_expr->sym = nullptr;
             current_expr->type = typeVoid;
             current_expr->is_lvalue = false;

@@ -1,0 +1,13 @@
+// 类不能按值内嵌自身：布局大小算不出，也生成不出合法的 LLVM 类型。
+// 要表达递归结构必须用指针。
+@Node {
+    pub int v = 0
+    pub Node next
+
+    pub INIT() { self.v = 0 }
+}
+main() int r {
+    Node a = Node()
+    r = a.v
+    return
+}
