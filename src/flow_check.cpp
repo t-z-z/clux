@@ -1,7 +1,5 @@
 #include "../include/flow_check.h"
-
 #include "../include/semantic.h"
-
 #include "../include/sem_types.h"
 
 #include <cstdio>

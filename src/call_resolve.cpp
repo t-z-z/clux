@@ -1,5 +1,5 @@
 #include "../include/semantic.h"
-#include "sem_types.h"
+#include "../include/sem_types.h"
 
 namespace cx {
 

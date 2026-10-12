@@ -1,11 +1,10 @@
-#include "const_eval.h"
+#include "../include/const_eval.h"
+#include "../include/ast.h"
+#include "../include/sem_types.h"
+#include "../include/semantic.h"
 
 #include <algorithm>
 #include <climits>
-
-#include "ast.h"
-#include "sem_types.h"
-#include "semantic.h"
 
 namespace cx {
 

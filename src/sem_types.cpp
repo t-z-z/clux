@@ -1,7 +1,7 @@
-#include <charconv>
-
 #include "../include/sem_types.h"
 #include "../include/semantic.h"
+
+#include <charconv>
 
 namespace cx {
 
