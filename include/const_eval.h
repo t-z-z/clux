@@ -1,11 +1,11 @@
 #pragma once
 
+#include "token.h"
+#include "ast.h"
+
 #include <optional>
 #include <functional>
 #include <string>
-
-#include "token.h"
-#include "ast.h"
 
 namespace cx {
 

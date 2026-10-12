@@ -1,8 +1,10 @@
 #pragma once
 #include "token.h"
+
 #include <string>
 #include <vector>
 #include <optional>
+
 namespace cx{
 
 enum class DiagLevel{Error, Warning, Note, Help};
