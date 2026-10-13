@@ -1,0 +1,75 @@
+// cmath.cx
+// C 数学函数，对应 <math.h>
+// 只声明 double 版本：clux 无 long double，float 后缀版本按需再补
+
+extern "C" {
+    // 三角函数
+    acos(double x) double r{}
+    asin(double x) double r{}
+    atan(double x) double r{}
+    atan2(double y double x) double r{}
+    cos(double x) double r{}
+    sin(double x) double r{}
+    tan(double x) double r{}
+    acosh(double x) double r{}
+    asinh(double x) double r{}
+    atanh(double x) double r{}
+    cosh(double x) double r{}
+    sinh(double x) double r{}
+    tanh(double x) double r{}
+
+    // 指数与对数
+    exp(double x) double r{}
+    exp2(double x) double r{}
+    expm1(double x) double r{}
+    frexp(double value int-* exp) double r{}
+    ldexp(double x int exp) double r{}
+    ilogb(double x) int r{}
+    log(double x) double r{}
+    log10(double x) double r{}
+    log1p(double x) double r{}
+    log2(double x) double r{}
+    logb(double x) double r{}
+    scalbn(double x int n) double r{}
+    scalbln(double x long n) double r{}
+
+    // 幂与根
+    cbrt(double x) double r{}
+    hypot(double x double y) double r{}
+    pow(double x double y) double r{}
+    sqrt(double x) double r{}
+
+    // 误差函数与伽马函数
+    erf(double x) double r{}
+    erfc(double x) double r{}
+    lgamma(double x) double r{}
+    tgamma(double x) double r{}
+
+    // 取整与绝对值
+    ceil(double x) double r{}
+    fabs(double x) double r{}
+    floor(double x) double r{}
+    nearbyint(double x) double r{}
+    rint(double x) double r{}
+    lrint(double x) long r{}
+    llrint(double x) long r{}
+    round(double x) double r{}
+    lround(double x) long r{}
+    llround(double x) long r{}
+    trunc(double x) double r{}
+
+    // 取余与符号
+    fmod(double x double y) double r{}
+    remainder(double x double y) double r{}
+    remquo(double x double y int-* quo) double r{}
+    copysign(double x double y) double r{}
+
+    // 最值与乘加
+    fdim(double x double y) double r{}
+    fmax(double x double y) double r{}
+    fmin(double x double y) double r{}
+    fma(double x double y double z) double r{}
+
+    // 邻接值；modf 是修饰符关键字，不声明
+    nextafter(double x double y) double r{}
+}

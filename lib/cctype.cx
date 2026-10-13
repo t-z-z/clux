@@ -1,0 +1,23 @@
+// cctype.cx
+// C 字符分类，对应 <ctype.h>
+// 参数为 int（EOF 也在 int 范围内），不是 char
+
+extern "C" {
+    // 分类：非零表示属于该类
+    isalnum(int c) int r{}
+    isalpha(int c) int r{}
+    isblank(int c) int r{}
+    iscntrl(int c) int r{}
+    isdigit(int c) int r{}
+    isgraph(int c) int r{}
+    islower(int c) int r{}
+    isprint(int c) int r{}
+    ispunct(int c) int r{}
+    isspace(int c) int r{}
+    isupper(int c) int r{}
+    isxdigit(int c) int r{}
+
+    // 转换
+    tolower(int c) int r{}
+    toupper(int c) int r{}
+}

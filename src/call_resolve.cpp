@@ -52,7 +52,7 @@ bool SemanticAnalyzer::resolve_functor_call(Expr* call_expr, Expr::Call& c) {
         Expr* ret = typeVoid;
         if (!op->returns.empty() && op->returns.back() && op->returns.back()->type)
             ret = op->returns.back()->type;
-        check_call_args(op->params, c.args, op->loc);
+        check_call_args(op->params, c.args, call_expr->loc);
         call_expr->sym = nullptr;
         call_expr->type = ret;
         call_expr->is_lvalue = ref_is_lvalue(ret);
@@ -88,7 +88,7 @@ bool SemanticAnalyzer::resolve_ctor_call(Expr* call_expr, Expr::Call& c,
         call_fail(call_expr, "no matching constructor for class '" + name + "'");
         return true;
     }
-    if (ctor) check_call_args(ctor->params, c.args, ctor->loc);
+    if (ctor) check_call_args(ctor->params, c.args, call_expr->loc);
 
     call_expr->sym = nullptr;
     call_expr->type = make_named_type(call_expr->loc, cls->name, cls, cls_scope);
@@ -218,7 +218,7 @@ void SemanticAnalyzer::resolve_named_call(Expr* call_expr, Expr::Call& c,
 
     pack_array_args(func, call_expr, c);
     pack_class_args(func, call_expr, c);
-    check_call_args(func, c.args);
+    check_call_args(func, c.args, call_expr->loc);
 
     Expr* ret = typeVoid;
     if (!func->returns.empty() && func->returns.back() &&
@@ -324,8 +324,10 @@ void SemanticAnalyzer::check_call_args(const std::vector<VarList*>& params_lists
     }
 }
 
-// () 传参：按形参类型逐一对实参做转换判定
-void SemanticAnalyzer::check_call_args(Func* fn, const std::vector<Expr*>& args) {
+// () 传参：按形参类型逐一对实参做转换判定。
+// loc 是调用点位置，实参个数不符时报在那里而不是被调函数的声明处
+void SemanticAnalyzer::check_call_args(Func* fn, const std::vector<Expr*>& args,
+                                       const Location& loc) {
     if (!fn) return;
     if (fn->is_variadic) {
         // 变参调用：只检查固定形参前缀，多余实参不做转换检查
@@ -334,10 +336,10 @@ void SemanticAnalyzer::check_call_args(Func* fn, const std::vector<Expr*>& args)
             for (VarItem* vi : vl->vars) if (vi) ++fixed;
         std::vector<Expr*> prefix(args.begin(),
             args.begin() + std::min(args.size(), fixed));
-        check_call_args(fn->params, prefix, fn->loc);
+        check_call_args(fn->params, prefix, loc);
         return;
     }
-    check_call_args(fn->params, args, fn->loc);
+    check_call_args(fn->params, args, loc);
 }
 
 // 非报错式匹配：形参数量一致且每个实参可转换

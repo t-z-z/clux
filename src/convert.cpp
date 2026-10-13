@@ -221,9 +221,9 @@ void SemanticAnalyzer::check_literal_range(Expr* value, Expr* dst,
     auto* lit = value->get_literal();
     bool lit_signed = false; int lit_bits = 0;
     if (!literal_int_range(lit->kind, lit_signed, lit_bits)) return;
-    unsigned long long v = 0;
-    if (!parse_uint_literal(lit->value, v)) return;
-    if (v > int_max_value(dst_signed, dst_bits)) {
+    std::string dec;
+    if (!parse_int_literal(lit->value, dec)) return;
+    if (dec_cmp(dec, int_max_text(dst_signed, dst_bits)) > 0) {
         error(loc, "integer literal " + std::string(lit->value) +
                    " is out of range for " + type_to_key(*dst) +
                    " in " + context);

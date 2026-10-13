@@ -1,0 +1,8 @@
+// csignal.cx
+// C 信号处理，对应 <signal.h>
+// SIGxxx 与 SIG_DFL/SIG_IGN 是宏，不声明；处理器类型写作 $(int)void
+
+extern "C" {
+    signal(int sig $(int)void handler) $(int)void r{}
+    raise(int sig) int r{}
+}

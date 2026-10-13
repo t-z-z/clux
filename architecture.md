@@ -52,7 +52,10 @@ lib.md           标准库 API 文档
 future.md        未来特性规划
 ```
 
-标准库以 `.cx` 源码形式提供，当前包含 `lib/cstdio.cx`。`import` 解析与路由由前端入口负责，默认自动导入 `std`。
+标准库以 `.cx` 源码形式提供，`lib/` 下每个文件对应一个 C 头文件的 `extern "C"` 绑定：
+`cstdio`（stdio.h）、`cstdlib`（stdlib.h）、`cstring`（string.h）、`cmath`（math.h）、
+`cctype`（ctype.h）、`ctime`（time.h）、`cinttypes`（inttypes.h）、`csignal`（signal.h）、
+`clocale`（locale.h）、`cerrno`（errno.h）。`import` 解析与路由由前端入口负责，默认自动导入 `std`。
 
 ## 当前实现要点
 

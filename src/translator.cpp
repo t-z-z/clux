@@ -4,6 +4,12 @@
 #include "../include/sem_types.h"
 #include "../include/translator_mangle.h"
 
+#include <algorithm>
+#include <charconv>
+#include <cmath>
+#include <cstdlib>
+#include <cstring>
+#include <limits>
 #include <type_traits>
 #include <unordered_set>
 
@@ -99,19 +105,23 @@ void Translator::collect() {
 void Translator::run() {
     // 类布局有环时已报错，不再发射任何 IR
     if (has_error_) return;
-    emit_class_types();
     for (auto& g : globals_)
         ir_.emit_global(g.is_extern
             ? "@" + g.sym + " = external global " + g.ir_type
             : "@" + g.sym + " = global " + g.ir_type + " zeroinitializer");
+    for (Decl* d : cu_.top_decls) emit_decl(d);
+    if (uses_alwaysinline_)
+        ir_.emit_module_tail("attributes #0 = { alwaysinline }");
+}
+
+// 类结构体类型与 static 字段的全局存储覆盖所有模块，只能发一次
+void Translator::emit_class_decls() {
+    emit_class_types();
     for (auto& [cls, info] : classes_) {
         for (auto& f : info.static_fields)
             ir_.emit_global("@" + mangler_.field_of(f.var) +
                             " = global " + f.ir_type + " zeroinitializer");
     }
-    for (Decl* d : cu_.top_decls) emit_decl(d);
-    if (uses_alwaysinline_)
-        ir_.emit_module_tail("attributes #0 = { alwaysinline }");
 }
 
 // 模块级变量：顶层、命名空间内、extern 内的 VarList，按 mangled 名逐个登记
@@ -146,7 +156,7 @@ void Translator::collect_globals_decl(Decl* d, const std::string& prefix,
         g.ir_type = vt ? object_type(vt) : "i32";
         g.is_extern = is_extern;
         globals_.push_back(g);
-        (*global_of_)[vi] = sym;
+        global_names_[vi] = sym;
     }
 }
 
@@ -243,7 +253,7 @@ void Translator::collect_classes_decl(Decl* d) {
     switch (d->kind) {
         case DeclKind::Class: {
             Class* c = static_cast<Class*>(d);
-            ClassInfo info;
+            TranslatorClass info;
             info.llvm_name = "%" + mangler_.of(c);
             int idx = 0;
             for (Decl* m : c->members) {
@@ -252,7 +262,7 @@ void Translator::collect_classes_decl(Decl* d) {
                 bool is_static = vl->specs.has(SpecKind::Static);
                 for (VarItem* vi : vl->vars) {
                     if (!vi) continue;
-                    Field f;
+                    TranslatorField f;
                     f.var = vi;
                     f.index = is_static ? -1 : idx++;
                     // 定长数组与内联类字段在布局里占真实空间。类字段内联后
@@ -275,6 +285,7 @@ void Translator::collect_classes_decl(Decl* d) {
             }
             classes_[c] = std::move(info);
             class_order_.push_back(c);
+            own_classes_.push_back(c);
             for (Decl* m : c->members) {
                 if (m && m->kind == DeclKind::Class)
                     collect_classes_decl(m);
@@ -1547,7 +1558,7 @@ void Translator::emit_fields_copy(Class* cls, const std::string& src,
 // 字段是否有需要写入的声明处默认值：无初值的引用字段写 null，
 // 使未绑定时的读取确定性地失败而非读到垃圾。内联类字段即使自身无初值，
 // 也要为嵌套对象写入它自己的字段默认值
-bool Translator::field_has_default(const Field& f) {
+bool Translator::field_has_default(const TranslatorField& f) {
     if (!f.var) return false;
     if (f.var->type && f.var->type->is_reference()) return true;
     if (as_class(f.type)) return true;
@@ -1555,7 +1566,7 @@ bool Translator::field_has_default(const Field& f) {
 }
 
 // 写入单个字段的声明处默认值：引用字段的初值即绑定点，存被引用对象的地址
-void Translator::emit_field_default(const std::string& dst_addr, const Field& f) {
+void Translator::emit_field_default(const std::string& dst_addr, const TranslatorField& f) {
     if (!f.var) return;
     if (f.var->type && f.var->type->is_reference()) {
         // 引用字段一律在 INIT 中绑定，构造开始前写 null：
@@ -1600,8 +1611,11 @@ void Translator::emit_field_default(const std::string& dst_addr, const Field& f)
 
 // 模块入口为所有 static 字段写入声明处默认值
 void Translator::emit_static_inits() {
-    for (auto& [cls, info] : classes_) {
-        for (auto& f : info.static_fields) {
+    // 只写本模块声明的类：static 字段的默认值由声明它的模块负责一次
+    for (Class* cls : own_classes_) {
+        auto it = classes_.find(cls);
+        if (it == classes_.end()) continue;
+        for (auto& f : it->second.static_fields) {
             if (!f.var || !field_has_default(f)) continue;
             emit_field_default("@" + mangler_.field_of(f.var), f);
         }
@@ -1779,8 +1793,8 @@ std::string Translator::field_addr_of(Expr* e) {
     std::string sg = mangler_.field_of(vi);
     if (!sg.empty()) return "@" + sg;
     // 模块级变量
-    auto git = global_of_->find(vi);
-    if (git != global_of_->end()) return "@" + git->second;
+    auto git = global_names_.find(vi);
+    if (git != global_names_.end()) return "@" + git->second;
     // 实例字段：需要成员表达式的接收者
     auto* m = e->get_member();
     if (!m) return "";
@@ -1853,8 +1867,8 @@ std::string Translator::eval_ref_addr(Expr* e) {
             if (it != ctx_.slots.end() && !ctx_.ref_bound.count(vi))
                 g = it->second;
             else {
-                auto git = global_of_->find(vi);
-                if (git != global_of_->end()) g = "@" + git->second;
+                auto git = global_names_.find(vi);
+                if (git != global_names_.end()) g = "@" + git->second;
                 else {
                     std::string sg = mangler_.field_of(vi);
                     if (!sg.empty()) g = "@" + sg;
@@ -1888,8 +1902,8 @@ std::string Translator::eval_lvalue(Expr* e) {
                     return it->second;
                 }
                 // 模块级变量：其存储本身就是全局量，地址即该符号
-                auto git = global_of_->find(vi);
-                if (git != global_of_->end()) return "@" + git->second;
+                auto git = global_names_.find(vi);
+                if (git != global_names_.end()) return "@" + git->second;
                 // static 字段：模块级全局符号
                 std::string sg = mangler_.field_of(vi);
                 if (!sg.empty()) return field_lvalue(e, "@" + sg);
@@ -1949,6 +1963,116 @@ std::string Translator::data_ptr_of(Expr* e) {
     return "null";
 }
 
+// LLVM 的浮点常量只认「能被目标类型精确表示」的值：float/half 写十进制
+// 小数（1.01f、1.1h）一律报 floating point constant invalid for type，
+// 指数形式若没有小数点还会被词法当成整数。十六进制形式则必须是 16 位
+// double 位模式。故三种浮点字面量统一写成 double 位模式，与 clang 的产物同形。
+static std::string fp_bits_hex(double d) {
+    uint64_t bits = 0;
+    std::memcpy(&bits, &d, sizeof(bits));
+    static const char* kHex = "0123456789ABCDEF";
+    std::string out = "0x";
+    for (int i = 15; i >= 0; --i) out += kHex[(bits >> (i * 4)) & 0xF];
+    return out;
+}
+
+// 单精度按就近偶数舍入到半精度，返回 16 位位模式
+static uint16_t f32_to_f16_bits(float f) {
+    uint32_t x = 0;
+    std::memcpy(&x, &f, sizeof(x));
+    uint32_t sign = (x >> 16) & 0x8000u;
+    uint32_t raw_exp = (x >> 23) & 0xFFu;
+    uint32_t mant = x & 0x7FFFFFu;
+    if (raw_exp == 0xFF) {   // inf / nan
+        return (uint16_t)(sign | 0x7C00u |
+                          (mant ? (mant >> 13) | 0x200u : 0u));
+    }
+    int exp = (int)raw_exp - 127 + 15;
+    if (exp >= 0x1F) return (uint16_t)(sign | 0x7C00u);   // 溢出即 inf
+    if (exp <= 0) {       // 规格化前的次正规数，含下溢到 0
+        if (exp < -10) return (uint16_t)sign;
+        mant |= 0x800000u;
+        uint32_t shift = (uint32_t)(14 - exp);
+        uint32_t half = mant >> shift;
+        uint32_t rem = mant & ((1u << shift) - 1);
+        uint32_t mid = 1u << (shift - 1);
+        if (rem > mid || (rem == mid && (half & 1))) ++half;
+        return (uint16_t)(sign | half);
+    }
+    uint32_t half = ((uint32_t)exp << 10) | (mant >> 13);
+    uint32_t rem = mant & 0x1FFFu;
+    if (rem > 0x1000u || (rem == 0x1000u && (half & 1))) ++half;
+    return (uint16_t)(sign | half);
+}
+
+static double f16_bits_to_double(uint16_t h) {
+    uint32_t sign = (uint32_t)(h & 0x8000u) << 16;
+    uint32_t exp = (h >> 10) & 0x1Fu;
+    uint32_t mant = h & 0x3FFu;
+    double d;
+    if (exp == 0) {
+        d = std::ldexp((double)mant, -24);
+    } else if (exp == 0x1F) {
+        d = mant ? std::numeric_limits<double>::infinity()
+                 : std::numeric_limits<double>::quiet_NaN();
+    } else {
+        d = std::ldexp((double)(mant + 0x400u), (int)exp - 25);
+    }
+    return sign ? -d : d;
+}
+
+// 词法把类型后缀并进 token 文本，解析前剥掉末尾一个 f/d/h；
+// 良构的浮点文本末尾必是数字（十六进制浮点的尾数与指数都是十六进制数位），
+// 故无条件剥一个后缀字符是安全的
+static bool parse_fp_literal(std::string_view text, float& out) {
+    if (!text.empty()) {
+        char c = text.back();
+        if (c == 'f' || c == 'F' || c == 'd' || c == 'D' ||
+            c == 'h' || c == 'H')
+            text.remove_suffix(1);
+    }
+    // from_chars 要求吃满整个文本，且其浮点实现不收十六进制形式（0x1.8p3），
+    // 那种字面量退回 strtod
+    const char* b = text.data();
+    const char* e = b + text.size();
+    if (text.size() > 1 && text[0] == '0' && (text[1] == 'x' || text[1] == 'X')) {
+        std::string tmp(text);
+        char* end = nullptr;
+        double d = std::strtod(tmp.c_str(), &end);
+        if (end != tmp.c_str() + tmp.size()) return false;
+        out = (float)d;
+        return true;
+    }
+    auto res = std::from_chars(b, e, out);
+    return res.ec == std::errc() && res.ptr == e;
+}
+
+// LLVM 不接受类型后缀与 0x/0b/0o 进制前缀，整数须转成十进制文本
+static std::string literal_ir_text(LiteralKind kind, std::string_view text) {
+    switch (kind) {
+        case LiteralKind::Int8: case LiteralKind::Short: case LiteralKind::Int:
+        case LiteralKind::Long: case LiteralKind::Int128:
+        case LiteralKind::UInt8: case LiteralKind::UShort: case LiteralKind::UInt:
+        case LiteralKind::ULong: case LiteralKind::UInt128: {
+            std::string dec;
+            if (parse_int_literal(text, dec)) return dec;
+            return std::string(text);
+        }
+        case LiteralKind::Float16: case LiteralKind::Float:
+        case LiteralKind::Double: {
+            float f = 0.0f;
+            if (parse_fp_literal(text, f)) {
+                if (kind == LiteralKind::Float16)
+                    return fp_bits_hex(f16_bits_to_double(f32_to_f16_bits(f)));
+                return fp_bits_hex((double)f);
+            }
+            return std::string(text);
+        }
+        default:
+            return std::string(text);
+    }
+}
+
 std::string Translator::eval_literal(Expr::Literal* lit) {
     switch (lit->kind) {
         case LiteralKind::Bool:
@@ -1961,7 +2085,7 @@ std::string Translator::eval_literal(Expr::Literal* lit) {
         case LiteralKind::String:
             return "@" + ir_.string_const(lit->value);
         default:
-            return std::string(lit->value);
+            return literal_ir_text(lit->kind, lit->value);
     }
 }
 
@@ -2015,8 +2139,8 @@ std::string Translator::eval_identifier(Expr* e, Expr::Identifier* id) {
                 return r;
             }
             // 模块级变量：按 VarItem 身份判定，与同名的类字段区分
-            auto git = global_of_->find(vi);
-            if (git != global_of_->end()) {
+            auto git = global_names_.find(vi);
+            if (git != global_names_.end()) {
                 if (is_fixed_array(e->type)) return "@" + git->second;
                 std::string t = e->type ? map_type(e->type) : "i32";
                 std::string r = ir_.reg();
@@ -2418,8 +2542,8 @@ std::string Translator::eval_member(Expr* e, Expr::Member* m) {
         if (auto* vi = dynamic_cast<VarItem*>(e->sym->node)) {
             std::string g = mangler_.field_of(vi);
             if (g.empty()) {
-                auto git = global_of_->find(vi);
-                if (git != global_of_->end()) g = git->second;
+                auto git = global_names_.find(vi);
+                if (git != global_names_.end()) g = git->second;
             }
             if (!g.empty()) return eval_field_value(e, "@" + g);
         }
@@ -3012,6 +3136,8 @@ std::string Translator::eval_plain_call(Expr* e, Expr::Call* c, Func* fn) {
     }
 
     std::vector<std::string> args;
+    // 每个实参的 IR 类型，与 args 同步；变参调用的显式函数类型要按它拼
+    std::vector<std::string> arg_ty;
 
     // 方法调用：callee 是 Member 且 target 是类实例
     bool has_self = false;
@@ -3044,8 +3170,11 @@ std::string Translator::eval_plain_call(Expr* e, Expr::Call* c, Func* fn) {
             sret_slot = entry_alloca(ret_t);
             args.push_back("ptr sret(" + ret_t + ") " + sret_slot);
         }
+        arg_ty.push_back("ptr");
     }
-    if (has_self) args.push_back("ptr " + self_arg);
+    if (has_self) { args.push_back("ptr " + self_arg); arg_ty.push_back("ptr"); }
+    // sret / self 实参排在声明形参之前，变参签名里的固定形参要从它们之后数
+    size_t lead_args = arg_ty.size();
     // 形参 IR 类型表，用于字符串字面量按数组形参构造 {ptr,i32}；
     // param_ref 标记引用形参：实参传地址而非值
     std::vector<std::string> param_ir;
@@ -3065,6 +3194,7 @@ std::string Translator::eval_plain_call(Expr* e, Expr::Call* c, Func* fn) {
         if (ai < param_ref.size() && param_ref[ai]) {
             std::string addr = eval_ref_addr(a);
             args.push_back("ptr " + (addr.empty() ? eval(a) : addr));
+            arg_ty.push_back("ptr");
             continue;
         }
         // 变参多余实参：按 C 默认实参提升（char/short -> int，float -> double）
@@ -3092,6 +3222,7 @@ std::string Translator::eval_plain_call(Expr* e, Expr::Call* c, Func* fn) {
                 }
             }
             args.push_back(want + " " + v);
+            arg_ty.push_back(want);
             continue;
         }
         std::string want = ai < param_ir.size() ? param_ir[ai] : at;
@@ -3128,6 +3259,7 @@ std::string Translator::eval_plain_call(Expr* e, Expr::Call* c, Func* fn) {
             }
         }
         args.push_back(want + " " + v);
+        arg_ty.push_back(want);
     }
 
     bool is_main = (std::string(fn->name) == "main" && ctx_.current_class == nullptr);
@@ -3136,7 +3268,21 @@ std::string Translator::eval_plain_call(Expr* e, Expr::Call* c, Func* fn) {
     std::string call_ret;
     if (via_reg) call_ret = ret_t;
     else call_ret = ret_var ? "void" : (plain_main ? "i32" : ret_t);
-    std::string sig = call_ret + " @" + IRWriter::quote(fname) + "(";
+    std::string sig;
+    if (fn->is_variadic) {
+        // 变参调用必须写显式变参函数类型：x86-64 后端据此把 xmm 使用个数放进
+        // %al，glibc 的 printf 靠它决定浮点变参是走寄存器还是栈
+        size_t fixed = std::min(lead_args + param_ir.size(), arg_ty.size());
+        sig = call_ret + " (";
+        for (size_t i = lead_args; i < fixed; ++i) {
+            if (i > lead_args) sig += ", ";
+            sig += arg_ty[i];
+        }
+        sig += fixed ? ", ...) @" : "...) @";
+    } else {
+        sig = call_ret + " @";
+    }
+    sig += IRWriter::quote(fname) + "(";
     for (size_t i = 0; i < args.size(); ++i) {
         if (i) sig += ", ";
         sig += args[i];

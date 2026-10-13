@@ -1,0 +1,14 @@
+// 变参调用必须写显式变参函数类型：x86-64 后端据此把 xmm 使用个数放进 %al，
+// glibc 的 printf 靠 %al 决定浮点变参是从寄存器保存区取还是退回栈。
+// 前面先调用一个返回 0 的函数把 %eax 清零，稳定复现漏写 %al 的情形。
+// 退出码是 printf 打印的字符数，按此断言取值正确。
+import cstdio
+
+zero() int r { r = 0 }
+
+main() int r {
+    zero()
+    double x = 123.5
+    double y = 7.25
+    r = printf("%.4f\n", x) + printf("%.3f\n", y)
+}

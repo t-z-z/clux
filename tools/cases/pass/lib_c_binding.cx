@@ -1,0 +1,46 @@
+// C 标准库绑定：每个模块至少用到一次，保证 extern 声明始终可解析可用
+import cstdio
+import cstdlib
+import cstring
+import cmath
+import cctype
+import ctime
+import cinttypes
+import csignal
+import clocale
+import cerrno
+
+handler(int sig) {
+    printf("signal %d\n" sig)
+}
+
+main() int r {
+    char[32] buf
+    char-* s = buf
+    strcpy(s, "hello")
+    ulong n = strlen(s)
+    char c0 = buf[0]
+    printf("%s len=%lu alpha=%d\n" s n isalpha(c0))
+
+    int neg = 0 - 3
+    printf("abs=%d labs=%ld upper=%d\n" abs(neg) labs(neg) toupper(c0))
+
+    long v = strtol("1234xyz" null 10)
+    printf("strtol=%ld imax=%ld\n" v strtoimax("42" null 10))
+
+    long q = lround(sqrt(16.0))
+    printf("sqrt=%ld\n" q)
+
+    long now = time(null)
+    long back = mktime(localtime(now-&))
+    printf("roundtrip_diff=%ld\n" back - now)
+
+    printf("strerror=%s locale=%s\n" strerror(2) setlocale(0 "C"))
+    int en = __errno_location()-*
+    printf("errno=%d\n" en)
+
+    signal(2 handler)
+    raise(0)
+
+    r = 0
+}
