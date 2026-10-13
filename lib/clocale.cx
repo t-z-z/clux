@@ -1,0 +1,7 @@
+// clocale.cx
+// C 区域设置，对应 <locale.h>
+// LC_* 是宏，不声明；localeconv 返回聚合类型，不声明
+
+extern "C" {
+    setlocale(int category const char-* locale) char-* r{}
+}

@@ -13,17 +13,46 @@ namespace cx {
 
 class IRWriter;
 
+// 字段类型取自 VarItem 或其所在 VarList，故解析后存在 Field 上统一使用
+struct TranslatorField { VarItem* var; int index; Expr* type; std::string ir_type; };
+struct TranslatorClass {
+    std::string llvm_name;
+    std::vector<TranslatorField> fields;
+    // 实例字段按 VarItem 身份索引；__value 是 inject 合成的承载字段
+    std::unordered_map<const VarItem*, int> field_index;
+    int value_index = -1;
+    // static 字段：存储在模块级全局变量，不进实例 layout。
+    // 其 LLVM 符号名由 Mangler::field_of 统一分配
+    std::vector<TranslatorField> static_fields;
+};
+
+// 跨模块共享的翻译期表。AST 里的 Decl* 在各模块之间是同一批对象，
+// 引用别的模块声明的符号/类时必须查到真名与真布局，故整张表共用：
+// Mangler::of 的兜底会退化成裸声明名，类查不到则实例直接变 null。
+// 由前端统一建一份，各 Translator 共用。
+struct TranslatorTables {
+    Mangler mangler;
+    // 模块级变量的 LLVM 全局符号名
+    std::unordered_map<const VarItem*, std::string> global_names;
+    std::unordered_map<Class*, TranslatorClass> classes;
+    // 类按声明顺序登记：类结构体类型要按内联字段依赖拓扑发射，
+    // unordered_map 的遍历顺序不稳定，故另存一份有序表
+    std::vector<Class*> class_order;
+};
+
 class Translator {
 public:
-    // 模块级变量名表：跨模块编译时由前端统一传入，各模块共享同一张表，
-    // 这样引用其他模块声明的变量也能查到它的 LLVM 符号名
-    using GlobalNames = std::unordered_map<const VarItem*, std::string>;
+    Translator(CompUnit& cu, IRWriter& ir, TranslatorTables* shared = nullptr)
+        : cu_(cu), ir_(ir), tables_(shared ? shared : &own_tables_),
+          mangler_(tables_->mangler), classes_(tables_->classes),
+          class_order_(tables_->class_order),
+          global_names_(tables_->global_names) {}
 
-    Translator(CompUnit& cu, IRWriter& ir, GlobalNames* shared = nullptr)
-        : cu_(cu), ir_(ir), global_of_(shared ? shared : &own_globals_) {}
-
-    // 登记本单元的符号名。跨模块编译时须先对所有单元调用 collect 再逐个 run
+    // 登记本单元的符号名与类布局。跨模块编译时须先对所有单元调用 collect
+    // 再逐个 emit_class_decls / run
     void collect();
+    // 全部单元的类型与 static 字段全局只发一次，须在所有 collect 之后、run 之前调
+    void emit_class_decls();
     void run();
     void emit_decl(Decl* d);
 
@@ -35,27 +64,18 @@ private:
 
     CompUnit& cu_;
     IRWriter& ir_;
-    Mangler mangler_;
     bool uses_alwaysinline_ = false;
     std::vector<Diagnostic> diags_;
     bool has_error_ = false;
 
-    // 字段类型取自 VarItem 或其所在 VarList，故解析后存在 Field 上统一使用
-    struct Field { VarItem* var; int index; Expr* type; std::string ir_type; };
-    struct ClassInfo {
-        std::string llvm_name;
-        std::vector<Field> fields;
-        // 实例字段按 VarItem 身份索引；__value 是 inject 合成的承载字段
-        std::unordered_map<const VarItem*, int> field_index;
-        int value_index = -1;
-        // static 字段：存储在模块级全局变量，不进实例 layout。
-        // 其 LLVM 符号名由 Mangler::field_of 统一分配
-        std::vector<Field> static_fields;
-    };
-    std::unordered_map<Class*, ClassInfo> classes_;
-    // 类按声明顺序登记：类结构体类型要按内联字段依赖拓扑发射，
-    // unordered_map 的遍历顺序不稳定，故另存一份有序表
-    std::vector<Class*> class_order_;
+    TranslatorTables own_tables_;
+    TranslatorTables* tables_;
+    Mangler& mangler_;
+    std::unordered_map<Class*, TranslatorClass>& classes_;
+    std::vector<Class*>& class_order_;
+    std::unordered_map<const VarItem*, std::string>& global_names_;
+    // 本单元声明的类：static 字段默认值只在本模块入口写一次
+    std::vector<Class*> own_classes_;
     // 特殊方法内出现过裸 free() 的类：这些类的实例由钩子自行释放，
     // a.free() 触发完钩子后不再重复 @free。类的发射早于所有函数，故此处可查
     std::unordered_set<Class*> self_free_cls_;
@@ -68,8 +88,6 @@ private:
     };
     // 顶层 / 命名空间 / extern 内的 VarList：模块级变量
     std::vector<GlobalVar> globals_;
-    GlobalNames own_globals_;
-    GlobalNames* global_of_;
     void collect_globals_decl(Decl* d, const std::string& prefix,
                               bool is_extern = false);
 
@@ -193,9 +211,9 @@ private:
     // 模块入口为所有模块级变量写入声明处默认值
     void emit_global_inits();
     // 写入单个字段的声明处默认值：引用字段的初值即绑定点，存地址而非值
-    void emit_field_default(const std::string& dst_addr, const Field& f);
+    void emit_field_default(const std::string& dst_addr, const TranslatorField& f);
     // 字段是否有需要写入的声明处默认值：无初值的引用字段写 null
-    static bool field_has_default(const Field& f);
+    static bool field_has_default(const TranslatorField& f);
     // 合成操作符的函数体 IR：解包 __value -> 运算 -> 打包返回
     void emit_synth_operator(Func& f, Class* cls, VarItem* ret_var);
     // 合成操作符的函数体 IR：解包 __value -> 运算 -> 打包返回

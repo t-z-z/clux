@@ -286,6 +286,8 @@ void InjectionExpander::expand_class(Class* cls, Scope* parent_scope) {
         }
     }
 
+    // 同一 Class 被不同模块的 expander 各展开一次是安全的：合并按名字去重，
+    // 第二遍的 sources 已含首遍的合并结果，index 占位后成员集合不再变化
     std::vector<Decl*> result;
     std::unordered_map<std::string, size_t> index;
     for (Class* src : sources) {

@@ -1,0 +1,28 @@
+// 数值字面量的类型后缀与进制前缀：LLVM 的整数常量只认十进制，浮点只认
+// 能被目标类型精确表示的值，写进 IR 前必须归一化，否则 clang++ 报 IR 语法错。
+// 同时覆盖 128 位字面量的完整值域。
+import cstdio
+
+main() int r {
+    long a = 5l
+    long b = 5ll
+    long c = 5L
+    ulong d = 7ul
+    ulong e = 7u
+    int f = 100i8 + 100i16 + 100u8
+    int g = 0x2A
+    int h = 0b1011
+    int i = 0o17
+    float f1 = 1.5f
+    double d1 = 2.25d
+    float16 h1 = 1.25h
+    int128 big = 170141183460469231731687303715884105727
+    uint128 ubig = 340282366920938463463374607431768211455
+    printf("%ld %ld %ld %lu %lu %d %d %d %d %.2f %.2f %.2f\n",
+           a, b, c, d, e, f, g, h, i, f1, d1, h1)
+    printf("%d %d %d\n",
+           big == 170141183460469231731687303715884105727,
+           ubig == 340282366920938463463374607431768211455,
+           int(ubig >> 64) == -1)
+    r = 0
+}

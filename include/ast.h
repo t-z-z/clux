@@ -15,14 +15,19 @@
 // 编译流程分三段，每段结束后进入下一个段的字段必须已就绪：
 //
 //   P0  collect_only()     仅收集符号表（P0 区，不进入函数体/类成员）
-//   P1  analyze_rest()     process_using_namespaces → collect_rest（类注入展开）
+//   P1a expand()           process_using_namespaces → injector_->expand_all
+//                          （类注入展开并把成员登记进类作用域）
+//   P1b analyze_rest()     expand() → collect_global_order → collect_extern_vars
 //                          → walk(cu_)（表达式/语句推导与检查）
 //   P2  translator         run/emit_decl 读取 P0+P1 写入的字段生成 IR
 //
 // 多模块场景（compiler.cpp）：
-//   各模块 P0 → 合并为全局 SymbolTable → 各模块回填 global 后 P1 → P2
+//   各模块 P0 → 合并为全局 SymbolTable → 各模块回填 global → 各模块 P1a
+//   → 各模块 P1b → P2
+//   P1a 必须对所有模块先做完再进 P1b：类成员表在 P1a 写入，而成员查找
+//   取的是定义模块的 Cont::scope，与模块在 modules 里的下标无关。
 //
-// 字段分工：
+// 字段分工（下文的 P1 指 P1a+P1b 合起来的整个语义分析段）：
 //
 //   Expr::type         [写 P1 visit_expr_* / make_*_type] [读 P1 P2]
 //                      表达式的类型节点，本身也是 Expr，见 is_type。

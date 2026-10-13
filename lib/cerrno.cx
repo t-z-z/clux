@@ -1,0 +1,8 @@
+// cerrno.cx
+// errno 访问，对应 <errno.h>
+// errno 是宏，glibc 上展开为 (*__errno_location())，故只有该函数可声明
+// 读取方式：int e = __errno_location()-*   写入方式：__errno_location()-* = 0
+
+extern "C" {
+    __errno_location() int-* r{}
+}

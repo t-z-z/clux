@@ -268,6 +268,8 @@ class SemanticAnalyzer : public ASTVisitor {
     // extern 块内的变量声明：存储在外部库，不受模块级变量限制
     std::unordered_set<const Decl*> extern_vars_;
     void collect_extern_vars();
+    // expand() 是否已执行，analyze_rest() 会兜底调用
+    bool expanded_ = false;
 
     #define X(name,str) Expr* type##name;
     TYPE
@@ -298,6 +300,8 @@ public:
     bool analyze();
     // 仅收集符号表（不遍历函数体），供多模块分阶段编译
     void collect_only();
+    // 类注入展开并把成员登记进类作用域；多模块下须所有模块都做完再进 analyze_rest
+    void expand();
     // 遍历体与后续检查（需已收集/合并符号表）
     void analyze_rest();
     // 顶层 main 签名检查（符号表全局化后调用一次）
@@ -468,7 +472,8 @@ private:
     void pack_class_args(Func* func, Expr* call_expr, Expr::Call& c);
     void resolve_named_call(Expr* call_expr, Expr::Call& c,
                             Symbol* callee_sym, const std::string& name);
-    void check_call_args(Func* fn, const std::vector<Expr*>& args);
+    void check_call_args(Func* fn, const std::vector<Expr*>& args,
+                         const Location& loc);
     void check_call_args(const std::vector<VarList*>& params,
                          const std::vector<Expr*>& args, const Location& loc);
     // 平铺多个 VarList 声明的形参类型节点

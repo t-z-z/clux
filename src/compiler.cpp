@@ -145,10 +145,13 @@ FrontendResult run_frontend(StringPool& pool, const std::string& source,
     for (auto& m : modules) {
         global.merge_from(m->sem->symbol_table());
     }
-    // 回填全局符号表后遍历各模块
+    // 回填全局符号表：所有模块都先做完，注入展开才能查到跨模块的来源类
+    for (auto& m : modules) m->sem->merge_external_symbols(global);
+    // 类成员表在这一步写入 Cont::scope，必须所有模块都展开完再开始遍历，
+    // 否则先遍历的模块会看到尚未展开的空类作用域
+    for (auto& m : modules) m->sem->expand();
     bool ok = true;
     for (auto& m : modules) {
-        m->sem->merge_external_symbols(global);
         m->sem->analyze_rest();
         for (const Diagnostic& d : m->sem->diagnostics()) emit_diagnostic(d);
         if (m->sem->has_error()) ok = false;
@@ -200,13 +203,17 @@ bool translate(const std::string& source, const std::string& filename,
     if (!r.ok) return false;
     IRWriter ir(out);
     ir.emit_header();
-    bool ok = true;
-    // 变量名表跨模块共享：先收集所有模块的符号名，再逐个发射
-    Translator::GlobalNames globals;
+    // 翻译期表跨模块共享：先收集所有模块的符号名与类布局，再统一发类型与
+    // static 全局，最后逐个模块发射声明。少一步引用别的模块就会退化成裸名与空布局
+    TranslatorTables tables;
     std::vector<std::unique_ptr<Translator>> translators;
     for (auto& m : r.modules)
-        translators.push_back(std::make_unique<Translator>(*m->cu, ir, &globals));
+        translators.push_back(std::make_unique<Translator>(*m->cu, ir, &tables));
     for (auto& t : translators) t->collect();
+    bool bad = false;
+    for (auto& t : translators) bad = bad || t->has_error();
+    if (!bad && !translators.empty()) translators.front()->emit_class_decls();
+    bool ok = true;
     for (auto& t : translators) {
         t->run();
         for (const Diagnostic& d : t->diagnostics()) emit_diagnostic(d);

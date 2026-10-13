@@ -60,9 +60,15 @@ void SemanticAnalyzer::collect_only() {
     collect();
 }
 
-void SemanticAnalyzer::analyze_rest() {
+void SemanticAnalyzer::expand() {
+    if (expanded_) return;
+    expanded_ = true;
     process_using_namespaces();
     injector_->expand_all();
+}
+
+void SemanticAnalyzer::analyze_rest() {
+    expand();
     for (Decl* d : cu_.top_decls) collect_global_order(d);
     collect_extern_vars();
     walk(cu_);
@@ -958,25 +964,51 @@ void SemanticAnalyzer::visit_keep(Keep&) {}
 void SemanticAnalyzer::visit(Expr&) {}
 
 void SemanticAnalyzer::visit_expr_literal(Expr::Literal& lit) {
+    // IntLiteral 既可能是无后缀的数，也可能是显式 i32；十六进制数字不含 i，
+    // 靠字面量文本里是否出现 i/I 区分。UIntLiteral 只可能来自显式 u 后缀。
+    bool explicit_ty = (lit.kind != LiteralKind::Int);
+    for (char c : lit.value)
+        if (c == 'i' || c == 'I') { explicit_ty = true; break; }
+
+    if (!explicit_ty) {
+        // 无后缀：类型由值决定。优先有符号，装不下才退到无符号与 128 位，
+        // 变参位置因此拿到与 C 一致的宽度。
+        std::string dec;
+        if (!parse_int_literal(lit.value, dec)) {
+            error(current_expr->loc,
+                  "malformed integer literal " + std::string(lit.value));
+            current_expr->type = typeInt;
+            current_expr->is_lvalue = false;
+            return;
+        }
+        if      (dec_cmp(dec, int_max_text(true,  32)) <= 0) current_expr->type = typeInt;
+        else if (dec_cmp(dec, int_max_text(true,  64)) <= 0) current_expr->type = typeLong;
+        else if (dec_cmp(dec, int_max_text(false, 64)) <= 0) current_expr->type = typeULong;
+        else if (dec_cmp(dec, int_max_text(true,  128)) <= 0) current_expr->type = typeInt128;
+        else if (dec_cmp(dec, int_max_text(false, 128)) <= 0) current_expr->type = typeUInt128;
+        else error(current_expr->loc, "integer literal " + std::string(lit.value) +
+                      " is out of range");
+        if (!current_expr->type) current_expr->type = typeInt;
+        current_expr->is_lvalue = false;
+        return;
+    }
+
     switch(lit.kind) {
         #define X(l,name) case LiteralKind::name: current_expr->type = type##name; break;
         LITERAL_MAPPING
         #undef X
     }
-    // 字面量自身类型范围检查：仅对显式带后缀的字面量（如 300i8）生效，
-    // 无后缀字面量的"自身类型"只是词法默认，其范围由目标类型的转换检查负责。
-    // IntLiteral 既可能是无后缀十进制数，也可能是显式 i32/i，靠字面量文本区分。
-    bool has_suffix = (lit.kind != LiteralKind::Int);
-    if (!has_suffix) {
-        for (char c : lit.value)
-            if (c == 'i' || c == 'I') { has_suffix = true; break; }
-    }
+    // 带显式类型后缀的字面量按后缀定类型，再校验值装不装得下
     bool ls = false; int lb = 0;
-    if (has_suffix && literal_int_range(lit.kind, ls, lb)) {
-        unsigned long long v = 0;
-        if (parse_uint_literal(lit.value, v) && v > int_max_value(ls, lb))
+    if (literal_int_range(lit.kind, ls, lb)) {
+        std::string dec;
+        if (!parse_int_literal(lit.value, dec)) {
+            error(current_expr->loc,
+                  "malformed integer literal " + std::string(lit.value));
+        } else if (dec_cmp(dec, int_max_text(ls, lb)) > 0) {
             error(current_expr->loc, "integer literal " + std::string(lit.value) +
                   " is out of range for its type");
+        }
     }
     current_expr->is_lvalue = false;
 }

@@ -24,11 +24,19 @@ bool primitive_int_range(PrimitiveTypeKind k, bool& is_signed, int& bits);
 // 整数字面量自身类型对应的符号性与位宽；返回 false 表示不做自身范围检查
 bool literal_int_range(LiteralKind k, bool& is_signed, int& bits);
 
-// 解析整数字面量文本（可含进制前缀与类型后缀）为无符号值
+// 解析整数字面量文本（可含进制前缀与类型后缀）为无符号值；超出 64 位返回 false
 bool parse_uint_literal(std::string_view text, unsigned long long& out);
 
-// 有符号/无符号位宽可表示的最大正数值
-unsigned long long int_max_value(bool is_signed, int bits);
+// 整数文本转十进制文本：接受 0x/0b/0o 前缀与 iN/uN/l/ll/s 后缀，
+// 结果为无前导零的十进制；语法非法返回 false，量级远超 128 位也返回 false，
+// 是否超出目标类型的范围由调用方用 int_max_text 判定
+bool parse_int_literal(std::string_view text, std::string& dec);
+
+// 十进制非负整数文本比较（无前导零），返回 -1/0/1
+int dec_cmp(std::string_view a, std::string_view b);
+
+// 有符号/无符号位宽可表示的最大值（十进制文本，支持到 128 位）
+std::string int_max_text(bool is_signed, int bits);
 
 // 浮点类型提升级：float16 < float < double
 int float_rank(PrimitiveTypeKind k);
