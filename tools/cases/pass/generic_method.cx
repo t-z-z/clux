@@ -1,7 +1,7 @@
 // 泛型方法：方法模板登记在模板/实例的作用域里，实例化后是普通函数。
 // 覆盖非泛型类的泛型方法、泛型类的泛型方法、命名空间内的泛型声明
 namespace ns {
-    @Box-<T> {
+    Box-<T> {
         pub T v
         pub INIT(T a) { self.v = a }
         pub map-<U>(U x) Box-<U> r {
@@ -10,7 +10,7 @@ namespace ns {
     }
     wrap-<T>(T x) T r = x {}
 }
-@Holder {
+Holder {
     pub INIT() {}
     pub twice-<T>(T v) T r { r = v }
 }

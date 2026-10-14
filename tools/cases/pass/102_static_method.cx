@@ -1,4 +1,4 @@
-@C {
+C {
     pub INIT() { }
     spec static:
     pub f(int a) int r { r = a + 1 }

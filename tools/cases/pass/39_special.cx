@@ -1,4 +1,4 @@
-@Res {
+Res {
     pub INIT() { }
     pub DROP { }
 }

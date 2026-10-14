@@ -259,10 +259,10 @@ void InjectionExpander::expand_class(Class* cls, Scope* parent_scope) {
     // malloc 类的 free 是内置方法，且是唯一的堆释放入口：只有它会调用
     // @free，成员 free 覆盖它就等于让实例无法释放。因此无条件让内置
     // free 胜出。被丢弃的 free 分两种情形：
-    //  - 尾随注入（#mod 在 @ 之后）优先级本就低于类自身，spec 中
-    //    "malloc @rcInt #rc" 正是靠这个顺序让内置 free 覆盖 rc 的 free，
+    //  - 尾随注入（#mod 在类名之后）优先级本就低于类自身，spec 中
+    //    "malloc rcInt #rc" 正是靠这个顺序让内置 free 覆盖 rc 的 free，
     //    属预期行为，不告警；
-    //  - 前置注入（#mod 在 @ 之前）或类自身声明，优先级高于内置 free，
+    //  - 前置注入（#mod 在类名之前）或类自身声明，优先级高于内置 free，
     //    作者大概无意让空实现盖掉释放路径，告警提示。
     bool is_malloc = cls->specs.has(SpecKind::Malloc);
     if (is_malloc) {

@@ -1,8 +1,8 @@
-@a {
+a {
     pub int v = 1
     pub INIT() { }
 }
-#a @b {
+#a b {
     pub INIT() { }
 }
 main() {

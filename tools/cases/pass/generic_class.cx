@@ -1,17 +1,17 @@
-// 类泛型：`@Array-<T>` 的字段、形参与返回类型随实参替换，
+// 类泛型：`Array-<T>` 的字段、形参与返回类型随实参替换，
 // 同一模板的不同实参得到互不相同的实例
-@Pair-<A, B> {
+Pair-<A, B> {
     pub A fst
     pub B snd
     pub INIT(A a B b) { self.fst = a  self.snd = b }
 }
 // 后缀数组维度的字段也按实参替换
-@Grid-<T> {
+Grid-<T> {
     pub T data[4]
     pub INIT() {}
     pub at(int i) T r { r = data[i] }
 }
-@Array-<T> {
+Array-<T> {
     T[8] data
     pub int len = 0
     pub INIT() {}

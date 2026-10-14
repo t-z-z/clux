@@ -1,4 +1,4 @@
-@Foo {
+Foo {
     priv int secret = 0
 }
 main() {

@@ -1,9 +1,9 @@
-@rc {
+rc {
     int cnt = 0
     REF { }
     DEREF { }
 }
-malloc #rc #int @rcInt{}
+malloc #rc #int rcInt{}
 bump(rcInt-* p) {
     p-*+=1
 }

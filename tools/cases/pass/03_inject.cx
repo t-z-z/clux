@@ -1,8 +1,8 @@
-@Base {
+Base {
     int value = 0
     inc() { value = value + 1 }
 }
-@Child #Base {
+Child #Base {
     name() { }
 }
 main() { }

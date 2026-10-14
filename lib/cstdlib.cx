@@ -21,7 +21,7 @@ extern "C" {
     srand(uint seed) {}
 
     // 内存分配：malloc 是关键字，由 `T{n} malloc` 表达，不声明；
-    // free 也不声明：它是 malloc 类的内置方法，重复声明会与生成的 @free 撞名
+    // free 也不声明：它是 malloc 类的内置方法，重复声明会与生成的 free 撞名
     calloc(ulong nmemb ulong size) void-* r{}
     realloc(void-* ptr ulong size) void-* r{}
     aligned_alloc(ulong alignment ulong size) void-* r{}

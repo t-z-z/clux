@@ -1,5 +1,5 @@
 // REF/DEREF 特殊方法：赋值、传参、块作用域三种绑定时机
-@Res {
+Res {
     int n = 0
 
     pub INIT() { }

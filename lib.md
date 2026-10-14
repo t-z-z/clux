@@ -49,10 +49,10 @@ main() {
 ```cx
 import cxio
 
-@foo {
+foo {
     int a, b
 }
-@bar {
+bar {
     string s
 }
 

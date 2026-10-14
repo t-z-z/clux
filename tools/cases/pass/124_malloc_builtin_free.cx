@@ -1,15 +1,15 @@
 // malloc 类的内置 free 无条件胜出。
-// spec 的写法 `malloc @rcInt #rc`：#rc 在 @ 之后，优先级低于类自身，
+// spec 的写法 `malloc rcInt #rc`：#rc 在类名之后，优先级低于类自身，
 // 内置 free 覆盖 rc 的 free 属预期，不告警。
 // 类方法内的裸 free() 指向内置实现（释放 self），所以 rc 的
 // DEREF { ... free() } 注入进来后能真正释放。
-@rc {
+rc {
     int cnt = 0
     REF { cnt += 1 }
     DEREF { cnt -= 1  if cnt == 0 { free() } }
     free() { }
 }
-malloc @rcInt #rc #int{}
+malloc rcInt #rc #int{}
 main() {
     rcInt a = 1
     a.free()

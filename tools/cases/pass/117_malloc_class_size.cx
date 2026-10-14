@@ -1,5 +1,5 @@
 // malloc 类的分配量由 LLVM 按真实布局算出：聚合字段与对齐都不能漏算
-malloc @Box {
+malloc Box {
     pub char tag
     pub int[3] data = [4 5 6]
     pub long total
@@ -8,7 +8,7 @@ malloc @Box {
         self.total = self.data[0]
     }
 }
-malloc @Crate {
+malloc Crate {
     pub Box inner
     pub INIT() { self.inner = Box() }
 }

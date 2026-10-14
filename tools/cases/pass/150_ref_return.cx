@@ -1,11 +1,11 @@
 // 引用可以像指针一样返回：返回的是被引用对象的地址，机制同指针。
 // 绑定源允许形参、模块级变量、字段与解引用；返回后仍可写穿。
-@Node {
+Node {
     pub int v = 0
 
     pub INIT(int s) { self.v = s }
 }
-@Pair {
+Pair {
     pub Node n
 
     pub INIT(int s) { self.n = Node(s) }

@@ -1,4 +1,4 @@
-@C {
+C {
     pub int x = 0
     pub INIT() { }
     pub set(int v) { self.x = v }

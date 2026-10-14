@@ -1,4 +1,4 @@
-@Box {
+Box {
     pub int value = 0
     priv int secret = 1
     pub INIT() { }

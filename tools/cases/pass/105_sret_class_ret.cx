@@ -1,4 +1,4 @@
-@P {
+P {
     pub int x = 0
     pub int y = 0
     pub INIT(int a, int b) { x = a  y = b }

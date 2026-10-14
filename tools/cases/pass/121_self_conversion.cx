@@ -1,6 +1,6 @@
 // 同类 conversion（自转）在左值赋给左值时触发，代替原本的等号拷贝，
 // 因此不会产生引用字段的跨对象别名
-malloc @V {
+malloc V {
     pub int v = 0
     pub int-& ref
 

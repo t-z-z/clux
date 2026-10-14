@@ -1,4 +1,4 @@
-@C {
+C {
     pub readonly int x = 0
     pub INIT() { }
     pub set(int v) { x = v }

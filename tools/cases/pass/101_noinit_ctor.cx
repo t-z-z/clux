@@ -1,4 +1,4 @@
-@Empty { pub int x = 0 }
+Empty { pub int x = 0 }
 main() {
     Empty e = Empty()
 }

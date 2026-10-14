@@ -1,5 +1,5 @@
 // 引用形参：out 参数、写穿；类形参同样适用
-@Node {
+Node {
     pub int v
 
     pub INIT(int s) { self.v = s }

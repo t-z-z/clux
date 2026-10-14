@@ -1,11 +1,11 @@
-@a {
+a {
     pub int v = 0
     pub INIT() { }
 }
-@c {
+c {
     pub INIT(int x) { }
 }
-#a @b #c {
+#a b #c {
     pub INIT() { }
 }
 main() {
