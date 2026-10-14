@@ -134,6 +134,5 @@ bash tools/smoke.sh
 ## 贡献流程
 
 - 新增语言行为时，同时添加 `tools/cases/pass/` 或 `tools/cases/fail/` 用例。
-- 若有意修改 IR 输出，请同步重建 `tools/ir_base/` 基线，并在 PR 中说明原因。
+
 - 修改规范或标准库文档前，请先讨论。
-- 临时文件请放在工作区，不要散落到仓库其他位置。
