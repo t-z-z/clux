@@ -1,6 +1,6 @@
 @C {
     pub int x = 0
-    modf static:
+    spec static:
     pub int counter = 0
     pub INIT() { }
 }

@@ -58,7 +58,7 @@ namespace cx{
     X(Keep, "keep") \
     X(Flag, "flag") \
     X(ToFlag, "toflag") \
-    X(Modf, "modf") \
+    X(Spec, "spec") \
     X(Operator, "operator") \
     X(Drop, "DROP") \
     X(Ref, "REF") \
