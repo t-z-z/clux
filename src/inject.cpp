@@ -1,5 +1,6 @@
 #include "../include/inject.h"
 
+#include "../include/sem_types.h"
 #include "../include/semantic.h"
 
 #include <algorithm>
@@ -219,6 +220,13 @@ void InjectionExpander::expand_class(Class* cls, Scope* parent_scope) {
         if (!mod) return nullptr;
         if (auto* p = mod->get_primitive())
             return make_base_source(p->kind, mod->loc);
+        // `#foo-<int>` 解析成泛型应用；泛型注入尚未实现，宁可报错也不静默丢弃
+        if (mod->is_generic_type()) {
+            error_(mod->loc, "cannot inject from generic '" +
+                  type_name_string(mod->get_generic_type()->base) +
+                  "': generics are not supported yet");
+            return nullptr;
+        }
         auto* id = mod->get_identifier();
         if (!id) return nullptr;
         Symbol* sym = SymbolTable::lookup_member_up(search_scope, std::string(id->name));

@@ -69,9 +69,13 @@ void SemanticAnalyzer::expand() {
 
 void SemanticAnalyzer::analyze_rest() {
     expand();
+    // 泛型模板本体不进语义遍历与 IR：摘除后按使用点实例化
+    collect_generics();
     for (Decl* d : cu_.top_decls) collect_global_order(d);
     collect_extern_vars();
     walk(cu_);
+    // 实例在创建时已就地分析，这里只把它们挂进顶层声明供 translator 使用
+    for (Decl* d : generic_instances_) cu_.top_decls.push_back(d);
     report_infer_arrays();
     check_embedded_layout();
 }
@@ -1036,6 +1040,8 @@ void SemanticAnalyzer::visit_expr_identifier(Expr::Identifier& id) {
             current_expr->sym = s;
             current_expr->resolved_decl = s->get_decl();
             current_expr->resolved_scope = s->scope;
+            // 泛型模板本体不参与语义，裸用（未给类型实参）在此拦下
+            check_generic_use(current_expr, s->get_decl());
         } else {
             error(current_expr->loc, "unknown type '" + name + "'");
         }
@@ -1066,6 +1072,8 @@ void SemanticAnalyzer::visit_expr_identifier(Expr::Identifier& id) {
                     current_expr->type = make_type(current_expr->loc,
                         Expr::FuncRef{static_cast<Func*>(d)}
                     );
+                // 泛型函数以值引用没有可确定的签名（作为被调用者除外）
+                check_generic_use(current_expr, d);
             }
             current_expr->is_lvalue = false;
         } else if (member->kind == SymbolKind::Enum) {
@@ -1550,6 +1558,8 @@ void SemanticAnalyzer::visit_expr_member(Expr::Member& m) {
             current_expr->sym = tsym;
             current_expr->resolved_decl = tsym->get_decl();
             current_expr->resolved_scope = tsym->scope;
+            // 泛型模板本体不参与语义，裸用（未给类型实参）在此拦下
+            check_generic_use(current_expr, tsym->get_decl());
         } else {
             error(current_expr->loc,
                   "unknown type '" + type_name_string(current_expr) + "'");
@@ -1881,6 +1891,34 @@ void SemanticAnalyzer::visit_type_void(Expr::Void&) {
 }
 
 void SemanticAnalyzer::visit_type_inferred(Expr::Inferred&) {}
+
+// 泛型应用：类的实参全在源码里给出，类型位置与构造调用位置都就地实例化；
+// 值位置的泛型函数要等实参类型推导出来，留给 resolve_call
+void SemanticAnalyzer::visit_type_generic(Expr::GenericType& g) {
+    Expr* base = g.base;
+    Decl* tmpl = base ? (base->sym ? base->sym->get_decl() : base->resolved_decl)
+                      : nullptr;
+    if (tmpl && tmpl->kind == DeclKind::Class && is_generic_decl(tmpl)) {
+        if (Class* inst = instantiate_class(*static_cast<Class*>(tmpl), g.args,
+                                            current_expr->loc)) {
+            *current_expr = std::move(*instance_type_node(base, inst, true));
+            return;
+        }
+        // instantiate 已报出具体原因
+        current_expr->type = nullptr;
+        current_expr->is_lvalue = false;
+        return;
+    }
+    if (!current_expr->is_type) {
+        current_expr->sym = base ? base->sym : nullptr;
+        current_expr->type = base ? base->type : nullptr;
+        return;
+    }
+    error(current_expr->loc, "'" + type_name_string(base) +
+          "' is not a generic class");
+    current_expr->type = nullptr;
+    current_expr->is_lvalue = false;
+}
 
 
 // flag / toflag 的 label 检查：遵循 C++ 的跳转规则

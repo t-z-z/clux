@@ -253,16 +253,25 @@ Expr* Parser::parse_modification() {
 
     Expr* mod = cu_.add_node<Expr>(loc, Expr::Identifier{name});
     mod->is_type = true;
+    // 泛型注入 `#foo-<int> @bar`：实参表跟在修饰名之后
+    if (curr().kind == TokenKind::GenericStart) {
+        return parse_type_args(mod);
+    }
     return mod;
 }
 
-// 函数的识别：名称后接参数括号
+// 函数的识别：名称后接泛型形参表（可选）与参数括号
 Func* Parser::parse_func_decl(SpecList &ml, Location &loc) {
     if (!curr().is_ident()) return nullptr;
-    if (peek().kind != TokenKind::ParenL
+    // 泛型函数的形参表前有 `-<T>`，须一并纳入识别，否则退回给类型解析
+    bool generic = peek().kind == TokenKind::GenericStart;
+    if (!generic && peek().kind != TokenKind::ParenL
         && peek().kind != TokenKind::BraceL) return nullptr;
     std::string_view name = curr().get_val();
     walk();
+    // 泛型形参表与「以泛型类型为类型的变量声明」同形，读到 '(' 才确认是函数声明
+    std::vector<TypeParam*> type_params;
+    if (generic) parse_type_params(type_params);
     if (curr().kind != TokenKind::ParenL) return nullptr;
     bool variadic = false;
     std::vector<VarList*> params = parse_value_params(&variadic);
@@ -288,6 +297,7 @@ Func* Parser::parse_func_decl(SpecList &ml, Location &loc) {
             std::move(returns),
             body
     );
+    f->type_params = std::move(type_params);
     f->is_variadic = variadic;
     return f;
 }
@@ -374,6 +384,8 @@ Class* Parser::parse_class_decl(SpecList &ml, Location &loc, std::vector<Expr*> 
         name = curr().get_val();
         advance();
     }
+    std::vector<TypeParam*> type_params;
+    parse_type_params(type_params);
     SpecList nml = parse_specs();
     ml.merge(nml);
     // 尾随注入：#mod 出现在类名之后、成员之前（如 `@b #qux { }`）
@@ -388,6 +400,7 @@ Class* Parser::parse_class_decl(SpecList &ml, Location &loc, std::vector<Expr*> 
         loc, std::move(name), std::move(ml), std::move(members),
         std::move(injs), std::move(trailing)
     );
+    raw->type_params = std::move(type_params);
     return raw;
 }
 
@@ -1442,6 +1455,11 @@ Expr* Parser::parse_postfix(Expr* left, bool is_type) {
                 left = node;
                 continue;
             }
+            // 泛型实参 List-<int>：独立的 '-<' 符号，类型与表达式位置同义
+            case TokenKind::GenericStart: {
+                left = parse_type_args(left);
+                continue;
+            }
             // -* 解引用/指针，-& 取地址/引用
             case TokenKind::Minus: {
                 if (peek().kind == TokenKind::Mul || peek().kind == TokenKind::BitAnd) {
@@ -1625,7 +1643,7 @@ Expr* Parser::parse_type_atom() {
     } else if (curr().kind == TokenKind::Dollar) {
         t = parse_func_type();
     } else if (curr().is_ident()) {
-        t = parse_generic_type();
+        t = parse_named_type();
     }
     if (!t) return nullptr;
     // 后缀链与表达式共用；类型位置按类型解释
@@ -1669,7 +1687,7 @@ Expr* Parser::parse_func_type() {
     return t;
 }
 
-Expr* Parser::parse_generic_type() {
+Expr* Parser::parse_named_type() {
     if (!curr().is_ident()) return nullptr;
     Location loc = get_loc();
     std::string_view name = curr().get_val();
@@ -1678,6 +1696,70 @@ Expr* Parser::parse_generic_type() {
     Expr* t = cu_.add_node<Expr>(loc, Expr::Identifier{name});
     t->is_type = true;
     return t;
+}
+
+// 裂解余部重新派发：'>' 起始的操作符去掉首字符后只可能是这三种文本
+static TokenKind operator_kind_of(std::string_view s) {
+    if (s == ">")  return TokenKind::Greater;
+    if (s == "=")  return TokenKind::Assign;
+    if (s == ">=") return TokenKind::GreaterEqual;
+    return TokenKind::Unknown;
+}
+
+// 泛型闭合符裂解：嵌套内以 '>' 起始的操作符（'>>'、'>='、'>>='）先出闭合符，
+// 余部排回 pending_ 重新派发；嵌套外的 '>' 是比较运算，不动。
+// 深度随 token 流前进，回退由 Mark 里记录的深度负责
+Token Parser::generic_split(Token tok) {
+    if (tok.kind == TokenKind::GenericStart) {
+        ++generic_depth_;
+        return tok;
+    }
+    if (generic_depth_ == 0 || !is_generic_close(tok.kind)) return tok;
+    std::string_view rest = tok.val.substr(1);
+    if (!rest.empty()) {
+        Location rest_loc = tok.loc;
+        rest_loc.col += 1;
+        pending_.push_back(Token(operator_kind_of(rest), rest, rest_loc));
+    }
+    --generic_depth_;
+    return Token(TokenKind::Greater, tok.val.substr(0, 1), tok.loc);
+}
+
+// 泛型形参表 `-<T, U>`：'-<' 已由调用方确认。全程可逆，供函数声明探测使用
+void Parser::parse_type_params(std::vector<TypeParam*>& out) {
+    if (curr().kind != TokenKind::GenericStart) return;
+    parse_list<TypeParam*>(
+        TokenKind::GenericStart,
+        TokenKind::Greater,
+        TokenKind::Comma,
+        [this, &out]() -> TypeParam* {
+            if (!curr().is_ident()) return nullptr;
+            Location loc = get_loc();
+            std::string_view name = curr().get_val();
+            walk();
+            TypeParam* tp = cu_.add_node<TypeParam>(loc, name);
+            out.push_back(tp);
+            return tp;
+        },
+        "type parameter"
+    );
+}
+
+// 泛型实参表 `-<T, U>`：跟在具名类型或函数名之后，构造泛型应用节点
+Expr* Parser::parse_type_args(Expr* base) {
+    std::vector<Expr*> args = parse_list<Expr*>(
+        TokenKind::GenericStart,
+        TokenKind::Greater,
+        TokenKind::Comma,
+        [this] { return parse_type(); },
+        "type argument"
+    ).value_or({});
+    // parse_list 正常结束时已消费 '>'；停在 EOF 说明未闭合，其内部已报错
+    if (is_eof()) return base;
+    Expr* node = cu_.add_node<Expr>(base->loc,
+        Expr::GenericType{base, std::move(args)});
+    node->is_type = base->is_type;
+    return node;
 }
 
 template<typename T, typename F>

@@ -1,0 +1,14 @@
+// 函数泛型：`-<T>` 形参表声明，`foo-<int>(x)` 显式实参、`foo(x)` 按实参推导。
+// 模板本体不进 IR，语义阶段按实参各生成一份实例
+identity-<T>(T x) T r = x {}
+pairup-<A, B>(A a B b) int r { r = 0 }
+main() int r {
+    r = 0
+    if identity-<int>(1) != 1 { r = r + 1 }
+    if identity(2L) != 2L { r = r + 2 }
+    if identity-<char>(3) != 3 { r = r + 4 }
+    if identity(4) != 4 { r = r + 8 }
+    if pairup(1, 2L) != 0 { r = r + 16 }
+    if pairup-<int, long>(1, 2L) != 0 { r = r + 32 }
+    return
+}

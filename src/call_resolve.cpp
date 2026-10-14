@@ -232,6 +232,37 @@ void SemanticAnalyzer::resolve_named_call(Expr* call_expr, Expr::Call& c,
     c.resolved = func;
 }
 
+// 泛型函数调用：显式 `-<T>` 实参或按实参类型推导，实例化后把被调用者
+// 改写为实例，后续按普通命名调用解析。泛型类在类型位置已实例化，
+// 此处只剩构造调用。
+// 返回 false 表示实例化失败：错误已报出，调用到此结束
+bool SemanticAnalyzer::resolve_generic_call(Expr* call_expr, Expr::Call& c,
+                                            Symbol*& callee_sym) {
+    Decl* tmpl = callee_sym ? callee_sym->get_decl() : nullptr;
+    if (!is_generic_decl(tmpl) || tmpl->kind == DeclKind::Class) return true;
+
+    std::vector<Expr*> deduced_only;   // 无显式实参：全靠实参类型推导
+    const std::vector<Expr*>& args = c.callee->is_generic_type()
+        ? c.callee->get_generic_type()->args : deduced_only;
+    std::vector<Expr*> arg_types;
+    arg_types.reserve(c.args.size());
+    for (Expr* a : c.args) arg_types.push_back(a ? a->type : nullptr);
+
+    Func* inst = instantiate_func(*static_cast<Func*>(tmpl), args, arg_types,
+                                  call_expr->loc);
+    if (!inst) {
+        // instantiate 已报出具体原因
+        call_expr->type = typeVoid;
+        call_expr->is_lvalue = false;
+        return false;
+    }
+    // 实例是普通函数，被调用者写成裸名：原模板若是成员方法，实例化后
+    // 不再带 self，改由实例所在作用域里的裸函数符号调用
+    c.callee = instance_type_node(nullptr, inst, false);
+    callee_sym = c.callee->sym;
+    return true;
+}
+
 void SemanticAnalyzer::resolve_call(Expr* call_expr, Expr::Call& c) {
     if (!c.callee) {
         call_fail(call_expr, "call expression has no callee");
@@ -260,6 +291,8 @@ void SemanticAnalyzer::resolve_call(Expr* call_expr, Expr::Call& c) {
         call_fail(call_expr, "invalid callee expression");
         return;
     }
+
+    if (!resolve_generic_call(call_expr, c, callee_sym)) return;
 
     if (resolve_ctor_call(call_expr, c, callee_sym, name)) return;
     if (resolve_free_builtin(call_expr, c, name)) return;

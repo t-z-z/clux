@@ -41,9 +41,11 @@ private:
     };
     // alias 别名作用域层级
     std::vector<std::vector<AliasDecl>> aliases_;
-    // alias 别名展开缓冲
+    // alias 别名展开缓冲；泛型闭合符裂解后的余部也排在这里
     std::deque<Token> pending_;
     bool use_alias_ = true;
+    // 泛型嵌套深度：'-<' 进层，闭合 '>' 出层，决定 get_token 是否裂解
+    size_t generic_depth_ = 0;
 
     inline void add_error(const std::string &msg) {
         errors_.push_back(Diagnostic(DiagLevel::Error, msg, get_loc()));
@@ -58,12 +60,15 @@ private:
 
     void scan_alias_decl();
 
+    // 泛型闭合符裂解：嵌套内以 '>' 起始的操作符先出闭合 '>'，余部排回 pending_ 重派
+    Token generic_split(Token tok);
+
     inline Token get_token() {
         // 从 pending 队列中取 Token
         if (!pending_.empty()) {
             Token tok = std::move(pending_.front());
             pending_.pop_front();
-            return tok;
+            return generic_split(std::move(tok));
         }
         Token tok = lexer_.next_token();
         if (tok.kind == TokenKind::Alias) {
@@ -75,9 +80,7 @@ private:
             const auto target = lookup_alias_expended(tok);
             if (target) {
                 pending_.insert(pending_.end(), target->begin(), target->end());
-                Token t = std::move(pending_.front());
-                pending_.pop_front();
-                return t;
+                return get_token();
             }
         }
         // 维护别名作用域（'{}' 进出）
@@ -86,8 +89,8 @@ private:
         } else if (tok.kind == TokenKind::BraceR) {
             if (!aliases_.empty()) aliases_.pop_back();
         }
-        
-        return tok;
+
+        return generic_split(std::move(tok));
     }
 
     // 可逆前进
@@ -143,9 +146,12 @@ private:
         size_t walk_pos;
         size_t nodes;
         size_t error;
+        // 泛型嵌套深度随 token 流前进，回退 token 位置须一并回退
+        size_t generic_depth;
     };
     inline void restore(const Mark & m) {
         walk_pos_ = m.walk_pos;
+        generic_depth_ = m.generic_depth;
         if (cu_.nodes.size() > m.nodes) cu_.nodes.resize(m.nodes);
         if (errors_.size() > m.error) errors_.resize(m.error);
     }
@@ -162,7 +168,7 @@ private:
         return dq_[walk_pos_];
     }
     inline Mark point() const {
-        return Mark{walk_pos_, cu_.nodes.size(), errors_.size()};
+        return Mark{walk_pos_, cu_.nodes.size(), errors_.size(), generic_depth_};
     }
     inline bool is_eof() {
         return curr().kind == TokenKind::Eof;
@@ -229,7 +235,11 @@ private:
     Expr* parse_array_length();
     Expr* parse_primitive_type();
     Expr* parse_func_type();     // $(int)int
-    Expr* parse_generic_type();  // List-[T]
+    Expr* parse_named_type();    // List
+
+    // 泛型：形参表 `foo-<T, U>` 与实参表 `List-<int>`
+    void parse_type_params(std::vector<TypeParam*>& out);
+    Expr* parse_type_args(Expr* base);
 
     // 其他辅助函数
     std::vector<Expr*> parse_type_list_in_paren();

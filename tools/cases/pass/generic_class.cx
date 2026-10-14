@@ -1,0 +1,45 @@
+// 类泛型：`@Array-<T>` 的字段、形参与返回类型随实参替换，
+// 同一模板的不同实参得到互不相同的实例
+@Pair-<A, B> {
+    pub A fst
+    pub B snd
+    pub INIT(A a B b) { self.fst = a  self.snd = b }
+}
+// 后缀数组维度的字段也按实参替换
+@Grid-<T> {
+    pub T data[4]
+    pub INIT() {}
+    pub at(int i) T r { r = data[i] }
+}
+@Array-<T> {
+    T[8] data
+    pub int len = 0
+    pub INIT() {}
+    pub put(T v, int i) { data[i] = v }
+    pub get(int i) T r { r = data[i] }
+    pub size() int r { r = len }
+}
+main() int r {
+    r = 0
+    Array-<int> a = Array-<int>()
+    a.put(1, 3)
+    if a.get(3) != 1 { r = r + 1 }
+    if a.size() != 0 { r = r + 2 }
+    Array-<long> b = Array-<long>()
+    b.put(2L, 4)
+    if b.get(4) != 2L { r = r + 4 }
+    // 同一实参在多处使用指向同一实例
+    Array-<int> c = a
+    if c.get(3) != 1 { r = r + 8 }
+    // 泛型实参可嵌套
+    Pair-<Array-<int>, long> p = Pair-<Array-<int>, long>(a, 3L)
+    if p.fst.get(3) != 1 { r = r + 16 }
+    if p.snd != 3L { r = r + 32 }
+    Grid-<int> g = Grid-<int>()
+    g.data[2] = 7
+    if g.at(2) != 7 { r = r + 64 }
+    Grid-<long> h = Grid-<long>()
+    h.data[1] = 8L
+    if h.at(1) != 8L { r = r + 128 }
+    return
+}
