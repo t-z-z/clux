@@ -1,13 +1,13 @@
 // 类字段按值内嵌：字段存储就是嵌套对象本身，随宿主对象一起活着。
 // `self.item = Node(7)` 就地构造进字段，不再存 INIT 栈帧上的临时实例地址，
 // 因此 h1.item 不受第二次构造的影响。
-@Node {
+Node {
     pub int v = 0
     pub int w = 0
 
     pub INIT(int s) { self.v = s }
 }
-@Holder {
+Holder {
     pub Node item
 
     pub INIT(int s) { self.item = Node(s) }

@@ -546,7 +546,7 @@ struct VarList : Decl {
         type(t), vars(std::move(v)) {}
 };
 
-// 泛型形参：`foo-<T, U>`、`@Array-<T>` 中的 T/U，只是名字，语义阶段与实参绑定
+// 泛型形参：`foo-<T, U>`、`Array-<T>` 中的 T/U，只是名字，语义阶段与实参绑定
 struct TypeParam : ASTNode {
     std::string_view name;
     TypeParam() = default;
@@ -625,9 +625,9 @@ struct Extern : Cont {
 };
 
 struct Class : Cont {
-    // 泛型形参 `@Array-<T>`，非空即泛型类
+    // 泛型形参 `Array-<T>`，非空即泛型类
     std::vector<TypeParam*> type_params;
-    // 修饰注入：`#a @b #c` 中 @ 之前的为前置注入，之后的为尾随注入。
+    // 修饰注入：`#a B #c` 中类名之前的是前置注入，之后的是尾随注入。
     // 优先级从左到右递减：前置 > 基类 > 尾随。
     std::vector<Type*> injects;
     std::vector<Type*> trailing_injects;

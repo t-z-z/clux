@@ -1,9 +1,9 @@
-@Base {
+Base {
     int value = 0
     pub INIT() { }
     pub inc() { value = value + 1 }
 }
-#Base @Child {
+#Base Child {
     pub INIT() { }
     pub name() { }
 }

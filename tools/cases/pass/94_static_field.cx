@@ -1,4 +1,4 @@
-@C {
+C {
     pub int x = 0
     spec static:
     pub int counter = 0

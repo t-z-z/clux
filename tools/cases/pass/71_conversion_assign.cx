@@ -1,4 +1,4 @@
-@bar {
+bar {
     pub int value = 0
     pub INIT() { }
 }

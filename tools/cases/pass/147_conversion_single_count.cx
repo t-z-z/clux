@@ -1,13 +1,13 @@
 // 参数打包的构造调用只计一次持有：返回值落进调用方 sret 槽是"搬进调用方
 // 存储"，不是复制出新的一份持有，不该再计一次 REF
 import cstdio
-@Res {
+Res {
     pub int n = 0
 
     pub REF { n += 1 }
     pub DEREF { n -= 1 }
 }
-@Owner {
+Owner {
     pub Res-* held
 
     pub INIT(Res-* p) { self.held = p }

@@ -1,5 +1,5 @@
 // 引用字段：INIT 顶层绑定，其后读写都作用于被绑定对象
-@Counter {
+Counter {
   pub int-& ref
   pub int total
 

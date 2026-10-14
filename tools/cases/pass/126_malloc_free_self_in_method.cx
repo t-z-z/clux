@@ -1,5 +1,5 @@
 // malloc 类方法内的裸 free() 释放 self，不需要写 a.free()
-malloc @Heap {
+malloc Heap {
     pub int v = 0
 
     pub release() { free()  return }

@@ -1,4 +1,4 @@
-@C { pub int x = 0  pub INIT() {} }
+C { pub int x = 0  pub INIT() {} }
 main() {
     C c = C()
     int y = c.nope

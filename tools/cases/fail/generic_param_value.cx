@@ -1,5 +1,5 @@
 // 泛型形参只是类型名，不能当值用（如数组长度）
-@Sized-<T> {
+Sized-<T> {
     pub T data[T]
     pub INIT() {}
 }

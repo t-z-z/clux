@@ -1,13 +1,13 @@
 // 类赋值是值拷贝：赋值式与声明式一样逐字段复制出新的一份持有，
 // 两个对象不共享实例，字段 DEREF 也各计各的
 import cstdio
-@Res {
+Res {
     pub int n = 0
 
     pub REF { n += 1 }
     pub DEREF { n -= 1 }
 }
-@Owner {
+Owner {
     pub Res-* held
 
     pub INIT() { self.held = null }

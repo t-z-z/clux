@@ -1,12 +1,12 @@
 // 引用字段的对象级复制：初始化式与赋值式都走等号拷贝，副本与源共享被引用对象，
 // 必须告警
-@Node {
+Node {
     pub int v = 0
     pub int-& ref
 
     pub INIT() { self.ref = self.v }
 }
-malloc @V {
+malloc V {
     pub int v = 0
     pub int-& ref
 

@@ -1,8 +1,8 @@
 // ctime.cx
 // C 时间与日期，对应 <time.h>
-// time_t / clock_t → long，struct tm 用 @tm 表达：字段名与顺序同 C，访问用 `p-*.tm_year`
+// time_t / clock_t → long，struct tm 用 tm 表达：字段名与顺序同 C，访问用 `p-*.tm_year`
 
-@tm {
+tm {
     pub int tm_sec
     pub int tm_min
     pub int tm_hour

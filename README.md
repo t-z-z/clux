@@ -112,7 +112,7 @@ main() int r = add(1, 2)
 ### 类
 
 ```cx
-@Counter {
+Counter {
     int value = 0
 
     increment() {

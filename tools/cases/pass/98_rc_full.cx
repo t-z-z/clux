@@ -1,10 +1,10 @@
-@rc {
+rc {
     int cnt = 0
     REF { }
     DEREF { cnt -= 1  if cnt == 0 { free() } }
     free() { }
 }
-malloc #rc #int @rcInt{}
+malloc #rc #int rcInt{}
 bump(rcInt-* p) { p-*+=1 }
 main() {
     rcInt a = 1

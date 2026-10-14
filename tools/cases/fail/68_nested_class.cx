@@ -1,5 +1,5 @@
-@Outer {
-    @Inner {
+Outer {
+    Inner {
         pub int v = 0
         pub INIT() { }
     }

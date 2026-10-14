@@ -242,7 +242,7 @@ main() {
 ### 实参打包
 
 ```cx
-@Param{
+Param{
     int a,b,c
     char-* str
     INIT(int _a,_b,_c char-*_s){
@@ -327,7 +327,7 @@ math::add(1, 2)
 类是一种容器，其声明一种类型。类可以包含变量声明、函数声明、特殊方法、嵌套容器。
 
 ```cx
-@Counter {
+Counter {
     int value = 0
 
     increment() {
@@ -344,7 +344,7 @@ Counter函数会触发初始化返回Counter右值，写入字段默认值。
 类的方法内部可以使用 `self` 显式访问当前实例的成员。无冲突时直接使用成员名，编译器自动解析为 `self.成员名`。
 
 ```cx
-@Counter {
+Counter {
     int value = 0
 
     set_value(int value) {
@@ -362,7 +362,7 @@ Counter函数会触发初始化返回Counter右值，写入字段默认值。
 - `REF` / `DEREF`：被引用 / 结束引用时触发
 
 ```cx
-@pointer {
+pointer {
     char-* p
     INIT() { p = null }
     INIT(char c) { p = c-& }
@@ -374,7 +374,7 @@ pointer p = pointer()
 ```
 
 ```cx
-@CacheEntry {
+CacheEntry {
     DROP { log("destroyed") }
 }
 ```
@@ -386,7 +386,7 @@ INIT会根据字段声明的初始值自动构造
 类中可以重载操作符。可重载的操作符为优先级表中除 `.` `::` `,` `-&` `=` 之外的操作符。
 
 ```cx
-@Vec2 {
+Vec2 {
     pub int x, y
     operator + (Vec2 other) Vec2 r {
         r = Vec2(x+other.x y+other.y)
@@ -402,7 +402,7 @@ operator - (Vec2 a Vec2 b) Vec2 r {
 使用`conversion`来定义类型转换方法
 
 ```cx
-@Vec2 {
+Vec2 {
     pub int x,y
     conversion() Vector r=Vector(x y) {
     }
@@ -422,7 +422,7 @@ conversion(Vec2 a)Vec2 b{
 
 ### 修饰的方向性
 
-修饰在**声明点结算**：`#M @D` 中 `M` 必须完整可解析。
+修饰在**声明点结算**：`#M D` 中 `M` 必须完整可解析。
 
 两者方向相反，不可互相替代。
 
@@ -443,13 +443,13 @@ conversion(Vec2 a)Vec2 b{
 访问控制类默认私有，命名空间默认公开。
 
 ```cx
-@Base {
+Base {
     process(string data) {}
     Base_setup() { print("Base setup") }
     setup() { Base_setup() }
 }
 
-@Child #Base {
+Child #Base {
     process(string data) { print("Implemented") }
     Child_setup { Base_setup() print("Child setup") }
     setup() { Child_setup() }
@@ -462,7 +462,7 @@ malloc类在被赋值时会复制堆上的对象。
 注意：malloc分配的内存不会自动释放。
 
 ```cx
-malloc @rcInt #rc #int{}
+malloc rcInt #rc #int{}
 main(){
     rcInt a=1;
     a.free();
@@ -474,7 +474,7 @@ main(){
 修饰注入是一种容器操作，将修饰符注入到类声明上。
 
 ```cx
-#foo #bar @baz #qux { }
+#foo #bar baz #qux { }
 ```
 
 在以上修饰中，foo的成员覆盖了bar的，bar的覆盖了baz的，baz覆盖qux。
@@ -482,7 +482,7 @@ main(){
 也可以由一个基础类型修饰，会自动派发所有操作符和特殊方法
 
 ```cx
-@rc {
+rc {
     int cnt = 0
     REF {
         cnt+=1
@@ -493,7 +493,7 @@ main(){
     }
     free(){}
 }
-malloc @rcInt #rc #int{}
+malloc rcInt #rc #int{}
 ```
 
 malloc的rcInt覆盖了rc中的free方法，所以rc的free会触发释放。

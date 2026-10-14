@@ -1,7 +1,7 @@
 // 修饰泛型：`#Base-<int>` 能读入，泛型注入尚未实现，注入来源被报错丢弃
-@Base {
+Base {
     int x
 }
-#Base-<int> @Derived {}
+#Base-<int> Derived {}
 main() {
 }

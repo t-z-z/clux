@@ -1,4 +1,4 @@
-@Cont{
+Cont{
     pub:char[4] str
     conversion()Cont r{
         r = Cont()

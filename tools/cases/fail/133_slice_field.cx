@@ -1,5 +1,5 @@
 // 类字段的大小要参与布局，切片的长度运行期才知道
-@Box {
+Box {
     pub char{} data
     pub INIT() { }
 }

@@ -1,4 +1,4 @@
-@Adder {
+Adder {
     pub int base = 0
     pub INIT(int a) { base = a }
     pub operator () (int x) int r { r = base + x }

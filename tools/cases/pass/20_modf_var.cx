@@ -1,5 +1,5 @@
-@rc { int n = 0 }
-#rc #int @Wrapped {}
+rc { int n = 0 }
+#rc #int Wrapped {}
 main() {
     Wrapped a = 1
     int b = a

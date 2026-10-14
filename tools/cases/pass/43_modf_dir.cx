@@ -1,4 +1,4 @@
-@Foo {
+Foo {
     pub:
     int a = 1
     spec static:

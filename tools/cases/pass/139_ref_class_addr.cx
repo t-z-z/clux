@@ -1,5 +1,5 @@
 // 类引用的取地址：引用形参与 self 的地址即被引用对象地址，类值取地址同解引用
-@Node {
+Node {
     pub int v
 
     pub INIT(int s) { self.v = s }
@@ -9,7 +9,7 @@
         p = q
     }
 }
-@Box {
+Box {
     pub Node item
 
     pub INIT(Node s) { self.item = s }

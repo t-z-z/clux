@@ -1,4 +1,4 @@
-malloc @H { pub int v = 0 }
+malloc H { pub int v = 0 }
 main() {
     H h = H()
     h.free(1)

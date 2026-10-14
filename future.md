@@ -6,7 +6,7 @@
 类不按实参推导（实参必须写全）。模板本体不进语义遍历与 IR，语义阶段按实参
 生成实例（`Array<i32>`、`foo$i32`），translator 不感知泛型。
 
-未实现：泛型注入（`#Base-<int> @bar` 报 `generics are not supported yet`）；
+未实现：泛型注入（`#Base-<int> bar` 报 `generics are not supported yet`）；
 泛型方法不能用 `self`；泛型形参不能当值用（如 `T data[T]` 的长度）。
 
 函数泛型
@@ -21,7 +21,7 @@ main(){
 类泛型
 
 ```cx
-@Array-<T> {
+Array-<T> {
     T[100] data
     int len = 0
     op [](int index) T-& r {
@@ -33,7 +33,7 @@ main(){
 修饰泛型
 
 ```cx
-#foo-<int> @bar {}
+#foo-<int> bar {}
 ```
 
 ## 闭包与代码块
@@ -74,8 +74,8 @@ main() {
 代价是 C++ 那套经典陷阱：捕获栈变量后闭包逃逸出外层帧，写入即破坏其他变量。
 C++ 的选择是不检查，行为未定义。**clux 采取同样立场**——不引入生命周期分析，
 不做逃逸检查，也不为悬垂报错。要在文档里讲清这一点，让使用者自己保证闭包不活得比
-被捕获变量长。这与 clux 现有的类模型是一致的：`malloc @C` 是堆分配加显式 `free`，
-普通 `@C` 是栈槽加逐字段 copy，两者都不做生命周期校验。
+被捕获变量长。这与 clux 现有的类模型是一致的：`malloc C` 是堆分配加显式 `free`，
+普通 `C` 是栈槽加逐字段 copy，两者都不做生命周期校验。
 
 ### 捕获清单：隐式
 
@@ -111,7 +111,7 @@ C++ 的选择是不检查，行为未定义。**clux 采取同样立场**——�
 当前无法识别
 
 ```cx
-@foo{int a,b}
+foo{int a,b}
 main() {
     type x = type.foo
     int i = sizeof(type.foo)

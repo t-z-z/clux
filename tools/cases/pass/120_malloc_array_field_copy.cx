@@ -1,5 +1,5 @@
 // malloc 类的数组字段在复制时深拷贝：两个对象不共用同一段堆存储
-malloc @Box {
+malloc Box {
     pub int[3] data = [1 2 3]
 
     pub INIT() { }

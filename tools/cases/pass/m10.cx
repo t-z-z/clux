@@ -1,6 +1,6 @@
-@a { pub int av = 1 }
-@c { pub int cv = 3 }
-#a @b #c {
+a { pub int av = 1 }
+c { pub int cv = 3 }
+#a b #c {
     pub int bv = 2
 }
 main() { }

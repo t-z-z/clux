@@ -77,7 +77,7 @@ private:
     // 本单元声明的类：static 字段默认值只在本模块入口写一次
     std::vector<Class*> own_classes_;
     // 特殊方法内出现过裸 free() 的类：这些类的实例由钩子自行释放，
-    // a.free() 触发完钩子后不再重复 @free。类的发射早于所有函数，故此处可查
+    // a.free() 触发完钩子后不再重复调用 free。类的发射早于所有函数，故此处可查
     std::unordered_set<Class*> self_free_cls_;
 
     struct GlobalVar {

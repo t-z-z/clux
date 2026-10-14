@@ -1,7 +1,7 @@
 import cstdio
 // malloc 写在变量声明上：堆分配、分配即 REF、free() 结束引用、
 // 作用域结束不再解引用
-malloc @Rc {
+malloc Rc {
     pub int n = 0
 
     pub REF { n += 1 }

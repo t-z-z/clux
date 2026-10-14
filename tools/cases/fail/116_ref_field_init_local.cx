@@ -1,5 +1,5 @@
 // INIT 的形参与局部变量在构造返回后即失效
-@A {
+A {
     pub int-& r
     pub INIT(int s) { self.r = s }
 }

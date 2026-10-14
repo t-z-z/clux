@@ -1,5 +1,5 @@
 // 推导实参：形参不是泛型形参时按转换判定，转换不通即推导失败
-@Vec {
+Vec {
     pub int x = 0
     pub INIT(int a) { x = a }
 }

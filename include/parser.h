@@ -179,6 +179,7 @@ private:
     Decl* parse_decl();
     std::vector<Decl*> parse_members();
     bool parse_modifier_directive(SpecList& defaults);
+    bool is_slice_brace();
     VarList* parse_var_decl(SpecList &ml, Location &loc);
     Func* parse_func_decl(SpecList &ml, Location &loc);
     Class* parse_class_decl(SpecList &ml, Location &loc, std::vector<Type*> injs = {});

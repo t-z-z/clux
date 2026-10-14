@@ -1,7 +1,7 @@
 // 包装类：多个承载类型共存，互相转换与运算
-#int @rcInt{}
-#long @rcLong{}
-#bool @myBool{}
+#int rcInt{}
+#long rcLong{}
+#bool myBool{}
 main(){
     rcInt a = 1
     rcLong b = 2

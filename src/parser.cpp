@@ -180,15 +180,27 @@ Import* Parser::parse_import() {
     return nullptr;
 }
 
+// 声明的起始 token：词（关键字/标识符）、'$' 函数指针类型、
+// '[' 前缀数组类型、'#' 修饰注入
+static bool is_decl_start(const Token &tok) {
+    return tok.is_word()
+        || tok.kind == TokenKind::Dollar
+        || tok.kind == TokenKind::Hash;
+}
+// 变量名之后仍属该变量声明的 token；其余（'{'、'('、'-<'、'.' 等）
+// 说明该标识符是下一个声明的开头
+static bool is_var_tail(const Token &tok) {
+    return tok.kind == TokenKind::Assign || tok.kind == TokenKind::Comma
+        || tok.kind == TokenKind::BracketL || tok.kind == TokenKind::Semicolon
+        || tok.kind == TokenKind::BraceR || tok.kind == TokenKind::Eof;
+}
+
 Decl* Parser::parse_decl() {
-    if (!curr().is_word() && curr().kind != TokenKind::At
-        && curr().kind != TokenKind::Dollar
-        && curr().kind != TokenKind::BracketL
-        && curr().kind != TokenKind::Hash) return nullptr;
+    if (!is_decl_start(curr())) return nullptr;
     SpecList ml = parse_specs();
     auto sp = point();
     Location loc = get_loc();
-    // '#mods @Class {}' 修饰注入：可逆探测，非 '@' 时退回交给类型解析
+    // '#mods Class {}' 修饰注入：可逆探测，非类声明时退回交给类型解析
     if (curr().kind == TokenKind::Hash) {
         std::vector<Type*> injs;
         while (curr().kind == TokenKind::Hash) {
@@ -196,13 +208,13 @@ Decl* Parser::parse_decl() {
             if (!mod) break;
             injs.push_back(mod);
         }
-        if (curr().kind == TokenKind::At) {
-            return parse_class_decl(ml, loc, std::move(injs));
-        }
+        if (Class* c = parse_class_decl(ml, loc, std::move(injs))) return c;
         restore(sp);
     }
+    // 类声明以 `名称 [` 起始，与切片类型变量声明同形，由 parse_class_decl 自行判别
+    if (Class* c = parse_class_decl(ml, loc)) return c;
+    restore(sp);
     // 易于确定的优先级更高
-    if (curr().kind == TokenKind::At) return parse_class_decl(ml, loc);
     if (curr().kind == TokenKind::Enum) return parse_enum_decl(ml, loc);
     if (curr().kind == TokenKind::Keep) return parse_keep_decl(ml, loc);
     if (curr().kind == TokenKind::Operator) return parse_operator_overload(ml, loc);
@@ -249,7 +261,7 @@ Type* Parser::parse_modification() {
     walk();
 
     Type* mod = cu_.add_node<Type>(loc, Type::Identifier{name});
-    // 泛型注入 `#foo-<int> @bar`：实参表跟在修饰名之后
+    // 泛型注入 `#foo-<int> bar`：实参表跟在修饰名之后
     if (curr().kind == TokenKind::GenericStart) {
         return parse_type_args(mod);
     }
@@ -369,28 +381,52 @@ VarList* Parser::parse_var_decl(SpecList &ml, Location &loc) {
     );
 }
 
+// 当前 '{' 是否为切片类型的长度括号而非类体：只在 `T{n} 变量名` 中出现，
+// 即 '}' 之后紧跟变量名，且该名字之后仍能续接变量声明；
+// 否则它是新声明的开头，如空体类之后的函数声明
+bool Parser::is_slice_brace() {
+    // 与 parse_postfix_type 的判据一致：只有 {} 与 {长度} 才可能是切片
+    if (peek().kind != TokenKind::BraceR && !peek().is_ident()
+        && !peek().is_literal()) return false;
+    Mark m = point();
+    bool saved = trial_;
+    trial_ = true;
+    walk();
+    if (curr().kind != TokenKind::BraceR && !parse_array_length()) {
+        trial_ = saved;
+        restore(m);
+        return false;
+    }
+    bool slice = curr().kind == TokenKind::BraceR && peek().is_ident()
+        && (is_var_tail(peek(2)) || is_decl_start(peek(2)));
+    trial_ = saved;
+    restore(m);
+    return slice;
+}
+
+// 类声明：`[@] 名称 [泛型形参表] [修饰符] ['#' 修饰注入...] '{' 成员 '}'
+// '@' 已非必需，出现与否等价。头部全程可逆：形态不符时返回空指针，由调用方 restore 回退
 Class* Parser::parse_class_decl(SpecList &ml, Location &loc, std::vector<Type*> injs) {
-    if (curr().kind != TokenKind::At) return nullptr;
-    advance();
-    std::string_view name;
     if (!curr().is_ident()) {
-        add_error("expected class name after @");
-        // 语义上不允许，语法上仍需要解析匿名类
-    }else {
+        return nullptr;
+    }
+    std::string_view name;
+    if (curr().is_ident()) {
         name = curr().get_val();
-        advance();
+        walk();
     }
     std::vector<TypeParam*> type_params;
     parse_type_params(type_params);
     SpecList nml = parse_specs();
-    ml.merge(nml);
-    // 尾随注入：#mod 出现在类名之后、成员之前（如 `@b #qux { }`）
+    // 尾随注入：#mod 出现在类名之后、成员之前（如 `b #qux { }`）
     std::vector<Type*> trailing;
     while (curr().kind == TokenKind::Hash) {
         Type* mod = parse_modification();
         if (!mod) break;
         trailing.push_back(mod);
     }
+    if (curr().kind != TokenKind::BraceL || is_slice_brace()) return nullptr;
+    ml.merge(nml);
     std::vector<Decl*> members = parse_members();
     Class* raw = cu_.add_node<Class>(
         loc, std::move(name), std::move(ml), std::move(members),
@@ -434,13 +470,12 @@ std::vector<Decl*> Parser::parse_members() {
             add_error("unexpected token: " + curr().quote());
             advance();
         }
-        if (is_eof()) {
-            add_warning("unterminated container, expected '}'");
-            break;
-        }
+        if (is_eof()) break;   // 未闭合，交由循环后统一报错
     }
     if (curr().kind == TokenKind::BraceR) {
         advance(); // 消费 '}'
+    } else {
+        add_error("unterminated container, expected '}'");
     }
     return members;
 }

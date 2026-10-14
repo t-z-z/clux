@@ -1,5 +1,5 @@
 // static 字段没有 INIT 可绑定
-@A {
+A {
     pub static int g = 0
     pub static int-& sr = g
     pub INIT() { }
