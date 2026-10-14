@@ -17,7 +17,7 @@
 namespace cx {
 
 // 泛型形参名 -> 实例化类型；键为字符串池中的名字，生命周期同 AST
-using TypeSubst = std::unordered_map<std::string_view, Expr*>;
+using TypeSubst = std::unordered_map<std::string_view, Type*>;
 
 // 泛型模板判定：带泛型形参表的类或函数
 inline bool is_generic_decl(const Decl* d) {
@@ -76,20 +76,17 @@ struct Symbol {
             default:                      kind = SymbolKind::Variable; break;
         }
     }
-    Expr* get_type() {
+    Type* get_type() {
         if (!node) return nullptr;
         if (auto* vi = dynamic_cast<VarItem*>(node)) {
             return vi->type;
         }
-        if (auto* e = dynamic_cast<Expr*>(node)) {
-            if (e->is_type_node()) return e;
-        }
-        return nullptr;
+        return dynamic_cast<Type*>(node);
     }
     Decl* get_decl() {
         if (!node) return nullptr;
-        if (auto* e = dynamic_cast<Expr*>(node)) {
-            return e->resolved_decl;
+        if (auto* t = dynamic_cast<Type*>(node)) {
+            return t->resolved_decl;
         } else if (Decl* d = dynamic_cast<Decl*>(node)) {
             return d;
         }
@@ -303,7 +300,7 @@ class SemanticAnalyzer : public ASTVisitor {
     // 语义分析期生成的整数字面量文本存储（deque 保证元素地址稳定）
     std::deque<std::string> literal_pool_;
     // T[] 的长度待推导；推导不出来时在收尾统一报错
-    std::vector<Expr*> pending_infer_arrays_;
+    std::vector<Type*> pending_infer_arrays_;
     // extern 块内的变量声明：存储在外部库，不受模块级变量限制
     std::unordered_set<const Decl*> extern_vars_;
     void collect_extern_vars();
@@ -316,12 +313,12 @@ class SemanticAnalyzer : public ASTVisitor {
     // 生成的实例名存储（deque 保证元素地址稳定，须活过 AST）
     std::deque<std::string> instance_names_;
 
-    #define X(name,str) Expr* type##name;
+    #define X(name,str) Type* type##name;
     TYPE
     #undef X
-    Expr* typeString; // StringLiteral
-    Expr* typeInferred;
-    Expr* typeNull;   // Null
+    Type* typeString; // StringLiteral
+    Type* typeInferred;
+    Type* typeNull;   // Null
     
 public:
     explicit SemanticAnalyzer(CompUnit& cu, GenericState* generics = nullptr)
@@ -333,12 +330,12 @@ public:
             [this](const Location& loc, const std::string& msg) { error(loc, msg); },
             [this](const Location& loc, const std::string& msg) { warning(loc, msg); },
             [this](Decl* d, bool dp) { collect_decl(d, dp); });
-        #define X(name,str) type##name = make_type(Location(), Expr::Primitive{PrimitiveTypeKind::name});
+        #define X(name,str) type##name = make_type(Location(), Type::Primitive{PrimitiveTypeKind::name});
         TYPE
         #undef X
-        typeString = make_type(Location(), Expr::StringLiteralType{});
-        typeInferred = make_type(Location(), Expr::Inferred{});
-        typeNull = make_type(Location(), Expr::Null{});
+        typeString = make_type(Location(), Type::StringLiteralType{});
+        typeInferred = make_type(Location(), Type::Inferred{});
+        typeNull = make_type(Location(), Type::Null{});
     }
     void merge_external_symbols(const SymbolTable& external){
         symbols_.merge_from(external);
@@ -362,7 +359,7 @@ public:
     const SymbolTable& symbol_table() const { return symbols_; }
 
     // 类型转字符串（用于生成 callkey）
-    std::string type_to_key(Expr& t);
+    std::string type_to_key(Type& t);
 
     // 作用域管理（配合 ASTVisitor）
     void scope_in(std::string) override;
@@ -411,16 +408,20 @@ public:
     void visit_stmt_keep(Stmt::Keep&) override;
     void visit_stmt_var_decl(Stmt::VarDecl&) override;
 
-    void visit_type_primitive(Expr::Primitive&) override;
-    void visit_type_pointer(Expr::Pointer&) override;
-    void visit_type_array(Expr::ArrayType&) override;
-    void visit_type_func_ptr(Expr::FuncPtr&) override;
-    void visit_type_func_ref(Expr::FuncRef&) override;
-    void visit_type_reference(Expr::Reference&) override;
-    void visit_type_inferred(Expr::Inferred&) override;
-    void visit_type_void(Expr::Void&) override;
-    void visit_type_string_literal(Expr::StringLiteralType&) override;
-    void visit_type_generic(Expr::GenericType&) override;
+    void visit_type_primitive(Type::Primitive&) override;
+    void visit_type_pointer(Type::Pointer&) override;
+    void visit_type_reference(Type::Reference&) override;
+    void visit_type_array(Type::ArrayType&) override;
+    void visit_type_identifier(Type::Identifier&) override;
+    void visit_type_member(Type::Member&) override;
+    void visit_type_func_ptr(Type::FuncPtr&) override;
+    void visit_type_func_ref(Type::FuncRef&) override;
+    void visit_type_inferred(Type::Inferred&) override;
+    void visit_type_void(Type::Void&) override;
+    void visit_type_string_literal(Type::StringLiteralType&) override;
+    void visit_type_generic(Type::GenericType&) override;
+    void visit_type_null(Type::Null&) override;
+    void visit_expr_generic(Expr::GenericType&) override;
 
     // 泛型：模板摘除与登记（实例化在 src/semantic_generic.cpp）
     void collect_generics();
@@ -428,32 +429,35 @@ public:
                             bool default_public);
     void extract_generic_templates(std::vector<Decl*>& members, Scope* scope,
                                    bool default_public);
-    Class* instantiate_class(Class& tmpl, const std::vector<Expr*>& args,
+    Class* instantiate_class(Class& tmpl, const std::vector<Type*>& args,
                              const Location& loc);
-    Func* instantiate_func(Func& tmpl, const std::vector<Expr*>& args,
-                           const std::vector<Expr*>& arg_types,
+    Func* instantiate_func(Func& tmpl, const std::vector<Type*>& args,
+                           const std::vector<Type*>& arg_types,
                            const Location& loc);
     // 从实参类型推导形参类型的实例化：形参位置是泛型形参则绑定或校验一致性，
     // 否则退化为 can_convert_to 判定（含 is_same_type）
-    bool deduce_type(Expr* param, Expr* arg, TypeSubst& subst,
+    bool deduce_type(Type* param, Type* arg, TypeSubst& subst,
                      const std::vector<TypeParam*>& tparams);
     // 模板的登记信息；模板已从 AST 摘除，仍可按声明指针取回
     bool generic_template_of(const Decl* d, GenericState::Template& out) const;
     // 克隆树中类型位置的泛型形参名替换为实参类型
     void substitute_types(Decl* d, const TypeSubst& subst);
     // 实例名与缓存键：类型键按实参顺序以 '$' 连接
-    std::string instance_key(const std::vector<Expr*>& args);
+    std::string instance_key(const std::vector<Type*>& args);
     // 作用域链拼出的限定名（根作用域不计）：实例挂到顶层声明后仍须唯一
     std::string scope_path(Scope* s) const;
     std::string_view intern_name(std::string name);
     // 实例声明的具名类型节点：与模板名同形（限定名保持限定）
-    Expr* instance_type_node(Expr* base, Decl* inst, bool is_type);
+    Type* instance_type_node(Type* base, Decl* inst);
+    // 值位置的实例引用：指向实例的标识符/限定名，签名取实例类型
+    Expr* instance_ref_node(Expr* base, Decl* inst);
     Symbol* instance_symbol(Decl* inst);
     // 在模板的声明作用域里立即分析实例：调用点随后拿到的签名已是就绪的。
     // 分析过程可能级联实例化别的泛型，靠实例缓存终止
     void analyze_instance(Decl* d, Scope* scope);
     // 泛型误用诊断：类型位置缺实参、泛型函数以值引用
-    void check_generic_use(Expr* e, Decl* d);
+    void check_generic_use(Type* t, Decl* d);
+    void check_generic_ref_use(Expr* e, Decl* d);
 
 private:
 
@@ -463,14 +467,14 @@ private:
     void warning(const Location& loc, const std::string& msg);
 
     // 类型工具
-    Expr* make_type(const Location& loc, Expr::Variant v);
-    Expr* make_named_type(const Location& loc, std::string_view name,
+    Type* make_type(const Location& loc, Type::Variant v);
+    Type* make_named_type(const Location& loc, std::string_view name,
                           Decl* decl = nullptr, Scope* scope = nullptr);
     Expr* make_int_literal(const Location& loc, size_t value);
     // 数组长度的编译期常量形式；非编译期常量返回 nullptr
     Expr* const_length_literal(Expr* len, int depth = 0);
     // T[]：按初值推导长度并就地改为定长数组，推导不出来时保持 Infer 待报错
-    void resolve_infer_array_len(Expr& type, Expr* init_type, Expr* init_expr);
+    void resolve_infer_array_len(Type& type, Type* init_type, Expr* init_expr);
     void report_infer_arrays();
     // 类字段按值内嵌另一个类：自身内联或相互内联使布局无解，须报错
     void check_embedded_layout();
@@ -488,38 +492,38 @@ private:
     std::string build_callkey(const std::string& name, const std::vector<VarList*>& params);
     std::string build_callkey(const std::string& name, const std::vector<Expr*>& args);
     
-    Symbol* find_operator_overload(OpKind op, Expr& type, Expr& other,
-                                   Expr** matched_param = nullptr);
-    Symbol* find_operator_overload(OpKind op, Expr& type);
+    Symbol* find_operator_overload(OpKind op, Type& type, Type& other,
+                                   Type** matched_param = nullptr);
+    Symbol* find_operator_overload(OpKind op, Type& type);
     // 实际上包含了 is_same_type ，使用之前不用再判 is_same_type
-    bool can_convert_to(Expr* src, Expr* dst);
+    bool can_convert_to(Type* src, Type* dst);
     // 基础类型来源的包装类判定；非包装类返回 nullptr
-    Class* wrap_class_of(Expr* t);
+    Class* wrap_class_of(Type* t);
     // 任意类（含非包装类）的解析
-    Class* wrap_or_plain_class(Expr* t);
+    Class* wrap_or_plain_class(Type* t);
     // 表达式是否持有 malloc 实例：类本身是 malloc 类，或变量声明带 malloc 修饰
     bool is_malloc_value(Expr* e);
-    // 包装类的承载类型表达式
-    Expr* wrap_base_type(Class* c);
-    bool has_conversion(Expr* src, Expr* dst);
-    Symbol* find_conversion(Expr& src, Expr& dst);
+    // 包装类的承载类型
+    Type* wrap_base_type(Class* c);
+    bool has_conversion(Type* src, Type* dst);
+    Symbol* find_conversion(Type& src, Type& dst);
     // 记录隐式转换（conversion 函数或包装转换）到表达式上；已处理返回 true
-    bool record_conversion(Expr* e, Expr* dst);
+    bool record_conversion(Expr* e, Type* dst);
     std::string build_conv_key(Func& f);
     // = 赋值、() 传参、cast 转换三种情形共用的转换判定入口
-    bool check_conversion(Expr* src, Expr* dst, const std::string& context,
+    bool check_conversion(Type* src, Type* dst, const std::string& context,
                          const Location& loc, bool explicit_cast = false);
     // 数组字面量/字符串字面量的编译期元素数不得超过目标数组类型的长度约束
-    void check_array_len_fit(Expr* src, Expr* dst_type, const std::string& context,
+    void check_array_len_fit(Expr* src, Type* dst_type, const std::string& context,
                              const Location& loc);
     // 形参定长时强制实参数组长度相同；形参为所有权切片时实参长度任意
-    void check_param_array_len(Expr* arg, Expr* at, Expr* pt, const Location& loc);
+    void check_param_array_len(Expr* arg, Type* at, Type* pt, const Location& loc);
     // 整数字面量在转换到目标整数类型时是否溢出
-    void check_literal_range(Expr* value, Expr* dst, const std::string& context,
+    void check_literal_range(Expr* value, Type* dst, const std::string& context,
                              const Location& loc);
 
     // 类型判断
-    Symbol* lookup_member_on_type(Expr* type, const std::string& field, Scope** found_scope);
+    Symbol* lookup_member_on_type(Type* type, const std::string& field, Scope** found_scope);
 
     // 声明收集与注册
     // P0：注册类名与类外声明，不进入类内部
@@ -561,9 +565,9 @@ private:
     void check_call_args(const std::vector<VarList*>& params,
                          const std::vector<Expr*>& args, const Location& loc);
     // 平铺多个 VarList 声明的形参类型节点
-    static std::vector<Expr*> param_types(const std::vector<VarList*>& lists);
+    static std::vector<Type*> param_types(const std::vector<VarList*>& lists);
     // 引用形参：按被引用目标类型匹配且实参须为 lvalue。已按引用形参处理返回 true
-    bool check_ref_param(Expr* arg, Expr* param);
+    bool check_ref_param(Expr* arg, Type* param);
     bool args_match(const std::vector<VarList*>& params,
                     const std::vector<Expr*>& args);
     // vi 是否为当前函数最后一个返回声明中的返回变量

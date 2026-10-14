@@ -14,7 +14,7 @@ namespace cx {
 class IRWriter;
 
 // 字段类型取自 VarItem 或其所在 VarList，故解析后存在 Field 上统一使用
-struct TranslatorField { VarItem* var; int index; Expr* type; std::string ir_type; };
+struct TranslatorField { VarItem* var; int index; Type* type; std::string ir_type; };
 struct TranslatorClass {
     std::string llvm_name;
     std::vector<TranslatorField> fields;
@@ -145,7 +145,7 @@ private:
     void emit_class_types();
 
     SpecialMethod* find_special(Class* cls, SpecialMethod::Kind k) const;
-    Class*         pointee_class(Expr* t);
+    Class*         pointee_class(Type* t);
     void           emit_guard_call(SpecialMethod* sm, const std::string& val);
     void           emit_bind_ref(Class* cls, const std::string& val,
                                  SpecialMethod::Kind k);
@@ -156,7 +156,7 @@ private:
                                          int depth = -1,
                                          std::vector<std::pair<std::string, int>> path = {});
 
-    std::string map_type(Expr* t);
+    std::string map_type(Type* t);
 
     void emit_instr(const std::string& s);
     void emit_term(const std::string& s);
@@ -171,9 +171,9 @@ private:
     void emit_var_decl(VarList* vl);
     bool emit_class_var(VarList* vl, VarItem* vi, Class* cls);
     // 定长数组无初值：分配 backing 并以 {ptr,i32} 存入槽
-    bool emit_array_noinit(VarItem* vi, Expr* vtype, const std::string& slot);
+    bool emit_array_noinit(VarItem* vi, Type* vtype, const std::string& slot);
     // 由指针构造定长数组：int[N] s = ptr
-    bool emit_ptr_to_array(Expr* vtype, Expr* ptr, const std::string& slot);
+    bool emit_ptr_to_array(Type* vtype, Expr* ptr, const std::string& slot);
     bool emit_array_string_init(VarItem* vi, const std::string& slot);
     void emit_if(Stmt::If& i);
     void emit_while(Stmt::While& w);
@@ -217,7 +217,7 @@ private:
     // 合成操作符的函数体 IR：解包 __value -> 运算 -> 打包返回
     void emit_synth_operator(Func& f, Class* cls, VarItem* ret_var);
     // 合成操作符的函数体 IR：解包 __value -> 运算 -> 打包返回
-    Class* as_wrap_class(Expr* t);
+    Class* as_wrap_class(Type* t);
     static std::string base_ir_of(PrimitiveTypeKind k);
     // 类实例的字节大小（供 @malloc 分配）
     std::string emit_size_of(const std::string& llvm_name);
@@ -245,41 +245,41 @@ private:
     std::string eval_cast(Expr* e, Expr::Cast* c);
     std::string eval_ternary(Expr* e, Expr::Ternary* t);
     std::string eval_spawn(Expr* e, Expr::Spawn* s);
-    std::string call_func_ptr(Expr* e, Expr::Call* c, Expr::FuncPtr* fp);
-    int array_length_of(Expr* arrtype);
+    std::string call_func_ptr(Expr* e, Expr::Call* c, Type::FuncPtr* fp);
+    int array_length_of(Type* arrtype);
 
     // 定长数组 T[N] 在 IR 里是真正的 [N x T]，值统一用存储地址表示，
     // 故 map_type 给 ptr；object_type 给出 alloca / load / store 用的真实类型
-    bool is_fixed_array(Expr* t) const;
-    std::string object_type(Expr* t);
+    bool is_fixed_array(Type* t) const;
+    std::string object_type(Type* t);
     // 入口块 alloca：长度是编译期常量的存储（定长数组、编译期长度的切片），
     // 整个函数只分配一次，循环里复用同一块，不会逐轮吃栈
     std::string entry_alloca(const std::string& ir_type);
     // 运行期长度的存储：栈上 alloca，并用 stacksave/stackrestore 在作用域
     // 结束时回收（alloca 本身只在函数返回时释放，循环里会逐轮吃栈）
-    std::string alloc_slice_storage(Expr* elem_type, const std::string& count);
+    std::string alloc_slice_storage(Type* elem_type, const std::string& count);
     // 数组/切片/字符串的长度：编译期已知返回常量文本，否则返回运行期值
     std::string length_value_of(Expr* e);
     // 拷贝 count 个元素（count 为 i64 值或整数字面量）
     void copy_elements(const std::string& dst, const std::string& src,
-                       Expr* elem_type, const std::string& count);
+                       Type* elem_type, const std::string& count);
     // 两个长度取较小者：常量文本直接比，运行期部分用 icmp/select
     std::string min_count(const std::string& a, const std::string& b);
     std::string min_with_const(const std::string& v, long long k);
     // 把初值内容拷进已有存储，长度取目标与初值的较小者
-    void copy_init_into(const std::string& backing, Expr* elem_type,
+    void copy_init_into(const std::string& backing, Type* elem_type,
                         const std::string& len64, Expr* init);
     // 定长数组初始化：把初值元素写入已分配的存储
-    void emit_fixed_array_init(const std::string& slot, Expr* elem_type, int n,
+    void emit_fixed_array_init(const std::string& slot, Type* elem_type, int n,
                                Expr* init);
     // 按目标数组类型求值：字面量按目标的元素类型构造
-    std::string eval_as_array(Expr* e, Expr* target);
+    std::string eval_as_array(Expr* e, Type* target);
     // 所有权切片初始化：按长度分配存储，拷贝初值内容，存入 {ptr,len}
-    void emit_slice_init(VarList* vl, const std::string& slot, Expr* vtype,
+    void emit_slice_init(VarList* vl, const std::string& slot, Type* vtype,
                          Expr* init);
 
     std::string data_ptr_of(Expr* e);
-    bool is_ref_item(const VarItem* vi, Expr** target_out) const;
+    bool is_ref_item(const VarItem* vi, Type** target_out) const;
     // 成员表达式的存储地址：static 字段为全局符号，实例字段为 getelementptr
     std::string field_addr_of(Expr* e);
     // 引用字段的槽存被引用对象的地址，取其 lvalue 需先取出该地址

@@ -6,7 +6,7 @@ namespace cx {
 
 // 类型转换判定与检查集中于此：本组逻辑分支密集、最易出错，
 // 单独成文件以便评审与测试。
-bool SemanticAnalyzer::record_conversion(Expr* e, Expr* dst) {
+bool SemanticAnalyzer::record_conversion(Expr* e, Type* dst) {
     if (!e || !e->type || !dst) return false;
     bool same = is_same_type(e->type, dst);
     // self->self conversion 是拷贝语义（COPY）：仅当源为已存在对象（lvalue）
@@ -25,7 +25,7 @@ bool SemanticAnalyzer::record_conversion(Expr* e, Expr* dst) {
     return false;
 }
 
-Symbol* SemanticAnalyzer::find_conversion(Expr& src, Expr& dst) {
+Symbol* SemanticAnalyzer::find_conversion(Type& src, Type& dst) {
     std::string srckey = type_to_key(src);
     std::string dstkey = type_to_key(dst);
     if (Symbol* sym = symbols_.lookup_member("conversion_" + srckey + "_" + dstkey))
@@ -36,8 +36,8 @@ Symbol* SemanticAnalyzer::find_conversion(Expr& src, Expr& dst) {
     return scope->lookup_member("conversion_" + dstkey);
 }
 
-Class* SemanticAnalyzer::wrap_or_plain_class(Expr* t) {
-    if (!t || !t->is_type) return nullptr;
+Class* SemanticAnalyzer::wrap_or_plain_class(Type* t) {
+    if (!t) return nullptr;
     if (!t->resolved_decl || t->resolved_decl->kind != DeclKind::Class)
         return nullptr;
     return static_cast<Class*>(t->resolved_decl);
@@ -52,8 +52,8 @@ bool SemanticAnalyzer::is_malloc_value(Expr* e) {
     return e->sym && e->sym->specs && e->sym->specs->has(SpecKind::Malloc);
 }
 
-Class* SemanticAnalyzer::wrap_class_of(Expr* t) {
-    if (!t || !t->is_type) return nullptr;
+Class* SemanticAnalyzer::wrap_class_of(Type* t) {
+    if (!t) return nullptr;
     if (!t->resolved_decl || t->resolved_decl->kind != DeclKind::Class)
         return nullptr;
     auto* c = static_cast<Class*>(t->resolved_decl);
@@ -61,14 +61,12 @@ Class* SemanticAnalyzer::wrap_class_of(Expr* t) {
     return c;
 }
 
-Expr* SemanticAnalyzer::wrap_base_type(Class* c) {
-    Expr* e = cu_.add_node<Expr>(c->loc, Expr::Primitive{c->base_source});
-    e->is_type = true;
-    return e;
+Type* SemanticAnalyzer::wrap_base_type(Class* c) {
+    return cu_.add_node<Type>(c->loc, Type::Primitive{c->base_source});
 }
 
 // 实际上包含了is_same_type，使用之前不用再判is_same_type
-bool SemanticAnalyzer::can_convert_to(Expr* src, Expr* dst) {
+bool SemanticAnalyzer::can_convert_to(Type* src, Type* dst) {
     if (!src || !dst) return false;
     if (!src && !dst) return true;
     if (auto* r=src->get_reference()) {
@@ -105,8 +103,8 @@ bool SemanticAnalyzer::can_convert_to(Expr* src, Expr* dst) {
     // 指针 → 定长数组：由目标类型提供长度（int[N] s = ptr）
     if (src->is_pointer() && dst->is_array_type() &&
         !is_slice_type(dst) && dst->get_array_type()->length) {
-        Expr* elem = dst->get_array_type()->element;
-        Expr* pointee = src->get_pointer()->pointee;
+        Type* elem = dst->get_array_type()->element;
+        Type* pointee = src->get_pointer()->pointee;
         if (elem && pointee &&
             (is_same_type(elem, pointee) || is_void_type(pointee)))
             return true;
@@ -114,15 +112,15 @@ bool SemanticAnalyzer::can_convert_to(Expr* src, Expr* dst) {
 
     // 定长数组 → 所有权切片：backing 与长度都现成；反向不可，长度运行期才知道
     if (src->is_array_type() && !is_slice_type(src) && is_slice_type(dst)) {
-        Expr* elem = src->get_array_type()->element;
-        Expr* delem = dst->get_array_type()->element;
+        Type* elem = src->get_array_type()->element;
+        Type* delem = dst->get_array_type()->element;
         if (elem && delem && is_same_type(elem, delem)) return true;
     }
 
     // 数组/切片 → 指向元素类型的指针（元素相同，或目标为 void*）
     if (src->is_array_type() && dst->is_pointer()) {
-        Expr* elem = src->get_array_type()->element;
-        Expr* pointee = dst->get_pointer()->pointee;
+        Type* elem = src->get_array_type()->element;
+        Type* pointee = dst->get_pointer()->pointee;
         if (elem && pointee &&
             (is_same_type(elem, pointee) || is_void_type(pointee)))
             return true;
@@ -130,7 +128,7 @@ bool SemanticAnalyzer::can_convert_to(Expr* src, Expr* dst) {
 
     // 字符串字面量 → 字符指针（底层是带 NUL 的字符序列）
     if (src->is_string_literal_type() && dst->is_pointer()) {
-        Expr* pointee = dst->get_pointer()->pointee;
+        Type* pointee = dst->get_pointer()->pointee;
         if (pointee && pointee->is_primitive()) {
             auto k = pointee->get_primitive()->kind;
             if (k == PrimitiveTypeKind::Char || k == PrimitiveTypeKind::UChar ||
@@ -145,7 +143,7 @@ bool SemanticAnalyzer::can_convert_to(Expr* src, Expr* dst) {
         Func* f = src->get_func_ref()->func;
         auto* fp = dst->get_func_ptr();
         if (f) {
-            std::vector<Expr*> params;
+            std::vector<Type*> params;
             for (VarList* vl : f->params) {
                 if (!vl) continue;
                 for (VarItem* vi : vl->vars)
@@ -156,7 +154,7 @@ bool SemanticAnalyzer::can_convert_to(Expr* src, Expr* dst) {
                 for (size_t i = 0; i < params.size(); ++i)
                     if (!is_same_type(params[i], fp->params[i])) { ok = false; break; }
                 if (ok) {
-                    Expr* ret = typeVoid;
+                    Type* ret = typeVoid;
                     if (!f->returns.empty() && f->returns.back() &&
                         f->returns.back()->type)
                         ret = f->returns.back()->type;
@@ -175,11 +173,11 @@ bool SemanticAnalyzer::can_convert_to(Expr* src, Expr* dst) {
 
     // 包装特判：目标为包装类则比承载类型；源为包装类则比承载类型
     if (Class* dw = wrap_class_of(dst)) {
-        Expr* bt = wrap_base_type(dw);
+        Type* bt = wrap_base_type(dw);
         if (can_convert_to(src, bt)) return true;
     }
     if (Class* sw = wrap_class_of(src)) {
-        Expr* bt = wrap_base_type(sw);
+        Type* bt = wrap_base_type(sw);
         if (can_convert_to(bt, dst)) return true;
     }
 
@@ -187,11 +185,11 @@ bool SemanticAnalyzer::can_convert_to(Expr* src, Expr* dst) {
 }
 
 // conversion 判定：判断 src 能否转换为 dst，复用 can_convert_to 的转换规则
-bool SemanticAnalyzer::has_conversion(Expr* src, Expr* dst) {
+bool SemanticAnalyzer::has_conversion(Type* src, Type* dst) {
     return can_convert_to(src, dst);
 }
 
-void SemanticAnalyzer::check_array_len_fit(Expr* src, Expr* dst_type,
+void SemanticAnalyzer::check_array_len_fit(Expr* src, Type* dst_type,
                                            const std::string& context,
                                            const Location& loc) {
     if (!src || !dst_type || !dst_type->is_array_type()) return;
@@ -209,11 +207,11 @@ void SemanticAnalyzer::check_array_len_fit(Expr* src, Expr* dst_type,
 }
 
 // 整数字面量在转换到目标整数类型时是否溢出
-void SemanticAnalyzer::check_literal_range(Expr* value, Expr* dst,
+void SemanticAnalyzer::check_literal_range(Expr* value, Type* dst,
                                            const std::string& context,
                                            const Location& loc) {
     if (!value || !value->is_literal() || !dst) return;
-    Expr* ud = dst;
+    Type* ud = dst;
     if (!ud || !ud->is_primitive()) return;
     bool dst_signed = false; int dst_bits = 0;
     if (!primitive_int_range(ud->get_primitive()->kind, dst_signed, dst_bits))
@@ -232,7 +230,7 @@ void SemanticAnalyzer::check_literal_range(Expr* value, Expr* dst,
 
 // 形参定长时强制实参数组长度相同；形参为所有权切片时实参长度任意。
 // 数组字面量实参不受此限（允许按目标长度补齐）。
-void SemanticAnalyzer::check_param_array_len(Expr* arg, Expr* at, Expr* pt,
+void SemanticAnalyzer::check_param_array_len(Expr* arg, Type* at, Type* pt,
                                              const Location& loc) {
     if (!at || !pt) return;
     if (!pt->is_array_type() || !at->is_array_type()) return;
@@ -252,7 +250,7 @@ void SemanticAnalyzer::check_param_array_len(Expr* arg, Expr* at, Expr* pt,
     }
 }
 
-bool SemanticAnalyzer::check_conversion(Expr* src, Expr* dst, const std::string& context,
+bool SemanticAnalyzer::check_conversion(Type* src, Type* dst, const std::string& context,
                                         const Location& loc, bool explicit_cast) {
     if (!src || !dst) return false;
     if (is_same_type(src, dst)) return true;
@@ -266,8 +264,8 @@ bool SemanticAnalyzer::check_conversion(Expr* src, Expr* dst, const std::string&
     }
     if (explicit_cast) {
         // 仅当显式 cast 能落到确定语义时才放行；否则报错，避免生成非法 IR
-        Expr* us = src;
-        Expr* ud = dst;
+        Type* us = src;
+        Type* ud = dst;
         bool base_same = us && ud && is_same_type(us, ud);
         bool both_ptr = us && ud && (us->is_pointer() || us->is_reference()) &&
                         (ud->is_pointer() || ud->is_reference());
@@ -277,7 +275,7 @@ bool SemanticAnalyzer::check_conversion(Expr* src, Expr* dst, const std::string&
              (is_integer_type(us) && ud->is_pointer()));
         if (ptr_int) {
             // 目标平台指针 64 位：窄于 64 位的整数会截断/扩展地址
-            Expr* int_t = us->is_pointer() ? ud : us;
+            Type* int_t = us->is_pointer() ? ud : us;
             bool sign = false; int bits = 0;
             if (int_t->is_primitive() &&
                 primitive_int_range(int_t->get_primitive()->kind, sign, bits) &&

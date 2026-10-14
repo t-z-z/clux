@@ -112,7 +112,7 @@ std::string Mangler::field_of(const VarItem* vi) const {
     return it != fields_.end() ? it->second : std::string();
 }
 
-std::string Mangler::type_key(Expr* t) {
+std::string Mangler::type_key(Type* t) {
     if (!t) return "nullptr";
     if (auto* p = t->get_primitive()) return primitive_ir(p->kind);
     if (auto* p = t->get_pointer())   return "P_" + type_key(p->pointee);
@@ -127,7 +127,7 @@ std::string Mangler::type_key(Expr* t) {
     if (t->get_string_literal_type()) return "S";
     if (auto* fp = t->get_func_ptr()) {
         std::string s = "F";
-        for (Expr* p : fp->params) s += "_" + type_key(p);
+        for (Type* p : fp->params) s += "_" + type_key(p);
         s += "_ret_" + type_key(fp->return_type);
         return s;
     }

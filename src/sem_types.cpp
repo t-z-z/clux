@@ -9,7 +9,7 @@
 
 namespace cx {
 
-std::string type_name_string(Expr* t) {
+std::string type_name_string(Type* t) {
     if (!t) return "";
     if (auto* id = t->get_identifier()) return std::string(id->name);
     if (auto* m = t->get_member())
@@ -17,11 +17,11 @@ std::string type_name_string(Expr* t) {
     return "";
 }
 
-bool ref_is_lvalue(Expr* t) {
+bool ref_is_lvalue(Type* t) {
     return t && t->is_reference();
 }
 
-Scope* named_type_scope(Expr* t) {
+Scope* named_type_scope(Type* t) {
     if (!t) return nullptr;
     if (t->resolved_scope) return t->resolved_scope;
     if (t->resolved_decl) {
@@ -234,12 +234,12 @@ std::string sym_display_name(Symbol* sym) {
 }
 
 
-bool is_slice_type(Expr* t) {
+bool is_slice_type(Type* t) {
     if (!t || !t->is_array_type()) return false;
     return t->get_array_type()->kind == ArrayKind::Slice;
 }
 
-long long const_array_type_len(Expr* t) {
+long long const_array_type_len(Type* t) {
     if (!t || !t->is_array_type()) return -1;
     Expr* len = t->get_array_type()->length;
     if (!len || !len->is_literal()) return -1;
@@ -251,13 +251,13 @@ long long const_array_type_len(Expr* t) {
     return (long long)v;
 }
 
-bool is_enum_type(Expr* t) {
+bool is_enum_type(Type* t) {
     if (!t) return false;
-    return t->is_type && (t->is_identifier() || t->is_member()) &&
+    return t->is_named() &&
            t->resolved_decl && t->resolved_decl->kind == DeclKind::Enum;
 }
 
-bool is_numeric_type(Expr* t) {
+bool is_numeric_type(Type* t) {
     if (!t) return false;
     // 枚举底层是数字
     if (is_enum_type(t)) return true;
@@ -266,7 +266,7 @@ bool is_numeric_type(Expr* t) {
     return k != PrimitiveTypeKind::Bool && k != PrimitiveTypeKind::Type && k != PrimitiveTypeKind::Void;
 }
 
-bool is_integer_type(Expr* t) {
+bool is_integer_type(Type* t) {
     if (!t) return false;
     // 枚举底层是整数
     if (is_enum_type(t)) return true;
@@ -281,17 +281,17 @@ bool is_integer_type(Expr* t) {
     return false;
 }
 
-bool is_float_type(Expr* t) {
+bool is_float_type(Type* t) {
     if (!t || !t->is_primitive()) return false;
     auto k = t->get_primitive()->kind;
     return k == PrimitiveTypeKind::Float16 || k == PrimitiveTypeKind::Float || k == PrimitiveTypeKind::Double;
 }
 
-bool is_bool_type(Expr* t) {
+bool is_bool_type(Type* t) {
     return t && t->is_primitive() && t->get_primitive()->kind == PrimitiveTypeKind::Bool;
 }
 
-bool is_condition_type(Expr* t) {
+bool is_condition_type(Type* t) {
     if (is_bool_type(t)) return true;
     if (!t) return false;
     // 数组不进条件：定长数组恒有存储，切片的长度语义也不该隐式当真假用，
@@ -299,13 +299,13 @@ bool is_condition_type(Expr* t) {
     return t->is_pointer() || t->is_null();
 }
 
-bool is_same_type(Expr* a, Expr* b) {
+bool is_same_type(Type* a, Type* b) {
     if (!a && !b) return true;
     if (!a || !b) return false;
     // StringLiteral 与 char[] 视为同类
-    auto is_char_array = [](Expr* t) {
+    auto is_char_array = [](Type* t) {
         if (!t || !t->is_array_type()) return false;
-        Expr* elem = t->get_array_type()->element;
+        Type* elem = t->get_array_type()->element;
         return elem && elem->is_primitive()
             && elem->get_primitive()->kind == PrimitiveTypeKind::Char;
     };
@@ -313,7 +313,7 @@ bool is_same_type(Expr* a, Expr* b) {
     if (b->is_string_literal_type() && is_char_array(a)) return true;
     // 枚举底层是数字：与 int 及其他枚举等价
     if (is_enum_type(a) || is_enum_type(b)) {
-        auto as_i32 = [](Expr* x) {
+        auto as_i32 = [](Type* x) {
             if (is_enum_type(x)) return true;
             if (auto* p = x->get_primitive())
                 return p->kind == PrimitiveTypeKind::Int;
@@ -321,8 +321,8 @@ bool is_same_type(Expr* a, Expr* b) {
         };
         return as_i32(a) && as_i32(b);
     }
-    bool a_named = a->is_type && (a->is_identifier() || a->is_member());
-    bool b_named = b->is_type && (b->is_identifier() || b->is_member());
+    bool a_named = a->is_named();
+    bool b_named = b->is_named();
     if (a_named && b_named) {
         if (a->resolved_decl && b->resolved_decl) {
             return a->resolved_decl == b->resolved_decl;
@@ -364,7 +364,7 @@ bool is_same_type(Expr* a, Expr* b) {
     return false;
 }
 
-bool is_integer_promotable(Expr* t) {
+bool is_integer_promotable(Type* t) {
     if (!t || !t->is_primitive()) return false;
     auto k = t->get_primitive()->kind;
     return k == PrimitiveTypeKind::Int8 || k == PrimitiveTypeKind::Short
@@ -372,7 +372,7 @@ bool is_integer_promotable(Expr* t) {
         || k == PrimitiveTypeKind::Char;
 }
 
-bool is_void_type(Expr* t) {
+bool is_void_type(Type* t) {
     if (!t) return false;
     if (t->is_void()) return true;
     // 解析器把源码中的 void 生成为 Primitive{Void}

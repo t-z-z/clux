@@ -181,7 +181,7 @@ private:
     bool parse_modifier_directive(SpecList& defaults);
     VarList* parse_var_decl(SpecList &ml, Location &loc);
     Func* parse_func_decl(SpecList &ml, Location &loc);
-    Class* parse_class_decl(SpecList &ml, Location &loc, std::vector<Expr*> injs = {});
+    Class* parse_class_decl(SpecList &ml, Location &loc, std::vector<Type*> injs = {});
     Namespace* parse_namespace_decl(SpecList &ml, Location &loc);
     Extern* parse_extern_decl(SpecList &ml, Location &loc);
     Operator* parse_operator_overload(SpecList &ml, Location &loc);
@@ -218,8 +218,9 @@ private:
     bool is_prefix_op(TokenKind kind);
     bool is_statement_boundary();
     Expr* parse_prefix();
-    Expr* parse_postfix(Expr* left, bool is_type);
-    Expr* append_array_dim(const Location& loc, Expr* base,
+    Expr* parse_postfix_expr(Expr* left);
+    Type* parse_postfix_type(Type* left);
+    Type* append_array_dim(const Location& loc, Type* base,
                             Expr* len, ArrayKind kind);
     Expr* parse_block_expr();
     Expr* parse_func_literal();
@@ -230,24 +231,28 @@ private:
 
     std::vector<VarList*> parse_value_params(bool* variadic = nullptr);    // (int a ...)
 
-    Expr* parse_type();
-    Expr* parse_type_atom();
+    Type* parse_type();
+    Type* parse_type_atom();
     Expr* parse_array_length();
-    Expr* parse_primitive_type();
-    Expr* parse_func_type();     // $(int)int
-    Expr* parse_named_type();    // List
+    Type* parse_primitive_type();
+    Type* parse_func_type();     // $(int)int
+    Type* parse_named_type();    // List
 
     // 泛型：形参表 `foo-<T, U>` 与实参表 `List-<int>`
     void parse_type_params(std::vector<TypeParam*>& out);
-    Expr* parse_type_args(Expr* base);
+    // 泛型实参表 `-<T, U>`：base 在类型位置得到 Type::GenericType，
+    // 在值位置得到 Expr::GenericType，两者实参都是类型
+    std::vector<Type*> parse_generic_args();
+    Type* parse_type_args(Type* base);
+    Expr* parse_expr_args(Expr* base);
 
     // 其他辅助函数
-    std::vector<Expr*> parse_type_list_in_paren();
+    std::vector<Type*> parse_type_list_in_paren();
     std::string_view parse_code();
     // 以下均可逆
     SpecList parse_specs();
     OpKind parse_operator();
-    Expr* parse_modification();
+    Type* parse_modification();
     template<typename T, typename F>
     std::optional<std::vector<T>> parse_list(
         TokenKind start,

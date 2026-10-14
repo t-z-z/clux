@@ -153,7 +153,7 @@ static std::optional<ConstValue> eval_unary(const Expr::Unary& u,
 }
 
 static std::optional<ConstValue> eval_cast(const ConstValue& v,
-                                           Expr* target_type,
+                                           Type* target_type,
                                            ConstEvalSink& sink,
                                            const Location& loc) {
     (void)sink; (void)loc;
