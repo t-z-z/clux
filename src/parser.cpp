@@ -116,7 +116,7 @@ bool Parser::parse_using_namespace() {
         }
         Location loc = get_loc();
         advance();
-        Expr* path = parse_type();
+        Type* path = parse_type();
         if (!path) {
             add_error("expected namespace path after 'using namespace'");
         }
@@ -140,14 +140,13 @@ bool Parser::parse_using_namespace() {
         break;
     }
     if (curr().kind == TokenKind::Colon) advance();
-    Expr* path = nullptr;
+    Type* path = nullptr;
     for (std::string_view part : parts) {
         if (!path) {
-            path = cu_.add_node<Expr>(loc, Expr::Identifier{part});
+            path = cu_.add_node<Type>(loc, Type::Identifier{part});
         } else {
-            path = cu_.add_node<Expr>(loc, Expr::Member{path, part});
+            path = cu_.add_node<Type>(loc, Type::Member{path, part});
         }
-        path->is_type = true;
     }
     cu_.add_using_namespace(path, loc);
     add_warning("'namespace <path>:' is deprecated, use 'using namespace <path>'");
@@ -191,9 +190,9 @@ Decl* Parser::parse_decl() {
     Location loc = get_loc();
     // '#mods @Class {}' 修饰注入：可逆探测，非 '@' 时退回交给类型解析
     if (curr().kind == TokenKind::Hash) {
-        std::vector<Expr*> injs;
+        std::vector<Type*> injs;
         while (curr().kind == TokenKind::Hash) {
-            Expr* mod = parse_modification();
+            Type* mod = parse_modification();
             if (!mod) break;
             injs.push_back(mod);
         }
@@ -233,16 +232,14 @@ SpecList Parser::parse_specs() {
     return ml;
 }
 
-Expr* Parser::parse_modification() {
+Type* Parser::parse_modification() {
     if (curr().kind != TokenKind::Hash) return nullptr;
     Location loc = get_loc();
     walk();
     if (curr().is_type()) {
         PrimitiveTypeKind kind = token_to_primitive_type(curr().kind);
         walk();
-        Expr* mod = cu_.add_node<Expr>(loc, Expr::Primitive{kind});
-        mod->is_type = true;
-        return mod;
+        return cu_.add_node<Type>(loc, Type::Primitive{kind});
     }
     if (!curr().is_ident()) {
         add_error("expected identifier or base type after '#'");
@@ -251,8 +248,7 @@ Expr* Parser::parse_modification() {
     std::string_view name = curr().get_val();
     walk();
 
-    Expr* mod = cu_.add_node<Expr>(loc, Expr::Identifier{name});
-    mod->is_type = true;
+    Type* mod = cu_.add_node<Type>(loc, Type::Identifier{name});
     // 泛型注入 `#foo-<int> @bar`：实参表跟在修饰名之后
     if (curr().kind == TokenKind::GenericStart) {
         return parse_type_args(mod);
@@ -304,11 +300,11 @@ Func* Parser::parse_func_decl(SpecList &ml, Location &loc) {
 
 // 变量的识别：类型或推导符加标识符
 VarList* Parser::parse_var_decl(SpecList &ml, Location &loc) {
-    Expr* type;
+    Type* type;
     auto sp = point();
     if (curr().kind == TokenKind::Let) {
         add_error("'let' is not implemented yet");
-        type = cu_.add_node<Expr>(get_loc(), Expr::Inferred{});
+        type = cu_.add_node<Type>(get_loc(), Type::Inferred{});
         advance();
     } else {
         type = parse_type();
@@ -322,7 +318,7 @@ VarList* Parser::parse_var_decl(SpecList &ml, Location &loc) {
             walk();
             // 后缀数组维度：T name[d1][d2] 等价于 T[d1][d2] name。
             // 与前缀形式混写（T[a] name[b]）没有唯一解释，直接报错
-            Expr* vtype = type;
+            Type* vtype = type;
             bool mixed_dim = type && type->is_array_type() &&
                              curr().kind == TokenKind::BracketL;
             if (mixed_dim)
@@ -373,7 +369,7 @@ VarList* Parser::parse_var_decl(SpecList &ml, Location &loc) {
     );
 }
 
-Class* Parser::parse_class_decl(SpecList &ml, Location &loc, std::vector<Expr*> injs) {
+Class* Parser::parse_class_decl(SpecList &ml, Location &loc, std::vector<Type*> injs) {
     if (curr().kind != TokenKind::At) return nullptr;
     advance();
     std::string_view name;
@@ -389,9 +385,9 @@ Class* Parser::parse_class_decl(SpecList &ml, Location &loc, std::vector<Expr*> 
     SpecList nml = parse_specs();
     ml.merge(nml);
     // 尾随注入：#mod 出现在类名之后、成员之前（如 `@b #qux { }`）
-    std::vector<Expr*> trailing;
+    std::vector<Type*> trailing;
     while (curr().kind == TokenKind::Hash) {
-        Expr* mod = parse_modification();
+        Type* mod = parse_modification();
         if (!mod) break;
         trailing.push_back(mod);
     }
@@ -1126,8 +1122,8 @@ Expr* Parser::parse_expr(int min_prec) {
         return nullptr;
     }
     
-    // 处理后缀链（类型后缀按类型解释）
-    left = parse_postfix(left, left->is_type);
+    // 处理值位置后缀链
+    left = parse_postfix_expr(left);
     if (!left) return nullptr;
     
     // 处理中缀操作符
@@ -1188,12 +1184,14 @@ Expr* Parser::parse_prefix() {
         return parse_literal();
     }
 
-    // 内置类型转换函数：typename(值) 或 识别原始类型为泛型参数表达式
+    // 内置类型转换函数：typename(值)
     if (curr().is_type()) {
         Location c_loc = get_loc();
-        Expr* target = parse_type();
+        Type* target = parse_type();
         if (curr().kind != TokenKind::ParenL) {
-            return target;
+            // 类型在值位置不成表达式（Expr 不再承载类型节点），
+            // 返回空指针，由调用方按缺表达式报错
+            return nullptr;
         }
         advance();
         Expr* operand = parse_expr();
@@ -1318,7 +1316,7 @@ Expr* Parser::parse_prefix() {
 // 追加一维数组类型：先写的维度在外层，后写的在内层。
 // int[A][B] 里 A 是最外层长度、B 是最内层长度；后缀声明 int a[A][B] 同理。
 // 故新维度总是插入已有数组类型最内层 element 的位置
-Expr* Parser::append_array_dim(const Location& loc, Expr* base,
+Type* Parser::append_array_dim(const Location& loc, Type* base,
                                Expr* len, ArrayKind kind) {
     // 递归到最内层再插入：新维度永远是最内层。
     // int a[A][B][C] 的三次追加依次得到 A->int、A->B->int、A->B->C->int，
@@ -1328,21 +1326,18 @@ Expr* Parser::append_array_dim(const Location& loc, Expr* base,
         a->element = append_array_dim(loc, a->element, len, kind);
         return base;
     }
-    Expr* node = cu_.add_node<Expr>(loc, Expr::ArrayType{base, len, kind});
-    node->is_type = true;
-    return node;
+    return cu_.add_node<Type>(loc, Type::ArrayType{base, len, kind});
 }
 
-// 统一后缀链：is_type 决定 [] 与 -*/-& 的解释，并决定可逆 walk 还是 advance
-Expr* Parser::parse_postfix(Expr* left, bool is_type) {
-    // 类型位置的可逆性由 parse_type 的 trial 守卫保证，advance 在 trial 中即 walk
+// 值位置的后缀链。类型位置的同形后缀见 parse_postfix_type，
+// 两者的 [] 与 -*/-& 解释不同，改动须同步
+Expr* Parser::parse_postfix_expr(Expr* left) {
     for (;;) {
         Location loc = get_loc();
         switch (curr().kind) {
             // 函数调用：foo(bar) / foo(bar)--{} / foo--{}
             case TokenKind::ParenL:
             case TokenKind::DoubleHyphen: {
-                if (is_type) return left;
                 std::vector<Expr*> args;
                 if (curr().kind == TokenKind::ParenL) {
                     args = parse_list<Expr*>(
@@ -1372,49 +1367,97 @@ Expr* Parser::parse_postfix(Expr* left, bool is_type) {
                 );
                 continue;
             }
-            // 索引 vs 数组类型: []
+            // 索引
             case TokenKind::BracketL: {
                 advance();
-                if (is_type) {
-                    Expr* length = nullptr;
-                    if (curr().kind != TokenKind::BracketR) {
-                        length = parse_array_length();
-                        if (!length) {
-                            add_error("expected array length expression");
-                            return nullptr;
-                        }
-                        if (curr().kind != TokenKind::BracketR) {
-                            add_error("expected ']' after array length");
-                            return nullptr;
-                        }
-                    }
-                    advance();
-                    Expr* node = cu_.add_node<Expr>(loc, Expr::ArrayType{
-                        left, length,
-                        length ? ArrayKind::Fixed : ArrayKind::Infer});
-                    node->is_type = true;
-                    left = node;
+                Expr* index = parse_expr();
+                if (!index) {
+                    add_error("expected index expression");
+                }
+                if (curr().kind != TokenKind::BracketR) {
+                    add_error("expected ']'");
                 } else {
-                    Expr* index = parse_expr();
-                    if (!index) {
-                        add_error("expected index expression");
-                    }
-                    if (curr().kind != TokenKind::BracketR) {
-                        add_error("expected ']'");
-                    } else {
+                    advance();
+                }
+                left = cu_.add_node<Expr>(
+                    loc,
+                    Expr::Index{left, index}
+                );
+                continue;
+            }
+            // 成员/作用域: . ::
+            case TokenKind::Dot:
+            case TokenKind::ColonColon: {
+                advance();
+                if (!curr().is_ident()) {
+                    add_error("expected member name after '.' or '::'");
+                    return left;
+                }
+                std::string_view member = curr().get_val();
+                advance();
+                left = cu_.add_node<Expr>(
+                    loc,
+                    Expr::Member{left, member}
+                );
+                continue;
+            }
+            // 值位置的泛型应用 foo-<int>(1)：实参表与类型位置同形
+            case TokenKind::GenericStart: {
+                left = parse_expr_args(left);
+                continue;
+            }
+            // -* 解引用，-& 取地址
+            case TokenKind::Minus: {
+                if (peek().kind == TokenKind::Mul || peek().kind == TokenKind::BitAnd) {
+                    advance();
+                    while(curr().kind == TokenKind::Mul || curr().kind == TokenKind::BitAnd) {
+                        left = make_unary(curr(), left, true);
                         advance();
                     }
-                    left = cu_.add_node<Expr>(
-                        loc,
-                        Expr::Index{left, index}
-                    );
+                    continue;
                 }
+                return left;
+            }
+            default:
+                return left;
+        }
+    }
+}
+
+// 类型位置的后缀链。全程可逆：探测性 parse_var_decl 失败后 restore 必须仍然有效，
+// 由 parse_type 的 trial 守卫保证（trial 期间 advance 退化为 walk）
+Type* Parser::parse_postfix_type(Type* left) {
+    for (;;) {
+        Location loc = get_loc();
+        switch (curr().kind) {
+            // 函数调用不是类型后缀，交给值位置解析
+            case TokenKind::ParenL:
+            case TokenKind::DoubleHyphen:
+                return left;
+            // 数组类型: T[N] / T[]
+            case TokenKind::BracketL: {
+                advance();
+                Expr* length = nullptr;
+                if (curr().kind != TokenKind::BracketR) {
+                    length = parse_array_length();
+                    if (!length) {
+                        add_error("expected array length expression");
+                        return nullptr;
+                    }
+                    if (curr().kind != TokenKind::BracketR) {
+                        add_error("expected ']' after array length");
+                        return nullptr;
+                    }
+                }
+                advance();
+                left = cu_.add_node<Type>(loc, Type::ArrayType{
+                    left, length,
+                    length ? ArrayKind::Fixed : ArrayKind::Infer});
                 continue;
             }
             // 所有权切片类型: T{} 或 T{n}
             // 与函数体起始的 '{' 区分：只有形如 {} 或 {长度} 的才当切片类型
             case TokenKind::BraceL: {
-                if (!is_type) return left;
                 if (peek().kind != TokenKind::BraceR && !peek().is_ident() &&
                     !peek().is_literal()) return left;
                 advance();
@@ -1431,13 +1474,11 @@ Expr* Parser::parse_postfix(Expr* left, bool is_type) {
                     return left;
                 }
                 advance();
-                Expr* node = cu_.add_node<Expr>(loc,
-                    Expr::ArrayType{left, length, ArrayKind::Slice});
-                node->is_type = true;
-                left = node;
+                left = cu_.add_node<Type>(loc,
+                    Type::ArrayType{left, length, ArrayKind::Slice});
                 continue;
             }
-            // 成员/作用域: . ::
+            // 限定名: . ::
             case TokenKind::Dot:
             case TokenKind::ColonColon: {
                 advance();
@@ -1447,45 +1488,36 @@ Expr* Parser::parse_postfix(Expr* left, bool is_type) {
                 }
                 std::string_view member = curr().get_val();
                 advance();
-                Expr* node = cu_.add_node<Expr>(
+                left = cu_.add_node<Type>(
                     loc,
-                    Expr::Member{left, member}
+                    Type::Member{left, member}
                 );
-                node->is_type = left->is_type;
-                left = node;
                 continue;
             }
-            // 泛型实参 List-<int>：独立的 '-<' 符号，类型与表达式位置同义
+            // 泛型实参 List-<int>：独立的 '-<' 符号
             case TokenKind::GenericStart: {
                 left = parse_type_args(left);
                 continue;
             }
-            // -* 解引用/指针，-& 取地址/引用
+            // -* 指针，-& 引用
             case TokenKind::Minus: {
                 if (peek().kind == TokenKind::Mul || peek().kind == TokenKind::BitAnd) {
                     advance();
-                    if (is_type) {
-                        while(curr().kind == TokenKind::Mul || curr().kind == TokenKind::BitAnd) {
-                            Location uloc = get_loc();
-                            Expr* node;
-                            if (curr().kind == TokenKind::Mul) {
-                                node = cu_.add_node<Expr>(uloc, Expr::Pointer{left});
-                            } else {
-                                node = cu_.add_node<Expr>(uloc, Expr::Reference{left});
-                            }
-                            walk();
-                            left = node;
-                            node->is_type = true;
+                    while(curr().kind == TokenKind::Mul || curr().kind == TokenKind::BitAnd) {
+                        Location uloc = get_loc();
+                        Type* node;
+                        if (curr().kind == TokenKind::Mul) {
+                            node = cu_.add_node<Type>(uloc, Type::Pointer{left});
+                        } else {
+                            node = cu_.add_node<Type>(uloc, Type::Reference{left});
                         }
-                    } else {
-                        while(curr().kind == TokenKind::Mul || curr().kind == TokenKind::BitAnd) {
-                            left = make_unary(curr(), left, true);
-                            advance();
-                        }
+                        walk();
+                        left = node;
                     }
                     continue;
                 }
-                if (is_type && peek().kind == TokenKind::BracketL) {
+                // `-[` 是前缀数组类型 T[a]b 的后缀续写
+                if (peek().kind == TokenKind::BracketL) {
                     advance();
                     continue;
                 }
@@ -1577,8 +1609,8 @@ Expr* Parser::make_binary(Expr* left, Token op, Expr* right) {
     );
 }
 
-std::vector<Expr*> Parser::parse_type_list_in_paren() {
-    return parse_list<Expr*>(
+std::vector<Type*> Parser::parse_type_list_in_paren() {
+    return parse_list<Type*>(
         TokenKind::ParenL,
         TokenKind::ParenR,
         TokenKind::Comma,
@@ -1636,8 +1668,8 @@ Expr* Parser::parse_array_length() {
     return parse_expr();
 }
 
-Expr* Parser::parse_type_atom() {
-    Expr* t = nullptr;
+Type* Parser::parse_type_atom() {
+    Type* t = nullptr;
     if (curr().is_type()) {
         t = parse_primitive_type();
     } else if (curr().kind == TokenKind::Dollar) {
@@ -1646,56 +1678,48 @@ Expr* Parser::parse_type_atom() {
         t = parse_named_type();
     }
     if (!t) return nullptr;
-    // 后缀链与表达式共用；类型位置按类型解释
-    return parse_postfix(t, true);
+    return parse_postfix_type(t);
 }
 
 // 类型解析全程可逆：探测性 parse_decl 失败后 restore 必须仍然有效。
 // 期间 advance 退化为 walk，退出时恢复。
-Expr* Parser::parse_type() {
+Type* Parser::parse_type() {
     bool saved = trial_;
     trial_ = true;
-    Expr* t = parse_type_atom();
+    Type* t = parse_type_atom();
     trial_ = saved;
     return t;
 }
 
-Expr* Parser::parse_primitive_type() {
+Type* Parser::parse_primitive_type() {
     if (!curr().is_type()) return nullptr;
     Location loc = get_loc();
     PrimitiveTypeKind kind = token_to_primitive_type(curr().kind);
     walk();
-    Expr* t = cu_.add_node<Expr>(loc, Expr::Primitive{kind});
-    t->is_type = true;
-    return t;
+    return cu_.add_node<Type>(loc, Type::Primitive{kind});
 }
 
-Expr* Parser::parse_func_type() {
+Type* Parser::parse_func_type() {
     if (curr().kind != TokenKind::Dollar) return nullptr;
     Location loc = get_loc();
     walk();
 
-    std::vector<Expr*> param_types = parse_type_list_in_paren();
+    std::vector<Type*> param_types = parse_type_list_in_paren();
 
-    Expr* return_type = parse_type();
+    Type* return_type = parse_type();
     if (!return_type) {
         add_error("expected return type after $() or $");
     }
 
-    Expr* t = cu_.add_node<Expr>(loc, Expr::FuncPtr{param_types, return_type});
-    t->is_type = true;
-    return t;
+    return cu_.add_node<Type>(loc, Type::FuncPtr{param_types, return_type});
 }
 
-Expr* Parser::parse_named_type() {
+Type* Parser::parse_named_type() {
     if (!curr().is_ident()) return nullptr;
     Location loc = get_loc();
     std::string_view name = curr().get_val();
     walk();
-
-    Expr* t = cu_.add_node<Expr>(loc, Expr::Identifier{name});
-    t->is_type = true;
-    return t;
+    return cu_.add_node<Type>(loc, Type::Identifier{name});
 }
 
 // 裂解余部重新派发：'>' 起始的操作符去掉首字符后只可能是这三种文本
@@ -1745,9 +1769,9 @@ void Parser::parse_type_params(std::vector<TypeParam*>& out) {
     );
 }
 
-// 泛型实参表 `-<T, U>`：跟在具名类型或函数名之后，构造泛型应用节点
-Expr* Parser::parse_type_args(Expr* base) {
-    std::vector<Expr*> args = parse_list<Expr*>(
+// 泛型实参表 `-<T, U>`：类型位置与值位置语法同形，实参恒为类型
+std::vector<Type*> Parser::parse_generic_args() {
+    std::vector<Type*> args = parse_list<Type*>(
         TokenKind::GenericStart,
         TokenKind::Greater,
         TokenKind::Comma,
@@ -1755,11 +1779,20 @@ Expr* Parser::parse_type_args(Expr* base) {
         "type argument"
     ).value_or({});
     // parse_list 正常结束时已消费 '>'；停在 EOF 说明未闭合，其内部已报错
+    if (is_eof()) return args;
+    return args;
+}
+
+Type* Parser::parse_type_args(Type* base) {
+    std::vector<Type*> args = parse_generic_args();
     if (is_eof()) return base;
-    Expr* node = cu_.add_node<Expr>(base->loc,
-        Expr::GenericType{base, std::move(args)});
-    node->is_type = base->is_type;
-    return node;
+    return cu_.add_node<Type>(base->loc, Type::GenericType{base, std::move(args)});
+}
+
+Expr* Parser::parse_expr_args(Expr* base) {
+    std::vector<Type*> args = parse_generic_args();
+    if (is_eof()) return base;
+    return cu_.add_node<Expr>(base->loc, Expr::GenericType{base, std::move(args)});
 }
 
 template<typename T, typename F>

@@ -196,7 +196,7 @@ void FlowChecker::init_stmt(InitCtx& ctx, Stmt* s) {
             } else {
                 // 数组声明即分配存储：定长数组内联，切片按长度另行分配，
                 // 长度与首元素地址都已在声明处定下，视为已初始化
-                Expr* vt = vi->type ? vi->type : vl->type;
+                Type* vt = vi->type ? vi->type : vl->type;
                 if (sym && vt && vt->is_array_type())
                     ctx.assigned.insert(sym);
             }
@@ -299,7 +299,7 @@ void FlowChecker::init_expr(InitCtx& ctx, Expr* e) {
         init_expr(ctx, a->value);
         // INIT 内对引用字段的赋值是绑定：形参与局部变量在构造返回后即失效
         if (a->target && a->target->sym) {
-            Expr* tt = a->target->sym->get_type();
+            Type* tt = a->target->sym->get_type();
             if (tt && tt->is_reference() && ctx.in_init &&
                 !ctx.declared.count(a->target->sym) && a->value &&
                 a->value->sym && ctx.declared.count(a->value->sym))
@@ -339,7 +339,7 @@ bool FlowChecker::can_use_register_ret(Func& f) {
     VarList* rl = f.returns.back();
     if (rl->vars.empty()) return false;
     VarItem* ret_var = rl->vars.back();
-    Expr* ty = ret_var->type ? ret_var->type : rl->type;
+    Type* ty = ret_var->type ? ret_var->type : rl->type;
     if (!ty) return false;
     bool scalar_ret = false;
     if (auto* p = ty->get_primitive())

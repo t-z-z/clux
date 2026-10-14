@@ -10,13 +10,13 @@ namespace cx {
 struct Symbol;
 
 // 类型名节点（Identifier / 限定名 Member 链）的完整名字
-std::string type_name_string(Expr* t);
+std::string type_name_string(Type* t);
 
 // 引用类型的表达式即 lvalue
-bool ref_is_lvalue(Expr* t);
+bool ref_is_lvalue(Type* t);
 
 // 命名类型节点的成员作用域
-Scope* named_type_scope(Expr* t);
+Scope* named_type_scope(Type* t);
 
 // 目标整数原始类型的符号性与位宽；返回 false 表示不是受检整数类型
 bool primitive_int_range(PrimitiveTypeKind k, bool& is_signed, int& bits);
@@ -49,37 +49,37 @@ int integer_rank(PrimitiveTypeKind k);
 long long const_array_len_of(Expr* e);
 
 // 所有权切片类型 T{}
-bool is_slice_type(Expr* t);
+bool is_slice_type(Type* t);
 
 // 数组类型的编译期长度；切片、无长度或长度非字面量返回 -1
-long long const_array_type_len(Expr* t);
+long long const_array_type_len(Type* t);
 
 // 枚举类型（类型位置的标识符/限定名，解析为 Enum 声明）
-bool is_enum_type(Expr* t);
+bool is_enum_type(Type* t);
 
 // 数值类型（非 bool/type/void 的基础类型）
-bool is_numeric_type(Expr* t);
+bool is_numeric_type(Type* t);
 
 // 整数类型（含有符号/无符号/char 系）
-bool is_integer_type(Expr* t);
+bool is_integer_type(Type* t);
 
 // 浮点类型
-bool is_float_type(Expr* t);
+bool is_float_type(Type* t);
 
 // 布尔类型
-bool is_bool_type(Expr* t);
+bool is_bool_type(Type* t);
 
 // 条件位置允许的类型：bool、指针、null（数组按隐式转换报警告）
-bool is_condition_type(Expr* t);
+bool is_condition_type(Type* t);
 
 // 结构等价判定：基础类型同名，指针/引用/数组逐层递归，函数指针签名一致
-bool is_same_type(Expr* a, Expr* b);
+bool is_same_type(Type* a, Type* b);
 
 // 可整型提升的类型（窄于 int 的整数）
-bool is_integer_promotable(Expr* t);
+bool is_integer_promotable(Type* t);
 
 // void 类型（含源码中的 void 关键字节点）
-bool is_void_type(Expr* t);
+bool is_void_type(Type* t);
 
 // 符号的展示名：变量取变量名，其余取声明名
 std::string sym_display_name(Symbol* sym);

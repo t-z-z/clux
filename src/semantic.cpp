@@ -29,14 +29,13 @@ void SemanticAnalyzer::warning(const Location& loc, const std::string& msg) {
     diagnostics_.push_back(Diagnostic(DiagLevel::Warning, msg, loc));
 }
 
-Expr* SemanticAnalyzer::make_type(const Location& loc, Expr::Variant v) {
-    return cu_.add_node<Expr>(loc, std::move(v));
+Type* SemanticAnalyzer::make_type(const Location& loc, Type::Variant v) {
+    return cu_.add_node<Type>(loc, std::move(v));
 }
 
-Expr* SemanticAnalyzer::make_named_type(const Location& loc, std::string_view name,
+Type* SemanticAnalyzer::make_named_type(const Location& loc, std::string_view name,
                                         Decl* decl, Scope* scope) {
-    Expr* t = cu_.add_node<Expr>(loc, Expr::Identifier{name});
-    t->is_type = true;
+    Type* t = cu_.add_node<Type>(loc, Type::Identifier{name});
     t->resolved_decl = decl;
     t->resolved_scope = scope;
     return t;
@@ -162,7 +161,7 @@ void SemanticAnalyzer::collect() {
 void SemanticAnalyzer::process_using_namespaces() {
     std::unordered_set<Decl*> seen;
     for (const auto& un : cu_.using_namespaces) {
-        Expr* path = un.path;
+        Type* path = un.path;
         if (!path) continue;
         std::string full = type_name_string(path);
         Scope* cur = symbols_.root();
@@ -368,7 +367,7 @@ void SemanticAnalyzer::register_special(SpecialMethod& sm, bool default_public) 
     symbols_.insert_member(internal_name, std::move(sym));
 }
 
-std::string SemanticAnalyzer::type_to_key(Expr& t) {
+std::string SemanticAnalyzer::type_to_key(Type& t) {
     // 枚举底层是数字：与 int 同键
     if (is_enum_type(&t)) return "i32";
     if (t.is_primitive()) {
@@ -422,7 +421,7 @@ std::string SemanticAnalyzer::type_to_key(Expr& t) {
         }
         return ret + "(" + params + ")";
     }
-    if (t.is_type && (t.is_identifier() || t.is_member())) {
+    if (t.is_named()) {
         return "%" + type_name_string(&t);
     }
     if (t.is_void()) return "void";
@@ -473,7 +472,7 @@ void SemanticAnalyzer::visit_func(Func& f) {
         for (VarList* vl : f.params) {
             if (!vl) continue;
             for (VarItem* vi : vl->vars) {
-                Expr* ty = vi->type ? vi->type : vl->type;
+                Type* ty = vi->type ? vi->type : vl->type;
                 if (ty && ty->is_array_type())
                     error(vi->loc, "array parameter is not allowed in a variadic function");
             }
@@ -485,7 +484,7 @@ void SemanticAnalyzer::visit_func(Func& f) {
     if (f.is_extern_decl) {
         if (!f.returns.empty() && f.returns.back()) {
             VarList* rl = f.returns.back();
-            Expr* ty = nullptr;
+            Type* ty = nullptr;
             Location ty_loc = rl->loc;
             if (!rl->vars.empty()) {
                 VarItem* rv = rl->vars.back();
@@ -508,7 +507,7 @@ void SemanticAnalyzer::visit_func(Func& f) {
     if (!f.returns.empty() && f.returns.back()) {
         VarList* rl = f.returns.back();
         VarItem* rv = rl->vars.empty() ? nullptr : rl->vars.back();
-        Expr* ty = rv ? (rv->type ? rv->type : rl->type) : rl->type;
+        Type* ty = rv ? (rv->type ? rv->type : rl->type) : rl->type;
         if (ty && ty->is_reference()) {
             f.ret_via_reg = true;
             check_ref_return(f);
@@ -691,7 +690,7 @@ static bool class_has_ref_field(Class* c) {
 
 // 该初始化/赋值是否走等号逐字段拷贝：源是已存在的同类对象，
 // 且没有自转 conversion 接管（record_conversion 只在找到转换时挂 conv）
-static bool copies_reference_fields(Expr* src, Expr* dst) {
+static bool copies_reference_fields(Expr* src, Type* dst) {
     if (!src || !dst || src->conv || src->implicit_to) return false;
     if (!src->is_lvalue) return false;
     if (!is_same_type(src->type, dst)) return false;
@@ -701,16 +700,16 @@ static bool copies_reference_fields(Expr* src, Expr* dst) {
 // T[]：长度由初值推导，取自初值的编译期长度（字符串字面量按字符数）。
 // 元素本身也可能是 T[]，按初值的首个元素继续推导。推导不出来时保持 Infer，
 // 由 report_infer_arrays 统一报错
-void SemanticAnalyzer::resolve_infer_array_len(Expr& type, Expr* init_type,
+void SemanticAnalyzer::resolve_infer_array_len(Type& type, Type* init_type,
                                                Expr* init_expr) {
-    Expr::ArrayType* arr = type.get_array_type();
+    Type::ArrayType* arr = type.get_array_type();
     if (!arr || arr->kind != ArrayKind::Infer || arr->length) return;
     long long n = init_expr ? const_array_len_of(init_expr) : -1;
     if (n < 0) n = const_array_type_len(init_type);
     if (n < 0) return;
     arr->length = make_int_literal(type.loc, (size_t)n);
     arr->kind = ArrayKind::Fixed;
-    Expr* elem_type = init_type && init_type->is_array_type()
+    Type* elem_type = init_type && init_type->is_array_type()
         ? init_type->get_array_type()->element : nullptr;
     Expr* elem_expr = nullptr;
     if (init_expr && init_expr->is_array() &&
@@ -721,7 +720,7 @@ void SemanticAnalyzer::resolve_infer_array_len(Expr& type, Expr* init_type,
 }
 
 void SemanticAnalyzer::report_infer_arrays() {
-    for (Expr* t : pending_infer_arrays_) {
+    for (Type* t : pending_infer_arrays_) {
         if (!t || !t->is_array_type()) continue;
         auto* arr = t->get_array_type();
         if (arr->kind != ArrayKind::Infer || arr->length) continue;
@@ -762,7 +761,7 @@ void SemanticAnalyzer::visit_var_list(VarList& vl) {
         // 暂予禁止
         for (VarItem* var : vl.vars) {
             if (!var || !var->init) continue;
-            Expr* dt = var->type ? var->type : vl.type;
+            Type* dt = var->type ? var->type : vl.type;
             bool init_aggregate = var->init->is_array() ||
                 (var->init->type &&
                  var->init->type->is_string_literal_type());
@@ -776,7 +775,7 @@ void SemanticAnalyzer::visit_var_list(VarList& vl) {
     // 初始化类型检查：显式声明类型时，初值须可转换到声明类型（let 推导跳过）
     for (VarItem* var : vl.vars) {
         if (!var) continue;
-        Expr* dt = var->type ? var->type : vl.type;
+        Type* dt = var->type ? var->type : vl.type;
         // T[]：长度由初值推导。多个变量共用一个类型节点时按声明顺序取第一个
         // 能定出长度的初值，各变量长度不一致由数组字面量长度检查报出
         if (dt && dt->is_array_type())
@@ -803,15 +802,15 @@ void SemanticAnalyzer::visit_var_list(VarList& vl) {
             } else if (var->init->type->is_reference()) {
                 // 初值本身已是引用（如引用返回值的接收）：沿用它的绑定即可，
                 // 调用结果不是 lvalue，但绑定对象确已存在
-                Expr* it = var->init->type->get_reference()->target;
-                Expr* tgt = dt->get_reference()->target;
+                Type* it = var->init->type->get_reference()->target;
+                Type* tgt = dt->get_reference()->target;
                 if (tgt && it && !is_same_type(it, tgt))
                     error(var->init->loc, "reference target type mismatch");
             } else if (!var->init->is_lvalue) {
                 error(var->init->loc,
                       "reference must be initialized with an lvalue");
             } else {
-                Expr* tgt = dt->get_reference()->target;
+                Type* tgt = dt->get_reference()->target;
                 if (tgt && !tgt->is_reference() &&
                     !is_same_type(var->init->type, tgt))
                     error(var->init->loc, "reference target type mismatch");
@@ -1024,34 +1023,16 @@ void SemanticAnalyzer::visit_expr_null(Expr::Null&) {
 
 void SemanticAnalyzer::visit_expr_identifier(Expr::Identifier& id) {
     // self：当前实例本身，类型为自身的值类型
-    if (!current_expr->is_type && current_class && id.name == "self") {
+    if (current_class && id.name == "self") {
         current_expr->type = make_named_type(current_expr->loc, current_class->name,
                                              current_class, current_class->scope);
         current_expr->is_lvalue = true;
         return;
     }
-    // 类型位置的裸名：按类型解析
-    if (current_expr->is_type) {
-        std::string name(id.name);
-        Symbol* s = symbols_.lookup_member(name);
-        if (s && (s->kind == SymbolKind::Class ||
-                  s->kind == SymbolKind::Namespace ||
-                  s->kind == SymbolKind::Enum)) {
-            current_expr->sym = s;
-            current_expr->resolved_decl = s->get_decl();
-            current_expr->resolved_scope = s->scope;
-            // 泛型模板本体不参与语义，裸用（未给类型实参）在此拦下
-            check_generic_use(current_expr, s->get_decl());
-        } else {
-            error(current_expr->loc, "unknown type '" + name + "'");
-        }
-        return;
-    }
-
     Symbol* sym = symbols_.lookup_local(id.name);
     if (sym) {
         current_expr->sym = sym;
-        Expr* st = sym->get_type();
+        Type* st = sym->get_type();
         // 读取引用变量即读取被引用对象：隐式解引用为其目标类型
         if (st && st->is_reference()) st = st->get_reference()->target;
         current_expr->type = st;
@@ -1070,10 +1051,10 @@ void SemanticAnalyzer::visit_expr_identifier(Expr::Identifier& id) {
             if (Decl* d = member->get_decl()) {
                 if (d->kind == DeclKind::Func || d->kind == DeclKind::Operator)
                     current_expr->type = make_type(current_expr->loc,
-                        Expr::FuncRef{static_cast<Func*>(d)}
+                        Type::FuncRef{static_cast<Func*>(d)}
                     );
                 // 泛型函数以值引用没有可确定的签名（作为被调用者除外）
-                check_generic_use(current_expr, d);
+                check_generic_ref_use(current_expr, d);
             }
             current_expr->is_lvalue = false;
         } else if (member->kind == SymbolKind::Enum) {
@@ -1101,8 +1082,8 @@ void SemanticAnalyzer::visit_expr_identifier(Expr::Identifier& id) {
     error(current_expr->loc, "undefined identifier '" + std::string(id.name) + "'");
 }
 
-Symbol* SemanticAnalyzer::find_operator_overload(OpKind op, Expr& type, Expr& other,
-                                                 Expr** matched_param) {
+Symbol* SemanticAnalyzer::find_operator_overload(OpKind op, Type& type, Type& other,
+                                                 Type** matched_param) {
     std::string opstr = std::string(opkind_to_sv(op));
     std::string otherkey = type_to_key(other);
     Symbol* sym = symbols_.lookup_member(opstr + "_" + type_to_key(type) + otherkey);
@@ -1124,7 +1105,7 @@ Symbol* SemanticAnalyzer::find_operator_overload(OpKind op, Expr& type, Expr& ot
         if (opd->params.empty() || !opd->params[0]) continue;
         VarList* pl = opd->params[0];
         if (pl->vars.empty() || !pl->vars[0]) continue;
-        Expr* pt = pl->vars[0]->type ? pl->vars[0]->type : pl->type;
+        Type* pt = pl->vars[0]->type ? pl->vars[0]->type : pl->type;
         if (!pt) continue;
         if (can_convert_to(&other, pt)) {
             if (matched_param) *matched_param = pt;
@@ -1134,7 +1115,7 @@ Symbol* SemanticAnalyzer::find_operator_overload(OpKind op, Expr& type, Expr& ot
     return nullptr;
 }
 
-Symbol* SemanticAnalyzer::find_operator_overload(OpKind op, Expr& type) {
+Symbol* SemanticAnalyzer::find_operator_overload(OpKind op, Type& type) {
     std::string opstr = std::string(opkind_to_sv(op));
     Symbol* sym = symbols_.lookup_member(opstr + "_" + type_to_key(type));
     if (sym) return sym;
@@ -1207,8 +1188,8 @@ bool SemanticAnalyzer::is_param_item(VarItem* vi) const {
 
 
 void SemanticAnalyzer::visit_expr_binary(Expr::Binary& b) {
-    Expr* lt = b.left ? b.left->type : nullptr;
-    Expr* rt = b.right ? b.right->type : nullptr;
+    Type* lt = b.left ? b.left->type : nullptr;
+    Type* rt = b.right ? b.right->type : nullptr;
     if (!lt || !rt) return;
 
     // 非同包装类的混合运算：解包包装类一侧，走基础运算
@@ -1216,12 +1197,12 @@ void SemanticAnalyzer::visit_expr_binary(Expr::Binary& b) {
     Class* rw = wrap_class_of(rt);
     if (!(lw && rw && lw == rw) && (lw || rw)) {
         if (lw) {
-            Expr* base_t = wrap_base_type(lw);
+            Type* base_t = wrap_base_type(lw);
             record_conversion(b.left, base_t);
             lt = base_t;
         }
         if (rw) {
-            Expr* base_t = wrap_base_type(rw);
+            Type* base_t = wrap_base_type(rw);
             record_conversion(b.right, base_t);
             rt = base_t;
         }
@@ -1231,9 +1212,9 @@ void SemanticAnalyzer::visit_expr_binary(Expr::Binary& b) {
     if (is_enum_type(lt)) lt = typeInt;
     if (is_enum_type(rt)) rt = typeInt;
 
-    Expr* matched_param = nullptr;
+    Type* matched_param = nullptr;
     if (Symbol* s = find_operator_overload(b.op, *lt, *rt, &matched_param)) {
-        Expr* overload_ret = typeVoid;
+        Type* overload_ret = typeVoid;
         if (auto* op = s->get<Operator>()) {
             if (!op->returns.empty() && op->returns.back() && op->returns.back()->type)
                 overload_ret = op->returns.back()->type;
@@ -1314,7 +1295,7 @@ void SemanticAnalyzer::visit_expr_binary(Expr::Binary& b) {
 }
 
 void SemanticAnalyzer::visit_expr_unary(Expr::Unary& u) {
-    Expr* ot = u.operand ? u.operand->type : nullptr;
+    Type* ot = u.operand ? u.operand->type : nullptr;
 
     if (!ot) return;
     // 枚举底层是数字：一元运算时归一为 int
@@ -1374,7 +1355,7 @@ void SemanticAnalyzer::visit_expr_unary(Expr::Unary& u) {
         }
         case OpKind::BitAnd: {
             if (u.operand && u.operand->is_lvalue) {
-                current_expr->type = make_type(current_expr->loc, Expr::Pointer{ot});
+                current_expr->type = make_type(current_expr->loc, Type::Pointer{ot});
                 current_expr->is_lvalue = false;
             } else {
                 error(current_expr->loc, "address-of requires lvalue operand");
@@ -1402,18 +1383,18 @@ void SemanticAnalyzer::visit_expr_assign(Expr::Assign& a) {
         check_write_access(a.target->sym, current_expr->loc);
     }
 
-    Expr* lt = a.target->type;
+    Type* lt = a.target->type;
     // 引用目标的赋值写入被引用对象，按被引用类型判定
     if (a.target->sym) {
-        Expr* dt = a.target->sym->get_type();
+        Type* dt = a.target->sym->get_type();
         if (dt && dt->is_reference()) lt = dt->get_reference()->target;
     }
     if (lt && lt->is_reference()) lt = lt->get_reference()->target;
-    Expr* rt = a.value->type;
+    Type* rt = a.value->type;
 
     // 复合赋值操作符重载优先（可能具备与对应二元操作符不同的独特语义）
     if (a.op != OpKind::Assign && lt && rt) {
-        Expr* matched = nullptr;
+        Type* matched = nullptr;
         if (Symbol* s = find_operator_overload(a.op, *lt, *rt, &matched)) {
             if (matched && !is_same_type(rt, matched))
                 record_conversion(a.value, matched);
@@ -1476,16 +1457,16 @@ void SemanticAnalyzer::visit_expr_index(Expr::Index& idx) {
         return;
     }
 
-    Expr* tt = idx.target->type;
+    Type* tt = idx.target->type;
     if (!tt) {
         current_expr->type = nullptr;
         return;
     }
 
-    Expr* it = idx.index ? idx.index->type : nullptr;
+    Type* it = idx.index ? idx.index->type : nullptr;
     if (it) {
         if (Symbol* s = find_operator_overload(OpKind::Index, *tt, *it)) {
-            Expr* ret = typeVoid;
+            Type* ret = typeVoid;
             if (auto* op = s->get<Operator>()) {
                 if (!op->returns.empty() && op->returns.back() && op->returns.back()->type)
                     ret = op->returns.back()->type;
@@ -1528,9 +1509,9 @@ void SemanticAnalyzer::visit_expr_member(Expr::Member& m) {
 
     // 数组/切片的 .ptr：提取底层指针（指向元素类型）
     if (m.member == "ptr" && m.target->type && m.target->type->is_array_type()) {
-        Expr* elem = m.target->type->get_array_type()->element;
+        Type* elem = m.target->type->get_array_type()->element;
         current_expr->sym = nullptr;
-        current_expr->type = make_type(current_expr->loc, Expr::Pointer{elem});
+        current_expr->type = make_type(current_expr->loc, Type::Pointer{elem});
         current_expr->is_lvalue = false;
         return;
     }
@@ -1543,28 +1524,6 @@ void SemanticAnalyzer::visit_expr_member(Expr::Member& m) {
             current_expr->is_lvalue = false;
             return;
         }
-    }
-
-    // 类型位置的限定名：A::B / A.B 按类型路径解析
-    if (current_expr->is_type) {
-        Scope* scope = m.target->is_type
-            ? m.target->resolved_scope
-            : named_type_scope(m.target->type);
-        Symbol* tsym = scope
-            ? scope->lookup_member(std::string(m.member)) : nullptr;
-        if (tsym && (tsym->kind == SymbolKind::Class ||
-                     tsym->kind == SymbolKind::Namespace ||
-                     tsym->kind == SymbolKind::Enum)) {
-            current_expr->sym = tsym;
-            current_expr->resolved_decl = tsym->get_decl();
-            current_expr->resolved_scope = tsym->scope;
-            // 泛型模板本体不参与语义，裸用（未给类型实参）在此拦下
-            check_generic_use(current_expr, tsym->get_decl());
-        } else {
-            error(current_expr->loc,
-                  "unknown type '" + type_name_string(current_expr) + "'");
-        }
-        return;
     }
 
     Scope* target_scope = nullptr;
@@ -1595,7 +1554,7 @@ void SemanticAnalyzer::visit_expr_member(Expr::Member& m) {
 
         if (member->kind == SymbolKind::Variable && member->get_type()) {
             // 读取引用字段即读取被绑定对象：隐式解引用为其目标类型
-            Expr* ft = member->get_type();
+            Type* ft = member->get_type();
             if (ft->is_reference()) ft = ft->get_reference()->target;
             current_expr->type = ft;
             current_expr->is_lvalue = true;
@@ -1606,7 +1565,7 @@ void SemanticAnalyzer::visit_expr_member(Expr::Member& m) {
                 if (d->kind == DeclKind::Func || d->kind == DeclKind::Operator)
                     current_expr->type = make_type(
                         current_expr->loc,
-                        Expr::FuncRef{static_cast<Func*>(d)}
+                        Type::FuncRef{static_cast<Func*>(d)}
                     );
             }
             current_expr->is_lvalue = false;
@@ -1647,8 +1606,8 @@ void SemanticAnalyzer::visit_expr_cast(Expr::Cast& cast) {
     current_expr->is_lvalue = false;
 
     if (cast.operand && cast.operand->type) {
-        Expr* src = cast.operand->type;
-        Expr* dst = cast.target_type;
+        Type* src = cast.operand->type;
+        Type* dst = cast.target_type;
         if (is_same_type(src, dst)) {
             // 枚举与整数等价，int(enum) 是合法写法，不算多余 cast
             if (!is_enum_type(src) && !is_enum_type(dst))
@@ -1663,17 +1622,17 @@ void SemanticAnalyzer::visit_expr_cast(Expr::Cast& cast) {
 void SemanticAnalyzer::visit_expr_array(Expr::Array& arr) {
     if (arr.members.empty()) {
         // 填充形式 [x ...] 的长度只能由目标类型给出，自身长度未知
-        Expr* elem = arr.fill_value && arr.fill_value->type
+        Type* elem = arr.fill_value && arr.fill_value->type
             ? arr.fill_value->type : typeInt;
         current_expr->type = make_type(current_expr->loc,
             arr.fill_value
-                ? Expr::ArrayType{elem, nullptr, ArrayKind::Infer}
-                : Expr::ArrayType{elem, make_int_literal(current_expr->loc, 0)});
+                ? Type::ArrayType{elem, nullptr, ArrayKind::Infer}
+                : Type::ArrayType{elem, make_int_literal(current_expr->loc, 0)});
         current_expr->is_lvalue = false;
         return;
     }
 
-    Expr* elem_type = nullptr;
+    Type* elem_type = nullptr;
     for (auto* member : arr.members) {
         if (!member) continue;
         if (!elem_type) {
@@ -1684,19 +1643,19 @@ void SemanticAnalyzer::visit_expr_array(Expr::Array& arr) {
     }
 
     current_expr->type = make_type(current_expr->loc,
-        Expr::ArrayType{elem_type ? elem_type : typeInt,
+        Type::ArrayType{elem_type ? elem_type : typeInt,
                     make_int_literal(current_expr->loc, arr.members.size())});
     current_expr->is_lvalue = false;
 }
 
 void SemanticAnalyzer::visit_expr_ternary(Expr::Ternary& t) {
-    Expr* ct = t.cond ? t.cond->type : nullptr;
+    Type* ct = t.cond ? t.cond->type : nullptr;
     if (ct && !is_bool_type(ct)) {
         warning(t.cond->loc, "condition in ternary expression is not bool");
     }
 
-    Expr* tt = t.then_expr ? t.then_expr->type : nullptr;
-    Expr* et = t.else_expr ? t.else_expr->type : nullptr;
+    Type* tt = t.then_expr ? t.then_expr->type : nullptr;
+    Type* et = t.else_expr ? t.else_expr->type : nullptr;
 
     if (tt && et) {
         if (is_same_type(tt, et)) {
@@ -1722,7 +1681,7 @@ void SemanticAnalyzer::visit_stmt_if(Stmt::If& if_stmt) {
         return;
     }
     
-    Expr* cond_type = if_stmt.condition->type;
+    Type* cond_type = if_stmt.condition->type;
     if (cond_type && wrap_class_of(cond_type)) {
         record_conversion(if_stmt.condition, typeBool);
     } else if (cond_type && !is_condition_type(cond_type)) {
@@ -1736,7 +1695,7 @@ void SemanticAnalyzer::visit_stmt_while(Stmt::While& while_stmt) {
         return;
     }
     
-    Expr* cond_type = while_stmt.condition->type;
+    Type* cond_type = while_stmt.condition->type;
     if (cond_type && wrap_class_of(cond_type))
         record_conversion(while_stmt.condition, typeBool);
     if (cond_type && !is_condition_type(cond_type)) {
@@ -1746,7 +1705,7 @@ void SemanticAnalyzer::visit_stmt_while(Stmt::While& while_stmt) {
 
 void SemanticAnalyzer::visit_stmt_for(Stmt::For& for_stmt) {
     if (for_stmt.condition) {
-        Expr* cond_type = for_stmt.condition->type;
+        Type* cond_type = for_stmt.condition->type;
         if (cond_type && !is_condition_type(cond_type)) {
             warning(for_stmt.condition->loc, "for condition is not bool, implicit conversion");
         }
@@ -1789,7 +1748,7 @@ void SemanticAnalyzer::visit_expr_spawn(Expr::Spawn& sp) {
 
     if (auto* c = sp.call->get_call()) {
         // 引用形参按地址传递，被引用对象可能是栈变量，故同样禁止
-        std::vector<Expr*> params;
+        std::vector<Type*> params;
         if (c->resolved) {
             if (c->resolved->kind == DeclKind::Func ||
                 c->resolved->kind == DeclKind::Operator)
@@ -1800,7 +1759,7 @@ void SemanticAnalyzer::visit_expr_spawn(Expr::Spawn& sp) {
         for (size_t i = 0; i < c->args.size(); ++i) {
             Expr* arg = c->args[i];
             if (!arg) continue;
-            Expr* pt = i < params.size() ? params[i] : nullptr;
+            Type* pt = i < params.size() ? params[i] : nullptr;
             if (pt && pt->is_reference()) {
                 error(arg->loc, "spawn cannot capture a stack reference argument");
             } else if (arg->type && arg->type->is_pointer()) {
@@ -1812,12 +1771,12 @@ void SemanticAnalyzer::visit_expr_spawn(Expr::Spawn& sp) {
 
 // void 是合法返回类型/指针 pointee：解析器将 void 生成 Primitive{Void}，
 // 无法从节点本身判断上下文，故不在此处拒绝
-void SemanticAnalyzer::visit_type_primitive(Expr::Primitive&) {}
+void SemanticAnalyzer::visit_type_primitive(Type::Primitive&) {}
 // ast本来应该有指针指向的节点如果是nullptr，说明已经在parser报过错了，不要重复报错
 // 引用不可寻址，指针不能指向引用：否则 *p 该返回引用还是被引用对象无从判定
-void SemanticAnalyzer::visit_type_pointer(Expr::Pointer& p) {
+void SemanticAnalyzer::visit_type_pointer(Type::Pointer& p) {
     if (p.pointee && p.pointee->is_reference())
-        error(current_expr->loc, "cannot form a pointer to a reference");
+        error(current_type->loc, "cannot form a pointer to a reference");
 }
 // 编译期常量长度：经常量求值器折叠为整数字面量；
 // 返回 nullptr 表示不是编译期整数常量
@@ -1831,10 +1790,10 @@ Expr* SemanticAnalyzer::const_length_literal(Expr* len, int depth) {
     return make_int_literal(len->loc, (size_t)v->u);
 }
 
-void SemanticAnalyzer::visit_type_array(Expr::ArrayType& a) {
+void SemanticAnalyzer::visit_type_array(Type::ArrayType& a) {
     // 数组元素没有逐个绑定的语法，元素类型为引用则无法初始化
     if (a.element && a.element->is_reference())
-        error(current_expr->loc, "cannot form an array of references");
+        error(current_type->loc, "cannot form an array of references");
     // T{}：长度可以在 {n} 里给出（运行期），不参与常量校验
     if (a.kind == ArrayKind::Slice) {
         // {n} 里的长度能折叠成常量就折叠，运行期的长度原样保留
@@ -1845,21 +1804,21 @@ void SemanticAnalyzer::visit_type_array(Expr::ArrayType& a) {
     }
     // T[]：长度待推导，推导不出来时由 report_infer_arrays 统一报错
     if (!a.length) {
-        if (a.kind == ArrayKind::Infer) pending_infer_arrays_.push_back(current_expr);
+        if (a.kind == ArrayKind::Infer) pending_infer_arrays_.push_back(current_type);
         return;
     }
     Expr* len = const_length_literal(a.length);
     if (!len) {
-        error(current_expr->loc,
+        error(current_type->loc,
               "array length must be a compile-time integer constant; "
               "use T{n} for a slice whose length is only known at run time");
         return;
     }
     a.length = len;
 }
-void SemanticAnalyzer::visit_type_func_ptr(Expr::FuncPtr& fp) {
+void SemanticAnalyzer::visit_type_func_ptr(Type::FuncPtr& fp) {
     // 函数指针与函数签名同规则：所有权不外泄，形参与返回类型都不许切片
-    for (Expr* p : fp.params) {
+    for (Type* p : fp.params) {
         if (is_slice_type(p))
             error(p->loc, "array slice parameter is not allowed in a function "
                           "pointer type: pass a pointer instead");
@@ -1868,17 +1827,17 @@ void SemanticAnalyzer::visit_type_func_ptr(Expr::FuncPtr& fp) {
         error(fp.return_type->loc, "array slice return type is not allowed in a "
                                    "function pointer type: pass a pointer instead");
 }
-void SemanticAnalyzer::visit_type_func_ref(Expr::FuncRef&) {}
+void SemanticAnalyzer::visit_type_func_ref(Type::FuncRef&) {}
 // 引用不可重新绑定，引用不能再包引用
-void SemanticAnalyzer::visit_type_reference(Expr::Reference& r) {
+void SemanticAnalyzer::visit_type_reference(Type::Reference& r) {
     if (r.target && r.target->is_reference())
-        error(current_expr->loc, "reference to reference");
+        error(current_type->loc, "reference to reference");
 }
 
-void SemanticAnalyzer::visit_type_string_literal(Expr::StringLiteralType&) {
+void SemanticAnalyzer::visit_type_string_literal(Type::StringLiteralType&) {
     // StringLiteral is a valid type, no additional checks needed
 }
-Symbol* SemanticAnalyzer::lookup_member_on_type(Expr* type, const std::string& field, Scope** found_scope) {
+Symbol* SemanticAnalyzer::lookup_member_on_type(Type* type, const std::string& field, Scope** found_scope) {
     if (found_scope) *found_scope = nullptr;
     if (!type) return nullptr;
     Scope* s = named_type_scope(type);
@@ -1886,22 +1845,80 @@ Symbol* SemanticAnalyzer::lookup_member_on_type(Expr* type, const std::string& f
     return s ? s->lookup_member(field) : nullptr;
 }
 
-void SemanticAnalyzer::visit_type_void(Expr::Void&) {
+void SemanticAnalyzer::visit_type_void(Type::Void&) {
     // Void is valid as a return type or pointer pointee context, checked by callers
 }
 
-void SemanticAnalyzer::visit_type_inferred(Expr::Inferred&) {}
+void SemanticAnalyzer::visit_type_inferred(Type::Inferred&) {}
 
-// 泛型应用：类的实参全在源码里给出，类型位置与构造调用位置都就地实例化；
-// 值位置的泛型函数要等实参类型推导出来，留给 resolve_call
-void SemanticAnalyzer::visit_type_generic(Expr::GenericType& g) {
-    Expr* base = g.base;
+// 类型位置的裸名：按类型解析
+void SemanticAnalyzer::visit_type_identifier(Type::Identifier& id) {
+    std::string name(id.name);
+    Symbol* s = symbols_.lookup_member(name);
+    if (s && (s->kind == SymbolKind::Class ||
+              s->kind == SymbolKind::Namespace ||
+              s->kind == SymbolKind::Enum)) {
+        current_type->sym = s;
+        current_type->resolved_decl = s->get_decl();
+        current_type->resolved_scope = s->scope;
+        // 泛型模板本体不参与语义，裸用（未给类型实参）在此拦下
+        check_generic_use(current_type, s->get_decl());
+    } else {
+        error(current_type->loc, "unknown type '" + name + "'");
+    }
+}
+
+// 类型位置的限定名：A::B 按类型路径解析
+void SemanticAnalyzer::visit_type_member(Type::Member& m) {
+    Scope* scope = m.target ? m.target->resolved_scope : nullptr;
+    Symbol* tsym = scope
+        ? scope->lookup_member(std::string(m.member)) : nullptr;
+    if (tsym && (tsym->kind == SymbolKind::Class ||
+                 tsym->kind == SymbolKind::Namespace ||
+                 tsym->kind == SymbolKind::Enum)) {
+        current_type->sym = tsym;
+        current_type->resolved_decl = tsym->get_decl();
+        current_type->resolved_scope = tsym->scope;
+        // 泛型模板本体不参与语义，裸用（未给类型实参）在此拦下
+        check_generic_use(current_type, tsym->get_decl());
+    } else {
+        error(current_type->loc,
+              "unknown type '" + type_name_string(current_type) + "'");
+    }
+}
+
+void SemanticAnalyzer::visit_type_null(Type::Null&) {}
+
+// 泛型类应用：实参全在源码里给出，就地实例化并把节点换成指向实例的具名类型
+void SemanticAnalyzer::visit_type_generic(Type::GenericType& g) {
+    Type* base = g.base;
     Decl* tmpl = base ? (base->sym ? base->sym->get_decl() : base->resolved_decl)
                       : nullptr;
     if (tmpl && tmpl->kind == DeclKind::Class && is_generic_decl(tmpl)) {
         if (Class* inst = instantiate_class(*static_cast<Class*>(tmpl), g.args,
+                                            current_type->loc)) {
+            *current_type = std::move(*instance_type_node(base, inst));
+            return;
+        }
+        // instantiate 已报出具体原因
+        return;
+    }
+    error(current_type->loc, "'" + type_name_string(base) +
+          "' is not a generic class");
+}
+
+// 值位置的泛型应用：泛型类的实例类型，泛型函数的实例化留给 resolve_call
+void SemanticAnalyzer::visit_expr_generic(Expr::GenericType& g) {
+    Expr* base = g.base;
+    Decl* tmpl = base ? (base->sym ? base->sym->get_decl() : nullptr) : nullptr;
+    if (tmpl && tmpl->kind == DeclKind::Class && is_generic_decl(tmpl)) {
+        if (Class* inst = instantiate_class(*static_cast<Class*>(tmpl), g.args,
                                             current_expr->loc)) {
-            *current_expr = std::move(*instance_type_node(base, inst, true));
+            // 实例是具名类型（类）或函数引用：把节点整体换成指向实例的名字
+            Expr* ref = instance_ref_node(base, inst);
+            current_expr->loc = ref->loc;
+            current_expr->data = std::move(ref->data);
+            current_expr->sym = ref->sym;
             return;
         }
         // instantiate 已报出具体原因
@@ -1909,15 +1926,8 @@ void SemanticAnalyzer::visit_type_generic(Expr::GenericType& g) {
         current_expr->is_lvalue = false;
         return;
     }
-    if (!current_expr->is_type) {
-        current_expr->sym = base ? base->sym : nullptr;
-        current_expr->type = base ? base->type : nullptr;
-        return;
-    }
-    error(current_expr->loc, "'" + type_name_string(base) +
-          "' is not a generic class");
-    current_expr->type = nullptr;
-    current_expr->is_lvalue = false;
+    current_expr->sym = base ? base->sym : nullptr;
+    current_expr->type = base ? base->type : nullptr;
 }
 
 
@@ -1941,7 +1951,7 @@ void SemanticAnalyzer::check_main() {
     Func* f = sym->get<Func>();
     if (!f) return;
 
-    std::vector<Expr*> params;
+    std::vector<Type*> params;
     for (VarList* vl : f->params) {
         if (!vl) continue;
         for (VarItem* vi : vl->vars) {
@@ -1957,7 +1967,7 @@ void SemanticAnalyzer::check_main() {
         error(f->loc, "invalid 'main' signature: parameters must be empty or '(int, char**)'");
     }
 
-    std::vector<Expr*> returns;
+    std::vector<Type*> returns;
     for (VarList* vl : f->returns) {
         if (!vl) continue;
         for (VarItem* vi : vl->vars) {

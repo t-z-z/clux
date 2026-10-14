@@ -12,65 +12,64 @@ std::vector<TypeParam*> CompUnit::clone_type_params(
     return out;
 }
 
-Expr* CompUnit::clone_type(Expr* t) {
+Type* CompUnit::clone_type(Type* t) {
     if (!t) return nullptr;
     Location loc = t->loc;
-    if (auto* p = t->get_primitive()) return add_node<Expr>(loc, Expr::Primitive{p->kind});
-    if (t->is_string_literal_type()) return add_node<Expr>(loc, Expr::StringLiteralType{});
-    if (t->is_void()) return add_node<Expr>(loc, Expr::Void{});
-    if (t->is_inferred()) return add_node<Expr>(loc, Expr::Inferred{});
-    if (auto* p = t->get_pointer()) return add_node<Expr>(loc, Expr::Pointer{clone_type(p->pointee)});
-    if (auto* r = t->get_reference()) return add_node<Expr>(loc, Expr::Reference{clone_type(r->target)});
+    if (auto* p = t->get_primitive()) return add_node<Type>(loc, Type::Primitive{p->kind});
+    if (t->is_string_literal_type()) return add_node<Type>(loc, Type::StringLiteralType{});
+    if (t->is_void()) return add_node<Type>(loc, Type::Void{});
+    if (t->is_inferred()) return add_node<Type>(loc, Type::Inferred{});
+    if (t->is_null()) return add_node<Type>(loc, Type::Null{});
+    if (auto* p = t->get_pointer()) return add_node<Type>(loc, Type::Pointer{clone_type(p->pointee)});
+    if (auto* r = t->get_reference()) return add_node<Type>(loc, Type::Reference{clone_type(r->target)});
     if (auto* a = t->get_array_type()) {
-        return add_node<Expr>(loc, Expr::ArrayType{
+        return add_node<Type>(loc, Type::ArrayType{
             clone_type(a->element), clone_expr(a->length), a->kind});
     }
     if (auto* g = t->get_generic_type()) {
-        std::vector<Expr*> args;
+        std::vector<Type*> args;
         args.reserve(g->args.size());
         for (auto* a : g->args) args.push_back(clone_type(a));
-        Expr* n = add_node<Expr>(loc,
-            Expr::GenericType{clone_type(g->base), std::move(args)});
-        n->is_type = t->is_type;
-        return n;
+        return add_node<Type>(loc,
+            Type::GenericType{clone_type(g->base), std::move(args)});
     }
     if (auto* f = t->get_func_ptr()) {
-        std::vector<Expr*> params;
+        std::vector<Type*> params;
         params.reserve(f->params.size());
         for (auto* p : f->params) params.push_back(clone_type(p));
-        return add_node<Expr>(loc, Expr::FuncPtr{std::move(params), clone_type(f->return_type)});
+        return add_node<Type>(loc, Type::FuncPtr{std::move(params), clone_type(f->return_type)});
     }
-    if (t->is_type && (t->is_identifier() || t->is_member())) {
-        Expr* n = nullptr;
+    if (auto* v = t->get_func_ref()) return add_node<Type>(loc, Type::FuncRef{v->func});
+    if (t->is_named()) {
+        Type* n = nullptr;
         if (auto* id = t->get_identifier()) {
-            n = add_node<Expr>(loc, Expr::Identifier{id->name});
+            n = add_node<Type>(loc, Type::Identifier{id->name});
         } else {
             auto* m = t->get_member();
-            n = add_node<Expr>(loc, Expr::Member{clone_expr(m->target), m->member});
+            n = add_node<Type>(loc, Type::Member{clone_type(m->target), m->member});
         }
-        n->is_type = true;
         n->resolved_decl = t->resolved_decl;
         n->resolved_scope = t->resolved_scope;
         return n;
     }
-    return add_node<Expr>(loc, t->data);
+    return add_node<Type>(loc, t->data);
 }
 
 Expr* CompUnit::clone_expr(Expr* e) {
     if (!e) return nullptr;
     Location loc = e->loc;
-    if (e->is_type_node()) return clone_type(e);
-    // 值位置的泛型应用（如 foo-<int>(1) 的被调用者）：is_type_node 为假，
-    // 与类型位置同构地深拷贝
+    // 值位置的泛型应用（如 foo-<int>(1) 的被调用者）：base 是表达式，实参仍是类型
     if (auto* g = e->get_generic_type()) {
-        std::vector<Expr*> args;
+        std::vector<Type*> args;
         args.reserve(g->args.size());
-        for (auto* a : g->args) args.push_back(clone_expr(a));
+        for (auto* a : g->args) args.push_back(clone_type(a));
         return add_node<Expr>(loc,
             Expr::GenericType{clone_expr(g->base), std::move(args)});
     }
     if (auto* v = e->get_literal()) return add_node<Expr>(loc, Expr::Literal{*v});
     if (auto* v = e->get_identifier()) return add_node<Expr>(loc, Expr::Identifier{v->name});
+    if (e->is_null()) return add_node<Expr>(loc, Expr::Null{});
+    if (e->is_inferred()) return add_node<Expr>(loc, Expr::Inferred{});
     if (auto* v = e->get_binary()) {
         return add_node<Expr>(loc, Expr::Binary{
             clone_expr(v->left), v->op, clone_expr(v->right)});
@@ -148,14 +147,14 @@ Stmt* CompUnit::clone_stmt(Stmt* s) {
 
 VarList* CompUnit::clone_varlist(VarList* vl) {
     if (!vl) return nullptr;
-    Expr* t = clone_type(vl->type);
+    Type* t = clone_type(vl->type);
     std::vector<VarItem*> vars;
     vars.reserve(vl->vars.size());
     for (auto* vi : vl->vars) {
         if (!vi) { vars.push_back(nullptr); continue; }
         // 后缀数组维度的类型只挂在 VarItem 上（int a[3]），不能一律换成
         // VarList 的类型；前缀形式两者同节点，复用即可
-        Expr* vt = (vi->type && vi->type != vl->type) ? clone_type(vi->type) : t;
+        Type* vt = (vi->type && vi->type != vl->type) ? clone_type(vi->type) : t;
         vars.push_back(add_node<VarItem>(
             vi->loc, vi->name, clone_expr(vi->init), vt));
     }

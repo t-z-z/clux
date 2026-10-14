@@ -12,6 +12,11 @@
 
 // AST 语义产物契约
 //
+// 值与类型分属两种节点：Expr 是值表达式，Type 是类型节点（类型即表达式）。
+// 两侧各有 Identifier / Member / GenericType / Null / Inferred —— 同形语法在
+// 值位置与类型位置的语义、子节点类型都不同，合一个节点就得靠标志位再分派一次。
+// 静态区分之后不再有"该节点是类型吗"的运行时判断：类型即 Type*。
+//
 // 编译流程分三段，每段结束后进入下一个段的字段必须已就绪：
 //
 //   P0  collect_only()     仅收集符号表（P0 区，不进入函数体/类成员）
@@ -29,9 +34,9 @@
 //
 // 字段分工（下文的 P1 指 P1a+P1b 合起来的整个语义分析段）：
 //
-//   Expr::type         [写 P1 visit_expr_* / make_*_type] [读 P1 P2]
-//                      表达式的类型节点，本身也是 Expr，见 is_type。
-//                      有效表达式在 P1 结束时与 sym 至少一个非空。
+//   Expr::type         [写 P1 visit_expr_* / make_type] [读 P1 P2]
+//                      值表达式的类型。有效表达式在 P1 结束时与 sym
+//                      至少一个非空。
 //
 //   Expr::sym          [写 P1 visit_expr_identifier / visit_expr_member]
 //                      [读 P1 P2]
@@ -43,16 +48,15 @@
 //                      是否可取地址。函数返回值、字面量、cast 结果等为 false；
 //                      变量引用、成员访问（变量）、数组下标为 true。
 //
-//   Expr::is_type      [写 P1 make_named_type / visit_expr_identifier(类型位置)
-//                       / visit_expr_member(类型位置)] [读 P1 P2]
-//                      该节点处于类型位置（类型即表达式）。P2 的 map_type /
-//                      as_class / as_wrap_class 均通过它区分类型与值。
+//   Type::resolved_decl / Type::resolved_scope
+//                      [写 P1 visit_type_identifier / visit_type_member /
+//                       visit_type_generic] [读 P1 P2]
+//                      具名类型解析到的类/枚举/命名空间声明及其成员作用域，
+//                      as_class / map_type / type_to_key 均依赖它。
 //
-//   Expr::resolved_decl [写 P1] [读 P1 P2]
-//                      is_type 时的类/枚举/命名空间声明。
-//
-//   Expr::resolved_scope [写 P1] [读 P1]
-//                      is_type 时的成员作用域，供 visit_expr_member 查限定名。
+//   Type::sym          [写 P1 visit_type_identifier / visit_type_member]
+//                      [读 P1]
+//                      类型名解析到的符号，仅用于报出模板本体的位置。
 //
 //   Expr::conv         [写 P1 record_conversion] [读 P2 needs_convert /
 //                      eval_converted]
@@ -73,7 +77,7 @@
 //                        [写 P1 resolve_call] [读 P2 eval_call]
 //                      该调用是 malloc 类的 a.free()，P2 走释放路径。
 //
-//   Expr::ArrayType [写 P1 parse(语法) / visit_type_array(常量长度、签名校验) /
+//   Type::ArrayType [写 P1 parse(语法) / visit_type_array(常量长度、签名校验) /
 //                    resolve_infer_array_len(T[] 推导)] [读 P1 P2]
 //                      T[N] 的 length 为编译期整数字面量；T{} 的 length 为空且只允许
 //                      出现在局部变量；T[] 推导成功后 length 变为字面量、kind 变为
@@ -91,6 +95,7 @@ struct CompUnit;
 struct Import;
 struct SpecList;
 struct Expr;
+struct Type;
 struct Stmt;
 struct Decl;
 struct Cont;
@@ -213,17 +218,17 @@ struct CompUnit {
     // using namespace <path>：文件顶层 using 指令（把命名空间成员引入当前作用域，hoisted）
     // path 是类型位置的表达式（Identifier 或 Member 链），语义阶段按路径处理
     struct UsingNamespace {
-        Expr* path;
+        Type* path;
         Location loc;
     };
     std::vector<UsingNamespace> using_namespaces;
-    void add_using_namespace(Expr* path, const Location& loc) {
+    void add_using_namespace(Type* path, const Location& loc) {
         using_namespaces.push_back({path, loc});
     }
 
     // 深拷贝 AST 节点并登记到本 CompUnit；用于类注入展开，避免共享节点
     std::vector<TypeParam*> clone_type_params(const std::vector<TypeParam*>& tps);
-    Expr* clone_type(Expr* t);
+    Type* clone_type(Type* t);
     Expr* clone_expr(Expr* e);
     Stmt* clone_stmt(Stmt* s);
     VarList* clone_varlist(VarList* vl);
@@ -336,6 +341,10 @@ inline std::string_view opkind_to_sv(OpKind kind) {
     }
 }
 
+// 值表达式。类型即表达式的类型侧见 Type。
+// 与 Type 共有的 variant（Identifier / Member / GenericType / Null / Inferred）
+// 在两侧各存一份：同形语法在值位置与类型位置的语义与子节点类型都不同，
+// 合成一个节点就得靠 is_type 标志再分一次派发。
 struct Expr : ASTNode {
     struct Literal      { LiteralKind kind; std::string_view value; };
     struct Identifier   { std::string_view name; };
@@ -346,45 +355,30 @@ struct Expr : ASTNode {
     struct Ternary      { Expr* cond; Expr* then_expr; Expr* else_expr; };
     struct Index        { Expr* target; Expr* index; };
     struct Member       { Expr* target; std::string_view member; };
-    struct Cast         { Expr* target_type; Expr* operand; };
+    struct Cast         { Type* target_type; Expr* operand; };
     struct Array        { std::vector<Expr*> members; Expr* fill_value = nullptr; };
     struct Spawn        { Expr* call; };
-    struct Primitive        { PrimitiveTypeKind kind; };
-    struct Pointer          { Expr* pointee; };
-    struct ArrayType        { Expr* element; Expr* length; ArrayKind kind = ArrayKind::Fixed; };
-    // 泛型应用：base 之后的 -<...> 为显式类型实参。类型位置 is_type 为真，
-    // 值位置（如 foo-<int>(1) 的被调用者）为假
-    struct GenericType      { Expr* base; std::vector<Expr*> args; };
-    struct StringLiteralType {};
-    struct FuncPtr          { std::vector<Expr*> params; Expr* return_type; };
-    struct FuncRef          { Func* func; };
-    struct Reference        { Expr* target; };
+    // 值位置的泛型应用：foo-<int>(1) 的被调用者。实参仍是类型
+    struct GenericType      { Expr* base; std::vector<Type*> args; };
     struct Inferred         {};
-    struct Void             {};
     struct Null             {};
-    
+
     using Variant = std::variant<
         Literal, Identifier, Binary, Unary, Assign,
         Call, Ternary, Index, Member,
         Cast, Array, Spawn,
-        Primitive, Pointer, ArrayType, GenericType, StringLiteralType,
-        FuncPtr, FuncRef, Reference, Inferred, Void, Null
+        GenericType, Inferred, Null
     >;
     
     Variant data;
-    Expr* type = nullptr;
+    Type* type = nullptr;
     Symbol* sym = nullptr;   // 解析后的符号指针
     // 在semantic解析中保证type和sym总有一个是有指向的
     bool is_lvalue = false; // 是否可取地址
-    // 该节点处于类型位置（类型即表达式，仅靠结构无法与同名值节点区分）
-    bool is_type = false;
-    // is_type 时：解析到的类/枚举/命名空间声明及其成员作用域
-    Decl* resolved_decl = nullptr;
-    Scope* resolved_scope = nullptr;
     // 该表达式需经 conversion 转换到目标类型时，指向对应的 Conversion 声明
     Decl* conv = nullptr;
     // 隐式数值/包装转换的目标类型：translator 据此生成解包/打包与数值 cast
-    Expr* implicit_to = nullptr;
+    Type* implicit_to = nullptr;
     
     Expr() = default;
     Expr(const Location& l, Variant v) : ASTNode(l), data(std::move(v))  {}
@@ -400,23 +394,60 @@ struct Expr : ASTNode {
     BBB(cast, Cast, Expr)
     BBB(array, Array, Expr)
     BBB(spawn, Spawn, Expr)
-    BBB(primitive, Primitive, Expr)
-    BBB(pointer, Pointer, Expr)
-    BBB(array_type, ArrayType, Expr)
     BBB(generic_type, GenericType, Expr)
-    BBB(string_literal_type, StringLiteralType, Expr)
-    BBB(func_ptr, FuncPtr, Expr)
-    BBB(func_ref, FuncRef, Expr)
-    BBB(reference, Reference, Expr)
     BBB(inferred, Inferred, Expr)
-    BBB(void, Void, Expr)
     BBB(null, Null, Expr)
+};
 
-    // 该表达式节点是否承载类型（类型即表达式）
-    bool is_type_node() const {
-        return is_type || is_primitive() || is_pointer() || is_array_type() ||
-               is_string_literal_type() || is_func_ptr() || is_func_ref() ||
-               is_reference() || is_inferred() || is_void();
+// 类型节点。类型即表达式：命名类型（Identifier / Member 链）本身也走 ASTVisitor，
+// 泛型实参、形参类型、数组元素类型等子节点一律是 Type。
+struct Type : ASTNode {
+    struct Primitive        { PrimitiveTypeKind kind; };
+    struct Pointer          { Type* pointee; };
+    struct Reference        { Type* target; };
+    struct ArrayType        { Type* element; Expr* length; ArrayKind kind = ArrayKind::Fixed; };
+    // 具名类型与限定名：两类合用 Identifier/Member 两个 variant，
+    // 靠 resolved_decl 区分指向的是类型还是命名空间
+    struct Identifier       { std::string_view name; };
+    struct Member           { Type* target; std::string_view member; };
+    struct GenericType      { Type* base; std::vector<Type*> args; };
+    struct StringLiteralType {};
+    struct FuncPtr          { std::vector<Type*> params; Type* return_type; };
+    struct FuncRef          { Func* func; };
+    struct Inferred         {};
+    struct Void             {};
+    struct Null             {};
+
+    using Variant = std::variant<
+        Primitive, Pointer, Reference, ArrayType,
+        Identifier, Member, GenericType, StringLiteralType,
+        FuncPtr, FuncRef, Inferred, Void, Null
+    >;
+
+    Variant data;
+    Symbol* sym = nullptr;          // 解析到的类/枚举/命名空间符号
+    Decl* resolved_decl = nullptr;  // 解析到的类/枚举/命名空间声明
+    Scope* resolved_scope = nullptr;// 成员作用域，供成员查找使用
+
+    Type() = default;
+    Type(const Location& l, Variant v) : ASTNode(l), data(std::move(v)) {}
+    BBB(primitive, Primitive, Type)
+    BBB(pointer, Pointer, Type)
+    BBB(reference, Reference, Type)
+    BBB(array_type, ArrayType, Type)
+    BBB(identifier, Identifier, Type)
+    BBB(member, Member, Type)
+    BBB(generic_type, GenericType, Type)
+    BBB(string_literal_type, StringLiteralType, Type)
+    BBB(func_ptr, FuncPtr, Type)
+    BBB(func_ref, FuncRef, Type)
+    BBB(inferred, Inferred, Type)
+    BBB(void, Void, Type)
+    BBB(null, Null, Type)
+
+    // 具名类型与限定名链
+    bool is_named() const {
+        return is_identifier() || is_member();
     }
 };
 
@@ -497,19 +528,19 @@ struct Cont : Decl { // container 容器，用于包含申明
 struct VarItem : ASTNode {
     std::string_view name;
     Expr *init;
-    Expr* type = nullptr;
+    Type* type = nullptr;
     VarItem() = default;
     VarItem(const Location& loc, std::string_view n, Expr* i):
         ASTNode(loc), name(n), init(i) {}
-    VarItem(const Location& loc, std::string_view n, Expr* i, Expr* t):
+    VarItem(const Location& loc, std::string_view n, Expr* i, Type* t):
         ASTNode(loc), name(n), init(i), type(t) {}
 };
 // VarList 是同一种类型的多个变量申明
 struct VarList : Decl {
-    Expr* type = nullptr;
+    Type* type = nullptr;
     std::vector<VarItem*> vars;
     VarList(const Location& loc,SpecList ml,
-            Expr* t, std::vector<VarItem*> v
+            Type* t, std::vector<VarItem*> v
         ):
         Decl(loc, "", DeclKind::VarList, std::move(ml)),
         type(t), vars(std::move(v)) {}
@@ -598,16 +629,16 @@ struct Class : Cont {
     std::vector<TypeParam*> type_params;
     // 修饰注入：`#a @b #c` 中 @ 之前的为前置注入，之后的为尾随注入。
     // 优先级从左到右递减：前置 > 基类 > 尾随。
-    std::vector<Expr*> injects;
-    std::vector<Expr*> trailing_injects;
+    std::vector<Type*> injects;
+    std::vector<Type*> trailing_injects;
     // 基础类型来源标记：#int 注入时记为 Int，非基础类型来源保持 Void
     PrimitiveTypeKind base_source = PrimitiveTypeKind::Void;
     Class(const Location &loc,
         std::string_view name,
         SpecList ml,
         std::vector<Decl*> m,
-        std::vector<Expr*> inj = {},
-        std::vector<Expr*> tinj = {}
+        std::vector<Type*> inj = {},
+        std::vector<Type*> tinj = {}
     ):
         Cont(loc, name, DeclKind::Class, std::move(ml), std::move(m)),
         injects(std::move(inj)), trailing_injects(std::move(tinj)) {}
@@ -644,7 +675,7 @@ struct Keep : Decl {
 struct EnumVariant : ASTNode {
     std::string_view name;
     int64_t value = 0;      // 语义阶段写入：编译期整数值
-    Expr* type = nullptr;   // 语义阶段写入：所属枚举类型
+    Type* type = nullptr;   // 语义阶段写入：所属枚举类型
     EnumVariant() = default;
     EnumVariant(const Location& loc, std::string_view n)
         : ASTNode(loc), name(n) {}
@@ -660,8 +691,8 @@ struct Enum : Decl {
           variants(std::move(vs)) {}
 };
 
-// 类型表达式的类声明解析；非类返回 nullptr
-inline Class* as_class(Expr* t) {
+// 类型节点的类声明解析；非类返回 nullptr
+inline Class* as_class(Type* t) {
     if (!t) return nullptr;
     if (t->resolved_decl && t->resolved_decl->kind == DeclKind::Class)
         return static_cast<Class*>(t->resolved_decl);
@@ -673,6 +704,8 @@ struct ASTVisitor {
     virtual void scope_in(std::string){}
     virtual void scope_out(){}
     Expr* current_expr = nullptr;
+    // 当前正在遍历的类型节点；解析类型只需它，无需 current_expr
+    Type* current_type = nullptr;
     Func* current_func = nullptr;
     // 当前正在遍历的形参列表：形参允许省略初值，局部声明不允许
     const std::vector<VarList*>* current_params = nullptr;
@@ -702,6 +735,10 @@ struct ASTVisitor {
     void walk(Expr& expr) {
         walk_children(expr);
         visit(expr);
+    }
+    void walk(Type& type) {
+        walk_children(type);
+        visit(type);
     }
     void walk(Stmt& stmt) {
         walk_children(stmt);
@@ -733,6 +770,7 @@ struct ASTVisitor {
 
     virtual void visit(Expr&) {}
     virtual void visit(VarItem&) {}
+    virtual void visit(Type&) {}
 
     virtual void visit_expr_literal(Expr::Literal&) {}
     virtual void visit_expr_identifier(Expr::Identifier&) {}
@@ -746,6 +784,8 @@ struct ASTVisitor {
     virtual void visit_expr_array(Expr::Array&) {}
     virtual void visit_expr_spawn(Expr::Spawn&) {}
     virtual void visit_expr_ternary(Expr::Ternary&) {}
+    virtual void visit_expr_generic(Expr::GenericType&) {}
+    virtual void visit_expr_null(Expr::Null&) {}
 
     virtual void visit(Stmt&) {}
 
@@ -763,17 +803,19 @@ struct ASTVisitor {
     virtual void visit_stmt_keep(Stmt::Keep&) {}
     virtual void visit_stmt_var_decl(Stmt::VarDecl&) {}
 
-    virtual void visit_type_primitive(Expr::Primitive&) {}
-    virtual void visit_type_pointer(Expr::Pointer&) {}
-    virtual void visit_type_array(Expr::ArrayType&) {}
-    virtual void visit_type_generic(Expr::GenericType&) {}
-    virtual void visit_type_string_literal(Expr::StringLiteralType&) {}
-    virtual void visit_type_func_ptr(Expr::FuncPtr&) {}
-    virtual void visit_type_func_ref(Expr::FuncRef&) {}
-    virtual void visit_type_reference(Expr::Reference&) {}
-    virtual void visit_type_inferred(Expr::Inferred&) {}
-    virtual void visit_type_void(Expr::Void&) {}
-    virtual void visit_expr_null(Expr::Null&) {}
+    virtual void visit_type_primitive(Type::Primitive&) {}
+    virtual void visit_type_pointer(Type::Pointer&) {}
+    virtual void visit_type_reference(Type::Reference&) {}
+    virtual void visit_type_array(Type::ArrayType&) {}
+    virtual void visit_type_identifier(Type::Identifier&) {}
+    virtual void visit_type_member(Type::Member&) {}
+    virtual void visit_type_generic(Type::GenericType&) {}
+    virtual void visit_type_string_literal(Type::StringLiteralType&) {}
+    virtual void visit_type_func_ptr(Type::FuncPtr&) {}
+    virtual void visit_type_func_ref(Type::FuncRef&) {}
+    virtual void visit_type_inferred(Type::Inferred&) {}
+    virtual void visit_type_void(Type::Void&) {}
+    virtual void visit_type_null(Type::Null&) {}
 
     // 递归遍历子节点（基类驱动，结构变更只改这里）
     void walk_children(Decl& decl) {
@@ -926,37 +968,59 @@ struct ASTVisitor {
             } else if constexpr (std::is_same_v<T, Expr::Spawn>) {
                 if (v.call) walk(*v.call);
                 visit_expr_spawn(v);
-            } else if constexpr (std::is_same_v<T, Expr::Pointer>) {
-                if (v.pointee) walk(*v.pointee);
-                visit_type_pointer(v);
-            } else if constexpr (std::is_same_v<T, Expr::ArrayType>) {
-                if (v.element) walk(*v.element);
-                if (v.length) walk(*v.length);
-                visit_type_array(v);
             } else if constexpr (std::is_same_v<T, Expr::GenericType>) {
                 bool pre_base = in_generic_base_;
                 in_generic_base_ = true;
                 if (v.base) walk(*v.base);
                 in_generic_base_ = pre_base;
                 for (auto* a : v.args) if (a) walk(*a);
-                visit_type_generic(v);
-            } else if constexpr (std::is_same_v<T, Expr::FuncPtr>) {
-                for (auto* p : v.params) if (p) walk(*p);
-                if (v.return_type) walk(*v.return_type);
-                visit_type_func_ptr(v);
-            } else if constexpr (std::is_same_v<T, Expr::Reference>) {
-                if (v.target) walk(*v.target);
-                visit_type_reference(v);
-            } else if constexpr (std::is_same_v<T, Expr::Primitive>) visit_type_primitive(v);
-            else if constexpr (std::is_same_v<T, Expr::Inferred>) visit_type_inferred(v);
-            else if constexpr (std::is_same_v<T, Expr::Void>) visit_type_void(v);
-            else if constexpr (std::is_same_v<T, Expr::Null>) visit_expr_null(v);
-            else if constexpr (std::is_same_v<T, Expr::StringLiteralType>) visit_type_string_literal(v);
-            else if constexpr (std::is_same_v<T, Expr::FuncRef>) visit_type_func_ref(v);
+                visit_expr_generic(v);
+            } else if constexpr (std::is_same_v<T, Expr::Null>) visit_expr_null(v);
             else if constexpr (std::is_same_v<T, Expr::Literal>) visit_expr_literal(v);
             else if constexpr (std::is_same_v<T, Expr::Identifier>) visit_expr_identifier(v);
         }, expr.data);
         current_expr = pre;
+    }
+
+    void walk_children(Type& type) {
+        Type* pre = current_type;
+        current_type = &type;
+        std::visit([this](auto& v) {
+            using T = std::decay_t<decltype(v)>;
+            if constexpr (std::is_same_v<T, Type::Pointer>) {
+                if (v.pointee) walk(*v.pointee);
+                visit_type_pointer(v);
+            } else if constexpr (std::is_same_v<T, Type::Reference>) {
+                if (v.target) walk(*v.target);
+                visit_type_reference(v);
+            } else if constexpr (std::is_same_v<T, Type::ArrayType>) {
+                if (v.element) walk(*v.element);
+                if (v.length) walk(*v.length);
+                visit_type_array(v);
+            } else if constexpr (std::is_same_v<T, Type::GenericType>) {
+                bool pre_base = in_generic_base_;
+                in_generic_base_ = true;
+                if (v.base) walk(*v.base);
+                in_generic_base_ = pre_base;
+                for (auto* a : v.args) if (a) walk(*a);
+                visit_type_generic(v);
+            } else if constexpr (std::is_same_v<T, Type::FuncPtr>) {
+                for (auto* p : v.params) if (p) walk(*p);
+                if (v.return_type) walk(*v.return_type);
+                visit_type_func_ptr(v);
+            } else if constexpr (std::is_same_v<T, Type::Primitive>) visit_type_primitive(v);
+            else if constexpr (std::is_same_v<T, Type::Inferred>) visit_type_inferred(v);
+            else if constexpr (std::is_same_v<T, Type::Void>) visit_type_void(v);
+            else if constexpr (std::is_same_v<T, Type::Null>) visit_type_null(v);
+            else if constexpr (std::is_same_v<T, Type::StringLiteralType>) visit_type_string_literal(v);
+            else if constexpr (std::is_same_v<T, Type::FuncRef>) visit_type_func_ref(v);
+            else if constexpr (std::is_same_v<T, Type::Identifier>) visit_type_identifier(v);
+            else if constexpr (std::is_same_v<T, Type::Member>) {
+                if (v.target) walk(*v.target);
+                visit_type_member(v);
+            }
+        }, type.data);
+        current_type = pre;
     }
 
     void walk_children(Stmt& stmt) {

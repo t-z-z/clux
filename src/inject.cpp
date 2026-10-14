@@ -77,18 +77,16 @@ Class* InjectionExpander::make_base_source(PrimitiveTypeKind base,
     synth->base_source = base;
 
     auto mk_type = [&]() {
-        Expr* ty = cu_.add_node<Expr>(loc, Expr::Primitive{base});
-        ty->is_type = true;
-        return ty;
+        return cu_.add_node<Type>(loc, Type::Primitive{base});
     };
-    auto mk_param = [&](std::string_view nm, Expr* t) {
+    auto mk_param = [&](std::string_view nm, Type* t) {
         auto* vi = cu_.add_node<VarItem>(loc, nm, nullptr, t);
         return cu_.add_node<VarList>(loc, SpecList{}, t,
             std::vector<VarItem*>{vi});
     };
 
     // 承载字段 __value：类布局首字段，不可直接访问
-    Expr* vt = mk_type();
+    Type* vt = mk_type();
     auto* vvi = cu_.add_node<VarItem>(loc, "__value", nullptr, vt);
     synth->members.push_back(cu_.add_node<VarList>(loc, SpecList{}, vt,
         std::vector<VarItem*>{vvi}));
@@ -125,8 +123,7 @@ Class* InjectionExpander::make_base_source(PrimitiveTypeKind base,
         cmp_ops.push_back(OpKind::GreaterEqual);
     }
     for (OpKind op : cmp_ops) {
-        Expr* bt = cu_.add_node<Expr>(loc, Expr::Primitive{PrimitiveTypeKind::Bool});
-        bt->is_type = true;
+        Type* bt = cu_.add_node<Type>(loc, Type::Primitive{PrimitiveTypeKind::Bool});
         auto* op_node = cu_.add_node<Operator>(loc, op, opkind_to_sv(op),
             SpecList{},
             std::vector<VarList*>{mk_param("other", mk_type())},
@@ -159,8 +156,7 @@ Class* InjectionExpander::make_base_source(PrimitiveTypeKind base,
 
     // 一元操作符：params=[]（self 隐含）
     auto make_unary = [&](OpKind op, PrimitiveTypeKind ret_kind) {
-        Expr* rt = cu_.add_node<Expr>(loc, Expr::Primitive{ret_kind});
-        rt->is_type = true;
+        Type* rt = cu_.add_node<Type>(loc, Type::Primitive{ret_kind});
         auto* op_node = cu_.add_node<Operator>(loc, op, opkind_to_sv(op),
             SpecList{},
             std::vector<VarList*>{},
@@ -216,7 +212,7 @@ void InjectionExpander::expand_class(Class* cls, Scope* parent_scope) {
     // 来源解析不进入类自身 scope，从所在 scope 的父链查找
     Scope* search_scope = cls->scope ? cls->scope->parent : nullptr;
 
-    auto resolve = [&](Expr* mod) -> Class* {
+    auto resolve = [&](Type* mod) -> Class* {
         if (!mod) return nullptr;
         if (auto* p = mod->get_primitive())
             return make_base_source(p->kind, mod->loc);
@@ -241,14 +237,14 @@ void InjectionExpander::expand_class(Class* cls, Scope* parent_scope) {
 
     // 来源按优先级从高到低：前置注入（左→右）、基类自身、尾随注入（左→右）
     std::vector<Class*> pre_sources;
-    for (Expr* mod : cls->injects) {
+    for (Type* mod : cls->injects) {
         if (Class* c = resolve(mod)) {
             expand_class(c, c->scope ? c->scope->parent : nullptr);
             pre_sources.push_back(c);
         }
     }
     std::vector<Class*> post_sources;
-    for (Expr* mod : cls->trailing_injects) {
+    for (Type* mod : cls->trailing_injects) {
         if (Class* c = resolve(mod)) {
             expand_class(c, c->scope ? c->scope->parent : nullptr);
             post_sources.push_back(c);

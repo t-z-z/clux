@@ -23,8 +23,8 @@ bool SemanticAnalyzer::resolve_funcptr_call(Expr* call_expr, Expr::Call& c) {
               " argument(s), got " + std::to_string(c.args.size()));
     }
     for (size_t i = 0; i < c.args.size() && i < fp->params.size(); ++i) {
-        Expr* at = c.args[i] ? c.args[i]->type : nullptr;
-        Expr* pt = fp->params[i];
+        Type* at = c.args[i] ? c.args[i]->type : nullptr;
+        Type* pt = fp->params[i];
         if (check_ref_param(c.args[i], pt)) continue;
         if (at && pt && !can_convert_to(at, pt)) {
             warning(c.args[i]->loc, "argument type mismatch in call");
@@ -49,7 +49,7 @@ bool SemanticAnalyzer::resolve_functor_call(Expr* call_expr, Expr::Call& c) {
         auto* op = static_cast<Operator*>(m);
         if (op->op != OpKind::Paren) continue;
         if (!args_match(op->params, c.args)) continue;
-        Expr* ret = typeVoid;
+        Type* ret = typeVoid;
         if (!op->returns.empty() && op->returns.back() && op->returns.back()->type)
             ret = op->returns.back()->type;
         check_call_args(op->params, c.args, call_expr->loc);
@@ -126,18 +126,18 @@ bool SemanticAnalyzer::resolve_free_builtin(Expr* call_expr, Expr::Call& c,
 // 数组形参的调用点打包：f(a b c) 等价于 f([a b c])
 void SemanticAnalyzer::pack_array_args(Func* func, Expr* call_expr, Expr::Call& c) {
     if (func->params.empty()) return;
-    std::vector<Expr*> params;
+    std::vector<Type*> params;
     for (VarList* vl : func->params) {
         if (!vl) continue;
         for (VarItem* vi : vl->vars)
             if (vi && vi->type) params.push_back(vi->type);
     }
     if (params.size() != 1 || !params[0]->is_array_type() || c.args.empty()) return;
-    Expr* pt = params[0];
+    Type* pt = params[0];
     bool direct = c.args.size() == 1 && c.args[0] && c.args[0]->type &&
                   is_same_type(c.args[0]->type, pt);
     if (direct) return;
-    Expr* elem = pt->get_array_type()->element;
+    Type* elem = pt->get_array_type()->element;
     bool ok = elem != nullptr;
     for (Expr* a : c.args) {
         if (!a || !a->type) { ok = false; break; }
@@ -147,7 +147,7 @@ void SemanticAnalyzer::pack_array_args(Func* func, Expr* call_expr, Expr::Call& 
     if (!ok) return;
     Expr* arr = cu_.add_node<Expr>(call_expr->loc, Expr::Array{c.args, nullptr});
     arr->type = make_type(call_expr->loc,
-        Expr::ArrayType{elem, make_int_literal(call_expr->loc, c.args.size())});
+        Type::ArrayType{elem, make_int_literal(call_expr->loc, c.args.size())});
     arr->is_lvalue = false;
     c.args = {arr};
 }
@@ -155,14 +155,14 @@ void SemanticAnalyzer::pack_array_args(Func* func, Expr* call_expr, Expr::Call& 
 // 类形参的调用点打包：foo(a b c "Hi") 等价于 foo(Param(a b c "Hi"))
 void SemanticAnalyzer::pack_class_args(Func* func, Expr* call_expr, Expr::Call& c) {
     if (func->params.empty() || c.args.empty()) return;
-    std::vector<Expr*> params;
+    std::vector<Type*> params;
     for (VarList* vl : func->params) {
         if (!vl) continue;
         for (VarItem* vi : vl->vars)
             if (vi && vi->type) params.push_back(vi->type);
     }
     if (params.size() != 1) return;
-    Expr* pt = params[0];
+    Type* pt = params[0];
     Class* cls = as_class(pt);
     if (!cls) return;
     // 单个实参且已是该类，无需打包
@@ -180,9 +180,6 @@ void SemanticAnalyzer::pack_class_args(Func* func, Expr* call_expr, Expr::Call& 
 
     Expr* callee = cu_.add_node<Expr>(call_expr->loc,
         Expr::Identifier{cls->name});
-    callee->is_type = true;
-    callee->resolved_decl = cls;
-    callee->resolved_scope = cls->scope;
     callee->sym = pt->sym ? pt->sym
                           : symbols_.lookup_member(std::string(cls->name));
     Expr* inner = cu_.add_node<Expr>(call_expr->loc,
@@ -220,7 +217,7 @@ void SemanticAnalyzer::resolve_named_call(Expr* call_expr, Expr::Call& c,
     pack_class_args(func, call_expr, c);
     check_call_args(func, c.args, call_expr->loc);
 
-    Expr* ret = typeVoid;
+    Type* ret = typeVoid;
     if (!func->returns.empty() && func->returns.back() &&
         func->returns.back()->type) {
         ret = func->returns.back()->type;
@@ -241,10 +238,10 @@ bool SemanticAnalyzer::resolve_generic_call(Expr* call_expr, Expr::Call& c,
     Decl* tmpl = callee_sym ? callee_sym->get_decl() : nullptr;
     if (!is_generic_decl(tmpl) || tmpl->kind == DeclKind::Class) return true;
 
-    std::vector<Expr*> deduced_only;   // 无显式实参：全靠实参类型推导
-    const std::vector<Expr*>& args = c.callee->is_generic_type()
+    std::vector<Type*> deduced_only;   // 无显式实参：全靠实参类型推导
+    const std::vector<Type*>& args = c.callee->is_generic_type()
         ? c.callee->get_generic_type()->args : deduced_only;
-    std::vector<Expr*> arg_types;
+    std::vector<Type*> arg_types;
     arg_types.reserve(c.args.size());
     for (Expr* a : c.args) arg_types.push_back(a ? a->type : nullptr);
 
@@ -258,7 +255,7 @@ bool SemanticAnalyzer::resolve_generic_call(Expr* call_expr, Expr::Call& c,
     }
     // 实例是普通函数，被调用者写成裸名：原模板若是成员方法，实例化后
     // 不再带 self，改由实例所在作用域里的裸函数符号调用
-    c.callee = instance_type_node(nullptr, inst, false);
+    c.callee = instance_ref_node(nullptr, inst);
     callee_sym = c.callee->sym;
     return true;
 }
@@ -300,9 +297,9 @@ void SemanticAnalyzer::resolve_call(Expr* call_expr, Expr::Call& c) {
 }
 
 // 平铺多个 VarList 声明的形参类型节点
-std::vector<Expr*> SemanticAnalyzer::param_types(
+std::vector<Type*> SemanticAnalyzer::param_types(
         const std::vector<VarList*>& lists) {
-    std::vector<Expr*> out;
+    std::vector<Type*> out;
     for (VarList* vl : lists) {
         if (!vl) continue;
         for (VarItem* vi : vl->vars) {
@@ -314,9 +311,9 @@ std::vector<Expr*> SemanticAnalyzer::param_types(
 
 // 引用形参按绑定语义匹配：实参须为 lvalue，且类型与被引用目标一致。
 // 绑定不走值转换，故返回 true 表示已处理完毕
-bool SemanticAnalyzer::check_ref_param(Expr* arg, Expr* param) {
+bool SemanticAnalyzer::check_ref_param(Expr* arg, Type* param) {
     if (!arg || !param || !param->is_reference()) return false;
-    Expr* tgt = param->get_reference()->target;
+    Type* tgt = param->get_reference()->target;
     if (!arg->is_lvalue)
         error(arg->loc, "reference parameter requires an lvalue argument");
     else if (tgt && arg->type && !is_same_type(arg->type, tgt))
@@ -328,7 +325,7 @@ bool SemanticAnalyzer::check_ref_param(Expr* arg, Expr* param) {
 void SemanticAnalyzer::check_call_args(const std::vector<VarList*>& params_lists,
                                        const std::vector<Expr*>& args,
                                        const Location& loc) {
-    std::vector<Expr*> params;
+    std::vector<Type*> params;
     for (VarList* vl : params_lists) {
         if (!vl) continue;
         for (VarItem* vi : vl->vars) {
@@ -342,7 +339,7 @@ void SemanticAnalyzer::check_call_args(const std::vector<VarList*>& params_lists
     }
     for (size_t i = 0; i < args.size(); ++i) {
         if (check_ref_param(args[i], params[i])) continue;
-        Expr* at = args[i] ? args[i]->type : nullptr;
+        Type* at = args[i] ? args[i]->type : nullptr;
         if (!at || !params[i]) continue;
         check_array_len_fit(args[i], params[i], "parameter",
                             args[i] ? args[i]->loc : loc);
@@ -378,7 +375,7 @@ void SemanticAnalyzer::check_call_args(Func* fn, const std::vector<Expr*>& args,
 // 非报错式匹配：形参数量一致且每个实参可转换
 bool SemanticAnalyzer::args_match(const std::vector<VarList*>& params_lists,
                                   const std::vector<Expr*>& args) {
-    std::vector<Expr*> params;
+    std::vector<Type*> params;
     for (VarList* vl : params_lists) {
         if (!vl) continue;
         for (VarItem* vi : vl->vars) {
@@ -387,8 +384,8 @@ bool SemanticAnalyzer::args_match(const std::vector<VarList*>& params_lists,
     }
     if (params.size() != args.size()) return false;
     for (size_t i = 0; i < args.size(); ++i) {
-        Expr* at = args[i] ? args[i]->type : nullptr;
-        Expr* pt = params[i];
+        Type* at = args[i] ? args[i]->type : nullptr;
+        Type* pt = params[i];
         if (!at || !pt) continue;
         if (!can_convert_to(at, pt)) return false;
     }

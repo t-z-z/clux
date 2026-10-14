@@ -45,18 +45,22 @@ std::string safe_key(std::string_view key) {
     return out;
 }
 
-// 泛型替换点收集：命中泛型形参名的标识符。类型位置换成实参类型，
+// 泛型替换点收集：命中泛型形参名的类型节点换成实参类型；
 // 值位置没有对应物（形参只是类型名），另记下来报错
 struct SubstCollector : ASTVisitor {
     const TypeSubst* subst = nullptr;
-    std::vector<std::pair<Expr*, Expr*>> hits;
+    std::vector<std::pair<Type*, Type*>> hits;
     std::vector<std::pair<Expr*, std::string_view>> value_hits;
-    void visit_expr_identifier(Expr::Identifier& id) override {
-        if (!subst || !current_expr) return;
+    void visit_type_identifier(Type::Identifier& id) override {
+        if (!subst || !current_type) return;
         auto it = subst->find(id.name);
         if (it == subst->end()) return;
-        if (current_expr->is_type) hits.emplace_back(current_expr, it->second);
-        else value_hits.emplace_back(current_expr, id.name);
+        hits.emplace_back(current_type, it->second);
+    }
+    void visit_expr_identifier(Expr::Identifier& id) override {
+        if (!subst || !current_expr) return;
+        if (subst->find(id.name) == subst->end()) return;
+        value_hits.emplace_back(current_expr, id.name);
     }
 };
 
@@ -120,9 +124,9 @@ std::string_view SemanticAnalyzer::intern_name(std::string name) {
 }
 
 // 实例名与缓存键：实参类型键按顺序以 '$' 连接，同一组实参得到同一个名字
-std::string SemanticAnalyzer::instance_key(const std::vector<Expr*>& args) {
+std::string SemanticAnalyzer::instance_key(const std::vector<Type*>& args) {
     std::string key;
-    for (Expr* a : args) {
+    for (Type* a : args) {
         key += "$";
         key += safe_key(a ? type_to_key(*a) : "null");
     }
@@ -158,24 +162,34 @@ Symbol* SemanticAnalyzer::instance_symbol(Decl* inst) {
 }
 
 // 实例声明的类型节点：限定名与模板同名形，指向实例而非模板
-Expr* SemanticAnalyzer::instance_type_node(Expr* base, Decl* inst, bool is_type) {
+Type* SemanticAnalyzer::instance_type_node(Type* base, Decl* inst) {
+    Location loc = base ? base->loc : inst->loc;
+    Type* t = nullptr;
+    if (auto* m = base ? base->get_member() : nullptr)
+        t = cu_.add_node<Type>(loc, Type::Member{m->target, inst->name});
+    else
+        t = cu_.add_node<Type>(loc, Type::Identifier{inst->name});
+    t->resolved_decl = inst;
+    if (inst->kind == DeclKind::Class) {
+        t->resolved_scope = static_cast<Class*>(inst)->scope;
+    } else {
+        auto it = generics_->instance_scope.find(inst);
+        t->resolved_scope = it == generics_->instance_scope.end() ? nullptr : it->second;
+    }
+    if (Symbol* s = instance_symbol(inst)) t->sym = s;
+    return t;
+}
+
+// 实例的函数引用节点：指向实例的裸名/限定名，签名取实例类型
+Expr* SemanticAnalyzer::instance_ref_node(Expr* base, Decl* inst) {
     Location loc = base ? base->loc : inst->loc;
     Expr* t = nullptr;
     if (auto* m = base ? base->get_member() : nullptr)
         t = cu_.add_node<Expr>(loc, Expr::Member{m->target, inst->name});
     else
         t = cu_.add_node<Expr>(loc, Expr::Identifier{inst->name});
-    t->is_type = is_type;
-    if (is_type) {
-        t->resolved_decl = inst;
-        if (inst->kind == DeclKind::Class) {
-            t->resolved_scope = static_cast<Class*>(inst)->scope;
-        } else {
-            auto it = generics_->instance_scope.find(inst);
-            t->resolved_scope = it == generics_->instance_scope.end() ? nullptr : it->second;
-        }
-    } else if (inst->kind == DeclKind::Func || inst->kind == DeclKind::Operator) {
-        t->type = make_type(loc, Expr::FuncRef{static_cast<Func*>(inst)});
+    if (inst->kind == DeclKind::Func || inst->kind == DeclKind::Operator) {
+        t->type = make_type(loc, Type::FuncRef{static_cast<Func*>(inst)});
     }
     if (Symbol* s = instance_symbol(inst)) t->sym = s;
     return t;
@@ -183,10 +197,10 @@ Expr* SemanticAnalyzer::instance_type_node(Expr* base, Decl* inst, bool is_type)
 
 // 从实参类型推导一个泛型形参的实例化：命中泛型形参则绑定或校验一致性；
 // 否则退化为转换判定，转换不通即推导失败
-bool SemanticAnalyzer::deduce_type(Expr* param, Expr* arg, TypeSubst& subst,
+bool SemanticAnalyzer::deduce_type(Type* param, Type* arg, TypeSubst& subst,
                                    const std::vector<TypeParam*>& tparams) {
     if (!param || !arg) return false;
-    if (param->is_type && param->is_identifier()) {
+    if (param->is_identifier()) {
         std::string_view name = param->get_identifier()->name;
         bool is_tparam = false;
         for (TypeParam* tp : tparams) {
@@ -221,7 +235,7 @@ bool SemanticAnalyzer::deduce_type(Expr* param, Expr* arg, TypeSubst& subst,
 }
 
 Class* SemanticAnalyzer::instantiate_class(Class& tmpl,
-                                          const std::vector<Expr*>& args,
+                                          const std::vector<Type*>& args,
                                           const Location& loc) {
     if (args.size() != tmpl.type_params.size()) {
         error(loc, "generic class '" + std::string(tmpl.name) + "' expects " +
@@ -279,8 +293,8 @@ Class* SemanticAnalyzer::instantiate_class(Class& tmpl,
 }
 
 Func* SemanticAnalyzer::instantiate_func(Func& tmpl,
-                                        const std::vector<Expr*>& args,
-                                        const std::vector<Expr*>& arg_types,
+                                        const std::vector<Type*>& args,
+                                        const std::vector<Type*>& arg_types,
                                         const Location& loc) {
     std::string name(tmpl.name);
     TypeSubst subst;
@@ -298,7 +312,7 @@ Func* SemanticAnalyzer::instantiate_func(Func& tmpl,
     }
 
     // 显式实参只定形参类型，缺的部分仍由实参类型推导；两者冲突即推导失败
-    std::vector<Expr*> params = param_types(tmpl.params);
+    std::vector<Type*> params = param_types(tmpl.params);
     if (params.size() != arg_types.size()) {
         if (args.empty()) {
             error(loc, "argument count mismatch: expected " +
@@ -318,7 +332,7 @@ Func* SemanticAnalyzer::instantiate_func(Func& tmpl,
         }
     }
 
-    std::vector<Expr*> bound;
+    std::vector<Type*> bound;
     for (TypeParam* tp : tmpl.type_params) {
         auto it = subst.find(tp->name);
         if (it == subst.end() || !it->second) {
@@ -375,7 +389,7 @@ void SemanticAnalyzer::substitute_types(Decl* d, const TypeSubst& subst) {
     c.walk(*d);
     for (auto& [node, repl] : c.hits) {
         if (!repl) continue;
-        if (Expr* t = cu_.clone_type(repl)) *node = std::move(*t);
+        if (Type* t = cu_.clone_type(repl)) *node = std::move(*t);
     }
     for (auto& [node, name] : c.value_hits) {
         error(node->loc, "type parameter '" + std::string(name) +
@@ -405,15 +419,17 @@ void SemanticAnalyzer::analyze_instance(Decl* d, Scope* scope) {
     symbols_.reset_scope(saved_scope);
 }
 
-// 泛型声明的误用：类型位置缺实参、泛型函数以值引用。
-// 作为被调用者时不报，那条路径由 resolve_call 按实参实例化
-void SemanticAnalyzer::check_generic_use(Expr* e, Decl* d) {
+// 泛型声明的误用：类型位置缺实参
+void SemanticAnalyzer::check_generic_use(Type* t, Decl* d) {
+    if (!t || in_generic_base_ || !is_generic_decl(d)) return;
+    error(t->loc, "'" + type_name_string(t) +
+          "' is generic: write '" + type_name_string(t) + "-<...>' to use it");
+}
+
+// 泛型声明的误用：泛型函数以值引用。作为被调用者时不报，
+// 那条路径由 resolve_call 按实参实例化
+void SemanticAnalyzer::check_generic_ref_use(Expr* e, Decl* d) {
     if (!e || in_generic_base_ || !is_generic_decl(d)) return;
-    if (e->is_type) {
-        error(e->loc, "'" + type_name_string(e) +
-              "' is generic: write '" + type_name_string(e) + "-<...>' to use it");
-        return;
-    }
     if (in_callee_) return;
     error(e->loc, "generic function '" + std::string(d->name) +
           "' requires type arguments: call it as '" + std::string(d->name) +

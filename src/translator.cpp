@@ -51,15 +51,15 @@ std::string ir_common_type(const std::string& a, const std::string& b) {
     return a;
 }
 
-Expr* strip_modifiers(Expr* t) {
+Type* strip_modifiers(Type* t) {
     return t;
 }
 
-bool expr_is_unsigned(Expr* t);
+bool expr_is_unsigned(Type* t);
 
 // 比较/算术操作数提升后的无符号性：位宽不同取宽者，相同则任一为无符号即无符号
 bool common_unsigned(const std::string& lt, const std::string& rt,
-                     Expr* l, Expr* r) {
+                     Type* l, Type* r) {
     if (ir_is_fp_type(lt) || ir_is_fp_type(rt)) return false;
     int lb = ir_is_int_type(lt) ? ir_int_bits(lt) : 0;
     int rb = ir_is_int_type(rt) ? ir_int_bits(rt) : 0;
@@ -69,7 +69,7 @@ bool common_unsigned(const std::string& lt, const std::string& rt,
 }
 
 // 表达式类型是否为无符号整数（不含 bool）
-bool expr_is_unsigned(Expr* t) {
+bool expr_is_unsigned(Type* t) {
     t = strip_modifiers(t);
     if (!t) return false;
     auto* p = t->get_primitive();
@@ -149,7 +149,7 @@ void Translator::collect_globals_decl(Decl* d, const std::string& prefix,
         if (!vi) continue;
         std::string sym = mangler_.global_of(vi);
         if (sym.empty()) continue;
-        Expr* vt = vi->type ? vi->type : static_cast<VarList*>(d)->type;
+        Type* vt = vi->type ? vi->type : static_cast<VarList*>(d)->type;
         GlobalVar g;
         g.var = vi;
         g.sym = sym;
@@ -268,7 +268,7 @@ void Translator::collect_classes_decl(Decl* d) {
                     // 定长数组与内联类字段在布局里占真实空间。类字段内联后
                     // 随宿主对象一起活着，不会像指针字段那样指向 INIT 栈帧上
                     // 的临时实例；指针与引用字段仍是 ptr，槽里存地址
-                    Expr* ft = vi->type ? vi->type : vl->type;
+                    Type* ft = vi->type ? vi->type : vl->type;
                     Class* fc = as_class(ft);
                     f.type = ft;
                     f.ir_type = fc ? ("%" + mangler_.of(fc))
@@ -300,7 +300,7 @@ void Translator::collect_classes_decl(Decl* d) {
     }
 }
 
-std::string Translator::map_type(Expr* t) {
+std::string Translator::map_type(Type* t) {
     // 语义通过的程序里表达式类型必然非空；走到这里说明翻译器内部有漏配类型，
     // 静默当作 void 会生成非法 IR 且报错指向 .ll 而非源码，故显式报错
     if (!t) {
@@ -341,12 +341,12 @@ std::string Translator::map_type(Expr* t) {
     return "i32";
 }
 
-bool Translator::is_fixed_array(Expr* t) const {
+bool Translator::is_fixed_array(Type* t) const {
     auto* a = t ? t->get_array_type() : nullptr;
     return a && a->kind != ArrayKind::Slice;
 }
 
-std::string Translator::object_type(Expr* t) {
+std::string Translator::object_type(Type* t) {
     if (!is_fixed_array(t)) return map_type(t);
     auto* a = t->get_array_type();
     // 元素本身也可能是定长数组（多维数组）：必须递归展开成内联存储，
@@ -367,7 +367,7 @@ std::string Translator::entry_alloca(const std::string& ir_type) {
 // 运行期长度的存储：仍然是栈上 alloca（用户没写 malloc 修饰就不该动堆），
 // 但 alloca 只在函数返回时释放，循环里逐轮分配就是纯粹的栈浪费，
 // 故用 stacksave/stackrestore 把这段栈在作用域结束时还给调用者
-std::string Translator::alloc_slice_storage(Expr* elem_type,
+std::string Translator::alloc_slice_storage(Type* elem_type,
                                             const std::string& count) {
     ir_.need_stackrw();
     std::string save = ir_.reg();
@@ -402,7 +402,7 @@ std::string Translator::length_value_of(Expr* e) {
 
 // 拷贝 count 个元素（count 为 i64 值或整数字面量）
 void Translator::copy_elements(const std::string& dst, const std::string& src,
-                               Expr* elem_type, const std::string& count) {
+                               Type* elem_type, const std::string& count) {
     std::string et = elem_type ? map_type(elem_type) : "i32";
     long esz = type_bytes_of(et);
     if (esz <= 0) return;
@@ -443,7 +443,7 @@ std::string Translator::min_with_const(const std::string& v, long long k) {
 
 // 把初值内容拷进已有存储：实际拷贝长度取目标长度与初值长度的较小者，
 // 否则源或目标会有一侧越界
-void Translator::copy_init_into(const std::string& backing, Expr* el,
+void Translator::copy_init_into(const std::string& backing, Type* el,
                                 const std::string& len64, Expr* init) {
     if (!init || backing.empty() || backing == "null" || len64.empty()) return;
     if (auto* lit = init->get_literal()) {
@@ -478,7 +478,7 @@ SpecialMethod* Translator::find_special(Class* cls, SpecialMethod::Kind k) const
     return nullptr;
 }
 
-Class* Translator::pointee_class(Expr* t) {
+Class* Translator::pointee_class(Type* t) {
     if (!t) return nullptr;
     if (auto* p = t->get_pointer())   return as_class(p->pointee);
     if (auto* r = t->get_reference()) return as_class(r->target);
@@ -619,11 +619,11 @@ void Translator::emit_func(Func& f, Class* cls) {
 
     std::string ret_t = "void";
     VarItem* ret_var = nullptr;
-    Expr* ret_expr = nullptr;
+    Type* ret_expr = nullptr;
     if (!f.returns.empty() && f.returns.back()) {
         VarList* rl = f.returns.back();
         if (!rl->vars.empty()) ret_var = rl->vars.back();
-        Expr* rt_ = (ret_var && ret_var->type) ? ret_var->type : rl->type;
+        Type* rt_ = (ret_var && ret_var->type) ? ret_var->type : rl->type;
         if (rt_) { ret_t = object_type(rt_); ret_expr = rt_; }
     }
     // main 有返回变量：不用 sret，改为局部变量 + 统一 exit 块
@@ -661,7 +661,7 @@ void Translator::emit_func(Func& f, Class* cls) {
     for (VarList* vl : f.params) {
         if (!vl) continue;
         for (VarItem* vi : vl->vars) {
-            Expr* pt = vi->type ? vi->type : vl->type;
+            Type* pt = vi->type ? vi->type : vl->type;
             // 定长数组形参按值传递：IR 类型即真实的 [N x T]
             std::string vt = pt ? object_type(pt) : "i32";
             std::string argn = "%a" + std::to_string(idx++);
@@ -798,7 +798,7 @@ void Translator::emit_special(SpecialMethod& sm, Class* cls) {
     for (VarList* vl : sm.params) {
         if (!vl) continue;
         for (VarItem* vi : vl->vars) {
-            Expr* pt = vi->type ? vi->type : vl->type;
+            Type* pt = vi->type ? vi->type : vl->type;
             // 定长数组形参按值传递：IR 类型即真实的 [N x T]
             std::string vt = pt ? object_type(pt) : "i32";
             std::string argn = "%a" + std::to_string(idx++);
@@ -1106,7 +1106,7 @@ bool Translator::emit_class_var(VarList* vl, VarItem* vi, Class* cls) {
 
 
 // 定长数组初始化：把初值的元素写入已分配的存储
-void Translator::emit_fixed_array_init(const std::string& slot, Expr* el,
+void Translator::emit_fixed_array_init(const std::string& slot, Type* el,
                                        int n, Expr* init) {
     if (!init || n <= 0) return;
     // 元素本身可能是多维数组，必须用内联存储类型；map_type 会退化成 ptr，
@@ -1167,9 +1167,9 @@ void Translator::emit_fixed_array_init(const std::string& slot, Expr* el,
 }
 
 // 按目标数组类型求值：字面量与字符串按目标的元素类型构造，避免元素类型不符
-std::string Translator::eval_as_array(Expr* e, Expr* target) {
+std::string Translator::eval_as_array(Expr* e, Type* target) {
     std::string ot = object_type(target);
-    Expr* el = target->get_array_type()->element;
+    Type* el = target->get_array_type()->element;
     int n = array_length_of(target);
     std::string tmp = entry_alloca(ot);
     if (e && e->is_array())
@@ -1183,8 +1183,8 @@ std::string Translator::eval_as_array(Expr* e, Expr* target) {
 
 // 所有权切片初始化：按长度分配存储，拷贝初值内容，存入 {ptr,len}
 void Translator::emit_slice_init(VarList* vl, const std::string& slot,
-                                 Expr* vtype, Expr* init) {
-    Expr* el = vtype->get_array_type()->element;
+                                 Type* vtype, Expr* init) {
+    Type* el = vtype->get_array_type()->element;
     // 长度：类型里的 {n} 优先，否则取初值的长度
     Expr* len_expr = vtype->get_array_type()->length;
     std::string len;
@@ -1252,7 +1252,7 @@ void Translator::emit_var_decl(VarList* vl) {
     std::string t = map_type(vl->type);
     for (VarItem* vi : vl->vars) {
         if (!vi) continue;
-        Expr* vtype = vi->type ? vi->type : vl->type;
+        Type* vtype = vi->type ? vi->type : vl->type;
         // 引用声明：分配槽存被引用对象地址；有初值则立即绑定
         if (vtype && vtype->is_reference()) {
             std::string slot = entry_alloca("ptr");
@@ -1490,8 +1490,6 @@ std::string Translator::eval(Expr* e) {
     if (auto* ca  = e->get_cast())        return eval_cast(e, ca);
     if (auto* tr  = e->get_ternary())     return eval_ternary(e, tr);
     if (auto* sp  = e->get_spawn())       return eval_spawn(e, sp);
-    if (auto* fr  = e->get_func_ref())
-        return "@" + IRWriter::quote(mangler_.of(fr->func));
     return "0";
 }
 
@@ -1518,7 +1516,7 @@ std::string Translator::base_ir_of(PrimitiveTypeKind k) {
     }
 }
 
-Class* Translator::as_wrap_class(Expr* t) {
+Class* Translator::as_wrap_class(Type* t) {
     Class* c = as_class(t);
     if (!c) return nullptr;
     if (c->base_source == PrimitiveTypeKind::Void) return nullptr;
@@ -1595,7 +1593,7 @@ void Translator::emit_field_default(const std::string& dst_addr, const Translato
     if (!f.var->init) return;
     // 定长数组成内联字段：初值元素直接写进字段存储
     if (is_fixed_array(f.var->type)) {
-        Expr* el = f.var->type->get_array_type()->element;
+        Type* el = f.var->type->get_array_type()->element;
         emit_fixed_array_init(dst_addr, el, array_length_of(f.var->type),
                               f.var->init);
         return;
@@ -1683,8 +1681,8 @@ std::string Translator::emit_malloc_inst(Class* cls) {
 }
 
 std::string Translator::emit_wrap_convert(Expr* e) {
-    Expr* src_t = e->type;
-    Expr* dst_t = e->implicit_to;
+    Type* src_t = e->type;
+    Type* dst_t = e->implicit_to;
     Class* sw = as_wrap_class(src_t);
     Class* dw = as_wrap_class(dst_t);
 
@@ -1709,7 +1707,7 @@ std::string Translator::emit_wrap_convert(Expr* e) {
         src_ir = src_t ? map_type(src_t) : "i32";
     }
 
-    Expr* target_t = dw ? nullptr : dst_t;
+    Type* target_t = dw ? nullptr : dst_t;
     std::string dst_ir = dw ? base_ir_of(dw->base_source)
                             : (target_t ? map_type(target_t) : src_ir);
 
@@ -1813,7 +1811,7 @@ std::string Translator::field_addr_of(Expr* e) {
 
 // 引用字段的槽存被引用对象的地址，取其 lvalue 需先取出该地址
 std::string Translator::field_lvalue(Expr* e, const std::string& slot_addr) {
-    Expr* dt = e && e->sym ? e->sym->get_type() : nullptr;
+    Type* dt = e && e->sym ? e->sym->get_type() : nullptr;
     if (slot_addr.empty() || !dt || !dt->is_reference()) return slot_addr;
     std::string addr = ir_.reg();
     emit_instr(addr + " = load ptr, ptr " + slot_addr);
@@ -1823,7 +1821,7 @@ std::string Translator::field_lvalue(Expr* e, const std::string& slot_addr) {
 // 引用字段的目标是类：取出被引用对象的地址后，字段的值即该地址本身。
 // 与 eval_identifier 的 ref_bound 分支一致，此时不能再按 map_type 做一次 load，
 // 否则会把实例存储当成指针槽再读一次。
-static bool ref_targets_class(Expr* decl_type) {
+static bool ref_targets_class(Type* decl_type) {
     auto* r = decl_type ? decl_type->get_reference() : nullptr;
     return r && as_class(r->target);
 }
@@ -2089,7 +2087,7 @@ std::string Translator::eval_literal(Expr::Literal* lit) {
     }
 }
 
-bool Translator::is_ref_item(const VarItem* vi, Expr** target_out) const {
+bool Translator::is_ref_item(const VarItem* vi, Type** target_out) const {
     if (!vi || !vi->type) return false;
     if (auto* r = vi->type->get_reference()) {
         if (target_out) *target_out = r->target;
@@ -2382,7 +2380,7 @@ std::string Translator::eval_assign(Expr* e, Expr::Assign* a) {
     // 数组赋值：定长数组写进自己的存储，切片写进它拥有的存储
     if (a->op == OpKind::Assign && a->target && a->target->type &&
         a->target->type->is_array_type()) {
-        Expr* el = a->target->type->get_array_type()->element;
+        Type* el = a->target->type->get_array_type()->element;
         if (is_fixed_array(a->target->type)) {
             emit_fixed_array_init(ptr, el, array_length_of(a->target->type),
                                   a->value);
@@ -2487,7 +2485,7 @@ std::string Translator::assign_class_value(Expr* target, Expr* value) {
     // 存储形态决定写法：引用左值与内联字段指向的就是对象本身，逐字段搬进去；
     // 类实例变量的槽存的是实例指针，须另分配副本后改写指针。
     // 引用左值是写穿而非重新绑定，与 int-& 一致（s = b 改的是 s 指向的对象）
-    Expr* dt = target->sym ? target->sym->get_type() : nullptr;
+    Type* dt = target->sym ? target->sym->get_type() : nullptr;
     bool ref_target = dt && dt->is_reference();
     if (ref_target || target->get_member()) {
         emit_fields_copy(pc, src, ptr, true);
@@ -2571,18 +2569,8 @@ std::string Translator::eval_member(Expr* e, Expr::Member* m) {
     Expr* tgt = m->target;
     auto* vi = (e->sym && e->sym->kind == SymbolKind::Variable)
         ? dynamic_cast<VarItem*>(e->sym->node) : nullptr;
-    // 类名限定访问 static 字段：C::counter
-    if (tgt && tgt->resolved_decl && tgt->resolved_decl->kind == DeclKind::Class &&
-        vi) {
-        std::string sg = mangler_.field_of(vi);
-        if (!sg.empty()) {
-            if (is_fixed_array(e->type)) return "@" + sg;
-            std::string t = e->type ? map_type(e->type) : "i32";
-            std::string r = ir_.reg();
-            emit_instr(r + " = load " + t + ", ptr @" + sg);
-            return r;
-        }
-    }
+    // 类名限定访问 static 字段 C::counter：C 在值位置只带符号，
+    // 成员查找已由语义阶段按类作用域完成，落到上面的 static 字段分支
     if (Class* cls = as_class(tgt ? tgt->type : nullptr)) {
         auto it = classes_.find(cls);
         if (it != classes_.end() && vi) {
@@ -2601,7 +2589,7 @@ std::string Translator::eval_member(Expr* e, Expr::Member* m) {
 }
 
 std::string Translator::eval_array(Expr* e, Expr::Array* arr) {
-    Expr* elem_type = nullptr;
+    Type* elem_type = nullptr;
     if (e->type && e->type->is_array_type())
         elem_type = e->type->get_array_type()->element;
     std::string et;
@@ -2774,8 +2762,8 @@ std::string Translator::cast_value(const std::string& v,
 }
 
 std::string Translator::eval_cast(Expr*, Expr::Cast* c) {
-    Expr* src_expr = c->operand ? c->operand->type : nullptr;
-    Expr* dst_expr = c->target_type;
+    Type* src_expr = c->operand ? c->operand->type : nullptr;
+    Type* dst_expr = c->target_type;
     std::string src = map_type(src_expr);
     std::string dst = map_type(dst_expr);
     std::string v = eval(c->operand);
@@ -2784,7 +2772,7 @@ std::string Translator::eval_cast(Expr*, Expr::Cast* c) {
 }
 
 std::string Translator::emit_conversion_call(Expr* e, Conversion* cf) {
-    Expr* ret_type_expr = nullptr;
+    Type* ret_type_expr = nullptr;
     if (!cf->returns.empty() && cf->returns.back()) {
         VarList* rl = cf->returns.back();
         if (!rl->vars.empty() && rl->vars.back() && rl->vars.back()->type)
@@ -2828,7 +2816,7 @@ std::string Translator::emit_conversion_call(Expr* e, Conversion* cf) {
             for (VarItem* vi : vl->vars) {
                 if (!vi) continue;
                 if (i == 0) {
-                    Expr* pt_expr = vi->type ? vi->type : vl->type;
+                    Type* pt_expr = vi->type ? vi->type : vl->type;
                     std::string pt = pt_expr ? map_type(pt_expr) : "i32";
                     std::string v = eval(e);
                     args.push_back(pt + " " + v);
@@ -2881,7 +2869,7 @@ std::string Translator::emit_operator_call(Expr* e, Operator* op,
         for (VarList* vl : op->params) {
             if (!vl) continue;
             for (VarItem* vi : vl->vars) {
-                Expr* pte = vi->type ? vi->type : vl->type;
+                Type* pte = vi->type ? vi->type : vl->type;
                 if (pte) pt = map_type(pte);
                 break;
             }
@@ -2924,7 +2912,7 @@ std::string Translator::emit_operator_call(Expr* e, Operator* op,
         for (VarItem* vi : vl->vars) {
             if (i >= (int)rhs_list.size()) break;
             Expr* arg = rhs_list[i];
-            Expr* pt_expr = vi->type ? vi->type : vl->type;
+            Type* pt_expr = vi->type ? vi->type : vl->type;
             std::string pt = pt_expr ? map_type(pt_expr) : "i32";
             std::string v = eval_converted(arg);
             args.push_back(pt + " " + v);
@@ -2959,7 +2947,7 @@ void Translator::emit_declare(Func& f) {
     if (!f.returns.empty() && f.returns.back()) {
         VarList* rl = f.returns.back();
         if (!rl->vars.empty()) ret_var = rl->vars.back();
-        Expr* rt = (ret_var && ret_var->type) ? ret_var->type : rl->type;
+        Type* rt = (ret_var && ret_var->type) ? ret_var->type : rl->type;
         if (rt) ret_t = object_type(rt);
     }
 
@@ -2970,7 +2958,7 @@ void Translator::emit_declare(Func& f) {
     for (VarList* vl : f.params) {
         if (!vl) continue;
         for (VarItem* vi : vl->vars) {
-            Expr* pt = vi->type ? vi->type : vl->type;
+            Type* pt = vi->type ? vi->type : vl->type;
             params.push_back((pt ? object_type(pt) : "i32") + " %a" +
                              std::to_string(idx++));
         }
@@ -3061,7 +3049,7 @@ void Translator::emit_ctor_into(Expr::Call* c, SpecialMethod* sm, Class* cls,
         std::string v = converted ? eval_converted(a) : eval(a);
         std::string at = a && a->type ? map_type(a->type) : "i32";
         // 定位该实参对应的形参 IR 类型，用于字符串数组构造与数值 cast
-        Expr* pte = nullptr;
+        Type* pte = nullptr;
         {
             size_t k = 0;
             for (VarList* vl : sm->params) {
@@ -3127,11 +3115,11 @@ std::string Translator::eval_plain_call(Expr* e, Expr::Call* c, Func* fn) {
     std::string fname = mangler_.of(fn);
     std::string ret_t = "void";
     VarItem* ret_var = nullptr;
-    Expr* ret_expr = nullptr;
+    Type* ret_expr = nullptr;
     if (!fn->returns.empty() && fn->returns.back()) {
         VarList* rl = fn->returns.back();
         if (!rl->vars.empty()) ret_var = rl->vars.back();
-        Expr* rt_ = (ret_var && ret_var->type) ? ret_var->type : rl->type;
+        Type* rt_ = (ret_var && ret_var->type) ? ret_var->type : rl->type;
         if (rt_) { ret_t = object_type(rt_); ret_expr = rt_; }
     }
 
@@ -3182,7 +3170,7 @@ std::string Translator::eval_plain_call(Expr* e, Expr::Call* c, Func* fn) {
     for (VarList* vl : fn->params) {
         if (!vl) continue;
         for (VarItem* vi : vl->vars) {
-            Expr* pt = vi->type ? vi->type : vl->type;
+            Type* pt = vi->type ? vi->type : vl->type;
             param_ir.push_back(pt ? object_type(pt) : "i32");
             param_ref.push_back(is_ref_item(vi, nullptr));
         }
@@ -3235,7 +3223,7 @@ std::string Translator::eval_plain_call(Expr* e, Expr::Call* c, Func* fn) {
             v = build_string_slice(a);
         else {
             // 找到该实参对应的形参类型节点，用于取符号与构造数组实参
-            Expr* pt_expr = nullptr;
+            Type* pt_expr = nullptr;
             size_t k = 0;
             for (VarList* vl : fn->params) {
                 if (!vl) continue;
@@ -3334,7 +3322,7 @@ std::string Translator::eval_call(Expr* e, Expr::Call* c) {
     return eval_plain_call(e, c, static_cast<Func*>(c->resolved));
 }
 
-std::string Translator::call_func_ptr(Expr* e, Expr::Call* c, Expr::FuncPtr* fp) {
+std::string Translator::call_func_ptr(Expr* e, Expr::Call* c, Type::FuncPtr* fp) {
     std::string fpv = eval(c->callee);
     (void)e;
     // 函数指针类型的返回类型由 parser 保证非空，缺失即内部错误
@@ -3348,7 +3336,7 @@ std::string Translator::call_func_ptr(Expr* e, Expr::Call* c, Expr::FuncPtr* fp)
     std::vector<std::string> args;
     for (size_t i = 0; i < c->args.size(); ++i) {
         Expr* a = c->args[i];
-        Expr* pt_expr = i < fp->params.size() ? fp->params[i] : nullptr;
+        Type* pt_expr = i < fp->params.size() ? fp->params[i] : nullptr;
         std::string pt = pt_expr ? object_type(pt_expr)
                                  : (a && a->type ? map_type(a->type) : "i32");
         // 引用形参：按绑定语义传被绑定对象的地址，跳过值转换
@@ -3534,7 +3522,7 @@ std::string Translator::eval_spawn(Expr*, Expr::Spawn* s) {
     return "0";
 }
 
-int Translator::array_length_of(Expr* arrtype) {
+int Translator::array_length_of(Type* arrtype) {
     if (!arrtype || !arrtype->is_array_type()) return 0;
     Expr* len = arrtype->get_array_type()->length;
     if (!len || !len->get_literal()) return 0;
