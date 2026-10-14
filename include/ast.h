@@ -96,6 +96,7 @@ struct Decl;
 struct Cont;
 struct VarItem;
 struct VarList;
+struct TypeParam;
 struct Func;
 struct Operator;
 struct Conversion;
@@ -221,6 +222,7 @@ struct CompUnit {
     }
 
     // 深拷贝 AST 节点并登记到本 CompUnit；用于类注入展开，避免共享节点
+    std::vector<TypeParam*> clone_type_params(const std::vector<TypeParam*>& tps);
     Expr* clone_type(Expr* t);
     Expr* clone_expr(Expr* e);
     Stmt* clone_stmt(Stmt* s);
@@ -350,6 +352,9 @@ struct Expr : ASTNode {
     struct Primitive        { PrimitiveTypeKind kind; };
     struct Pointer          { Expr* pointee; };
     struct ArrayType        { Expr* element; Expr* length; ArrayKind kind = ArrayKind::Fixed; };
+    // 泛型应用：base 之后的 -<...> 为显式类型实参。类型位置 is_type 为真，
+    // 值位置（如 foo-<int>(1) 的被调用者）为假
+    struct GenericType      { Expr* base; std::vector<Expr*> args; };
     struct StringLiteralType {};
     struct FuncPtr          { std::vector<Expr*> params; Expr* return_type; };
     struct FuncRef          { Func* func; };
@@ -362,7 +367,7 @@ struct Expr : ASTNode {
         Literal, Identifier, Binary, Unary, Assign,
         Call, Ternary, Index, Member,
         Cast, Array, Spawn,
-        Primitive, Pointer, ArrayType, StringLiteralType,
+        Primitive, Pointer, ArrayType, GenericType, StringLiteralType,
         FuncPtr, FuncRef, Reference, Inferred, Void, Null
     >;
     
@@ -398,6 +403,7 @@ struct Expr : ASTNode {
     BBB(primitive, Primitive, Expr)
     BBB(pointer, Pointer, Expr)
     BBB(array_type, ArrayType, Expr)
+    BBB(generic_type, GenericType, Expr)
     BBB(string_literal_type, StringLiteralType, Expr)
     BBB(func_ptr, FuncPtr, Expr)
     BBB(func_ref, FuncRef, Expr)
@@ -509,9 +515,18 @@ struct VarList : Decl {
         type(t), vars(std::move(v)) {}
 };
 
+// 泛型形参：`foo-<T, U>`、`@Array-<T>` 中的 T/U，只是名字，语义阶段与实参绑定
+struct TypeParam : ASTNode {
+    std::string_view name;
+    TypeParam() = default;
+    TypeParam(const Location& loc, std::string_view n)
+        : ASTNode(loc), name(n) {}
+};
+
 struct Func : Decl {
     std::vector<VarList*> params;   // 圆括号(int a, $bool cond)
     std::vector<VarList*> returns;  // 返回值声明
+    std::vector<TypeParam*> type_params;  // 泛型形参 `foo-<T>`，非空即泛型声明
     Stmt* body = nullptr;           // 函数体
     bool is_extern_decl = false;    // extern 内的声明，不检查返回值赋值
     bool is_variadic = false;        // 形参表末尾有 '...'（仅 extern 支持）
@@ -579,6 +594,8 @@ struct Extern : Cont {
 };
 
 struct Class : Cont {
+    // 泛型形参 `@Array-<T>`，非空即泛型类
+    std::vector<TypeParam*> type_params;
     // 修饰注入：`#a @b #c` 中 @ 之前的为前置注入，之后的为尾随注入。
     // 优先级从左到右递减：前置 > 基类 > 尾随。
     std::vector<Expr*> injects;
@@ -669,6 +686,8 @@ struct ASTVisitor {
     int anon_scope_ = 0;
     // 正在遍历调用表达式的被调用者，供标识符解析区分函数名与普通变量
     bool in_callee_ = false;
+    // 正在遍历泛型应用的 base：该名字本就指向模板本体，不算裸用模板
+    bool in_generic_base_ = false;
     void walk(CompUnit& cu) {
         for (auto* d : cu.top_decls) {
             if (d) walk(*d);
@@ -692,6 +711,9 @@ struct ASTVisitor {
         walk_children(vi);
         visit(vi);
     }
+    void walk(TypeParam& tp) {
+        visit_type_param(tp);
+    }
 
     virtual void visit(CompUnit&) {}
     virtual void visit(Import&) {}
@@ -700,6 +722,7 @@ struct ASTVisitor {
     virtual void visit(Decl&) {}
     virtual void visit_var_list(VarList&) {}
     virtual void visit_var_item(VarItem&) {}
+    virtual void visit_type_param(TypeParam&) {}
     virtual void visit_func(Func&) {}
     virtual void visit_namespace(Namespace&) {}
     virtual void visit_extern(Extern&) {}
@@ -743,6 +766,7 @@ struct ASTVisitor {
     virtual void visit_type_primitive(Expr::Primitive&) {}
     virtual void visit_type_pointer(Expr::Pointer&) {}
     virtual void visit_type_array(Expr::ArrayType&) {}
+    virtual void visit_type_generic(Expr::GenericType&) {}
     virtual void visit_type_string_literal(Expr::StringLiteralType&) {}
     virtual void visit_type_func_ptr(Expr::FuncPtr&) {}
     virtual void visit_type_func_ref(Expr::FuncRef&) {}
@@ -774,6 +798,9 @@ struct ASTVisitor {
         current_func = &f;
         current_params = &f.params;
         scope_in(std::string(f.name));
+        for (auto* tp : f.type_params) {
+            if (tp) walk(*tp);
+        }
         for (auto* p : f.params) {
             if (p) walk(*p);
         }
@@ -790,7 +817,11 @@ struct ASTVisitor {
     void walk_children(VarList& vl) {
         if (vl.type) walk(*vl.type);
         for (auto* v : vl.vars) {
-            if (v) walk(*v);
+            if (!v) continue;
+            // 后缀数组维度的类型只挂在 VarItem 上（int a[3]），前缀形式与
+            // VarList 共用同一节点，不重复遍历
+            if (v->type && v->type != vl.type) walk(*v->type);
+            walk(*v);
         }
         visit_var_list(vl);
     }
@@ -804,6 +835,9 @@ struct ASTVisitor {
         current_func = nullptr;
         current_members = &c.members;
         scope_in(std::string(c.name));
+        for (auto* tp : c.type_params) {
+            if (tp) walk(*tp);
+        }
         for (auto* m : c.members) {
             if (m) walk(*m);
         }
@@ -899,6 +933,13 @@ struct ASTVisitor {
                 if (v.element) walk(*v.element);
                 if (v.length) walk(*v.length);
                 visit_type_array(v);
+            } else if constexpr (std::is_same_v<T, Expr::GenericType>) {
+                bool pre_base = in_generic_base_;
+                in_generic_base_ = true;
+                if (v.base) walk(*v.base);
+                in_generic_base_ = pre_base;
+                for (auto* a : v.args) if (a) walk(*a);
+                visit_type_generic(v);
             } else if constexpr (std::is_same_v<T, Expr::FuncPtr>) {
                 for (auto* p : v.params) if (p) walk(*p);
                 if (v.return_type) walk(*v.return_type);

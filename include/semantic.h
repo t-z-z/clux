@@ -1,6 +1,7 @@
 #pragma once
 
 #include <deque>
+#include <map>
 #include <memory>
 #include <string>
 #include <string_view>
@@ -14,6 +15,20 @@
 #include "string_view_map.h"
 
 namespace cx {
+
+// 泛型形参名 -> 实例化类型；键为字符串池中的名字，生命周期同 AST
+using TypeSubst = std::unordered_map<std::string_view, Expr*>;
+
+// 泛型模板判定：带泛型形参表的类或函数
+inline bool is_generic_decl(const Decl* d) {
+    if (!d) return false;
+    if (d->kind == DeclKind::Class)
+        return !static_cast<const Class*>(d)->type_params.empty();
+    if (d->kind == DeclKind::Func || d->kind == DeclKind::Operator ||
+        d->kind == DeclKind::Conversion)
+        return !static_cast<const Func*>(d)->type_params.empty();
+    return false;
+}
 
 // 符号表与作用域
 
@@ -163,6 +178,12 @@ struct SymbolTable {
         current_ = root_.get();
     }
 
+    // 直接切到某个作用域：泛型实例在模板的声明作用域里重新进入，
+    // 无需从根按名字重走一遍
+    void reset_scope(Scope* s) {
+        if (s) current_ = s;
+    }
+
     Scope* push_scope(const std::string& name) {
         current_ = current_->get_or_create_child(name);
         return current_;
@@ -247,6 +268,21 @@ struct SymbolTable {
     }
 };
 
+// 泛型的跨模块共享状态：模板登记与实例缓存。多模块下同一模板的同一组
+// 实参只能有一个实例，否则两个模块各建一份会在 IR 里重名
+struct GenericState {
+    // 泛型模板登记：模板本体不进入语义遍历与 IR，实例化时由此取回
+    struct Template {
+        Decl* decl = nullptr;
+        Scope* scope = nullptr;       // 实例符号登记到该作用域
+        bool default_public = true;   // 成员默认私有，其余默认公开
+    };
+    std::unordered_map<const Decl*, Template> templates;
+    std::map<std::pair<const Decl*, std::string>, Decl*> cache;
+    // 实例符号所在的模板作用域：跨模块复用同一实例时也要能取回它的符号
+    std::unordered_map<const Decl*, Scope*> instance_scope;
+};
+
 // 语义分析器
 class SemanticAnalyzer : public ASTVisitor {
     // 状态
@@ -257,6 +293,9 @@ class SemanticAnalyzer : public ASTVisitor {
     // 模块级变量的声明序号，用于检测初值里的前向引用
     std::unordered_map<const VarItem*, size_t> global_order_;
     void collect_global_order(Decl* d);
+    // 单模块时用自带状态，多模块时由前端传入共享状态
+    GenericState own_generics_;
+    GenericState* generics_ = &own_generics_;
     FlowChecker flow_;
     std::vector<Diagnostic> diagnostics_;
     bool has_error_ = false;
@@ -271,6 +310,12 @@ class SemanticAnalyzer : public ASTVisitor {
     // expand() 是否已执行，analyze_rest() 会兜底调用
     bool expanded_ = false;
 
+    // 泛型（实现见 src/semantic_generic.cpp）
+    // 已实例化声明：语义主遍历之后挂到 top_decls，translator 只看得到它们
+    std::vector<Decl*> generic_instances_;
+    // 生成的实例名存储（deque 保证元素地址稳定，须活过 AST）
+    std::deque<std::string> instance_names_;
+
     #define X(name,str) Expr* type##name;
     TYPE
     #undef X
@@ -279,7 +324,9 @@ class SemanticAnalyzer : public ASTVisitor {
     Expr* typeNull;   // Null
     
 public:
-    explicit SemanticAnalyzer(CompUnit& cu) : cu_(cu),
+    explicit SemanticAnalyzer(CompUnit& cu, GenericState* generics = nullptr)
+        : cu_(cu),
+        generics_(generics ? generics : &own_generics_),
         flow_(var_symbols_,
             [this](const Location& loc, const std::string& msg) { error(loc, msg); }) {
         injector_ = std::make_unique<InjectionExpander>(cu_, symbols_,
@@ -373,6 +420,40 @@ public:
     void visit_type_inferred(Expr::Inferred&) override;
     void visit_type_void(Expr::Void&) override;
     void visit_type_string_literal(Expr::StringLiteralType&) override;
+    void visit_type_generic(Expr::GenericType&) override;
+
+    // 泛型：模板摘除与登记（实例化在 src/semantic_generic.cpp）
+    void collect_generics();
+    void collect_generic_in(std::vector<Decl*>& list, Scope* scope,
+                            bool default_public);
+    void extract_generic_templates(std::vector<Decl*>& members, Scope* scope,
+                                   bool default_public);
+    Class* instantiate_class(Class& tmpl, const std::vector<Expr*>& args,
+                             const Location& loc);
+    Func* instantiate_func(Func& tmpl, const std::vector<Expr*>& args,
+                           const std::vector<Expr*>& arg_types,
+                           const Location& loc);
+    // 从实参类型推导形参类型的实例化：形参位置是泛型形参则绑定或校验一致性，
+    // 否则退化为 can_convert_to 判定（含 is_same_type）
+    bool deduce_type(Expr* param, Expr* arg, TypeSubst& subst,
+                     const std::vector<TypeParam*>& tparams);
+    // 模板的登记信息；模板已从 AST 摘除，仍可按声明指针取回
+    bool generic_template_of(const Decl* d, GenericState::Template& out) const;
+    // 克隆树中类型位置的泛型形参名替换为实参类型
+    void substitute_types(Decl* d, const TypeSubst& subst);
+    // 实例名与缓存键：类型键按实参顺序以 '$' 连接
+    std::string instance_key(const std::vector<Expr*>& args);
+    // 作用域链拼出的限定名（根作用域不计）：实例挂到顶层声明后仍须唯一
+    std::string scope_path(Scope* s) const;
+    std::string_view intern_name(std::string name);
+    // 实例声明的具名类型节点：与模板名同形（限定名保持限定）
+    Expr* instance_type_node(Expr* base, Decl* inst, bool is_type);
+    Symbol* instance_symbol(Decl* inst);
+    // 在模板的声明作用域里立即分析实例：调用点随后拿到的签名已是就绪的。
+    // 分析过程可能级联实例化别的泛型，靠实例缓存终止
+    void analyze_instance(Decl* d, Scope* scope);
+    // 泛型误用诊断：类型位置缺实参、泛型函数以值引用
+    void check_generic_use(Expr* e, Decl* d);
 
 private:
 
@@ -461,6 +542,9 @@ private:
 
     // 调用解析
     void resolve_call(Expr* call, Expr::Call& c);
+    // 泛型函数调用：按显式或推导的实参实例化，被调用者改写为实例名。
+    // 返回 false 表示实例化失败，错误已报出
+    bool resolve_generic_call(Expr* call_expr, Expr::Call& c, Symbol*& callee_sym);
     void call_fail(Expr* call_expr, const std::string& msg);
     bool resolve_funcptr_call(Expr* call_expr, Expr::Call& c);
     bool resolve_functor_call(Expr* call_expr, Expr::Call& c);

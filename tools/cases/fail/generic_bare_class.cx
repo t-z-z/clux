@@ -1,0 +1,8 @@
+// 泛型类不加类型实参无法确定布局，裸用须报错
+@Box-<T> {
+    pub T v
+    pub INIT(T a) { self.v = a }
+}
+main() {
+    Box b
+}

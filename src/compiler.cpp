@@ -135,9 +135,11 @@ FrontendResult run_frontend(StringPool& pool, const std::string& source,
     }
     if (load_failed) return result;
 
+    // 泛型实例跨模块共享：同一模板的同一组实参只建一次，IR 里才不会重名
+    GenericState generics;
     // 各模块先只收集符号表
     for (auto& m : modules) {
-        m->sem = std::make_unique<SemanticAnalyzer>(*m->cu);
+        m->sem = std::make_unique<SemanticAnalyzer>(*m->cu, &generics);
         m->sem->collect_only();
     }
     // 合并为全局符号表（同名先到者优先）

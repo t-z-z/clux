@@ -244,15 +244,15 @@ main() {
 ```cx
 @Param{
     int a,b,c
-    char[] str
-    INIT(int _a,_b,_c char[]_s){
+    char-* str
+    INIT(int _a,_b,_c char-*_s){
         a=_a b=_b c=_c str=_s
     }
 }
 foo(Param param){
 
 }
-bar(int[] a){
+bar(int[10] a){
 
 }
 main(){

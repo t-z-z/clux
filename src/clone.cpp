@@ -2,6 +2,16 @@
 
 namespace cx {
 
+std::vector<TypeParam*> CompUnit::clone_type_params(
+        const std::vector<TypeParam*>& tps) {
+    std::vector<TypeParam*> out;
+    out.reserve(tps.size());
+    for (const TypeParam* tp : tps) {
+        if (tp) out.push_back(add_node<TypeParam>(tp->loc, tp->name));
+    }
+    return out;
+}
+
 Expr* CompUnit::clone_type(Expr* t) {
     if (!t) return nullptr;
     Location loc = t->loc;
@@ -14,6 +24,15 @@ Expr* CompUnit::clone_type(Expr* t) {
     if (auto* a = t->get_array_type()) {
         return add_node<Expr>(loc, Expr::ArrayType{
             clone_type(a->element), clone_expr(a->length), a->kind});
+    }
+    if (auto* g = t->get_generic_type()) {
+        std::vector<Expr*> args;
+        args.reserve(g->args.size());
+        for (auto* a : g->args) args.push_back(clone_type(a));
+        Expr* n = add_node<Expr>(loc,
+            Expr::GenericType{clone_type(g->base), std::move(args)});
+        n->is_type = t->is_type;
+        return n;
     }
     if (auto* f = t->get_func_ptr()) {
         std::vector<Expr*> params;
@@ -41,6 +60,15 @@ Expr* CompUnit::clone_expr(Expr* e) {
     if (!e) return nullptr;
     Location loc = e->loc;
     if (e->is_type_node()) return clone_type(e);
+    // 值位置的泛型应用（如 foo-<int>(1) 的被调用者）：is_type_node 为假，
+    // 与类型位置同构地深拷贝
+    if (auto* g = e->get_generic_type()) {
+        std::vector<Expr*> args;
+        args.reserve(g->args.size());
+        for (auto* a : g->args) args.push_back(clone_expr(a));
+        return add_node<Expr>(loc,
+            Expr::GenericType{clone_expr(g->base), std::move(args)});
+    }
     if (auto* v = e->get_literal()) return add_node<Expr>(loc, Expr::Literal{*v});
     if (auto* v = e->get_identifier()) return add_node<Expr>(loc, Expr::Identifier{v->name});
     if (auto* v = e->get_binary()) {
@@ -125,8 +153,11 @@ VarList* CompUnit::clone_varlist(VarList* vl) {
     vars.reserve(vl->vars.size());
     for (auto* vi : vl->vars) {
         if (!vi) { vars.push_back(nullptr); continue; }
+        // 后缀数组维度的类型只挂在 VarItem 上（int a[3]），不能一律换成
+        // VarList 的类型；前缀形式两者同节点，复用即可
+        Expr* vt = (vi->type && vi->type != vl->type) ? clone_type(vi->type) : t;
         vars.push_back(add_node<VarItem>(
-            vi->loc, vi->name, clone_expr(vi->init), t));
+            vi->loc, vi->name, clone_expr(vi->init), vt));
     }
     return add_node<VarList>(vl->loc, vl->specs, t, std::move(vars));
 }
@@ -138,8 +169,13 @@ Func* CompUnit::clone_func(Func* f) {
     std::vector<VarList*> returns;
     returns.reserve(f->returns.size());
     for (auto* r : f->returns) returns.push_back(clone_varlist(r));
-    return add_node<Func>(f->loc, f->name, f->specs,
+    Func* cloned = add_node<Func>(f->loc, f->name, f->specs,
         std::move(params), std::move(returns), clone_stmt(f->body));
+    cloned->is_extern_decl = f->is_extern_decl;
+    cloned->is_variadic = f->is_variadic;
+    cloned->ret_via_reg = f->ret_via_reg;
+    cloned->type_params = clone_type_params(f->type_params);
+    return cloned;
 }
 
 Decl* CompUnit::clone_decl(Decl* d) {
@@ -156,6 +192,7 @@ Decl* CompUnit::clone_decl(Decl* d) {
                 op->specs, f->params, f->returns, f->body);
             cloned->synthesized = op->synthesized;
             cloned->ret_via_reg = op->ret_via_reg;
+            cloned->type_params = std::move(f->type_params);
             return cloned;
         }
         case DeclKind::SpecialMethod: {
@@ -172,8 +209,10 @@ Decl* CompUnit::clone_decl(Decl* d) {
             for (auto* p : cf->params) params.push_back(clone_varlist(p));
             std::vector<VarList*> returns;
             for (auto* r : cf->returns) returns.push_back(clone_varlist(r));
-            return add_node<Conversion>(cf->loc, cf->name, cf->specs,
+            auto* cloned = add_node<Conversion>(cf->loc, cf->name, cf->specs,
                 std::move(params), std::move(returns), clone_stmt(cf->body));
+            cloned->type_params = clone_type_params(cf->type_params);
+            return cloned;
         }
         case DeclKind::Keep: {
             auto* k = static_cast<Keep*>(d);

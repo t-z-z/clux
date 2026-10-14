@@ -1,0 +1,31 @@
+// 泛型方法：方法模板登记在模板/实例的作用域里，实例化后是普通函数。
+// 覆盖非泛型类的泛型方法、泛型类的泛型方法、命名空间内的泛型声明
+namespace ns {
+    @Box-<T> {
+        pub T v
+        pub INIT(T a) { self.v = a }
+        pub map-<U>(U x) Box-<U> r {
+            r = Box-<U>(x)
+        }
+    }
+    wrap-<T>(T x) T r = x {}
+}
+@Holder {
+    pub INIT() {}
+    pub twice-<T>(T v) T r { r = v }
+}
+main() int r {
+    r = 0
+    Holder h = Holder()
+    if h.twice(3) != 3 { r = r + 1 }
+    if h.twice-<long>(4L) != 4L { r = r + 2 }
+    ns::Box-<int> b = ns::Box-<int>(5)
+    if b.v != 5 { r = r + 4 }
+    // 泛型类的泛型方法：实例化后的模板形参与方法形参各自独立
+    ns::Box-<long> d = b.map(6L)
+    if d.v != 6L { r = r + 8 }
+    if b.v != 5 { r = r + 16 }
+    if ns::wrap(7) != 7 { r = r + 32 }
+    if ns::wrap-<char>(8) != 8 { r = r + 64 }
+    return
+}

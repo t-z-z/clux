@@ -95,6 +95,7 @@ namespace cx{
     X(Shr, ">>") \
     X(ColonColon, "::") \
     X(DoubleHyphen, "--") \
+    X(GenericStart, "-<") \
 
 #define OPERATOR1C \
     X(ParenL, "(") \
@@ -237,6 +238,12 @@ struct Token {
         return kind > TokenKind::Unknown && kind < TokenKind::BlockComment;
     }
 };
+
+// 泛型嵌套内一律以 '>' 收束：这些以 '>' 起始的操作符需要先裂解出闭合符
+inline bool is_generic_close(TokenKind kind) {
+    return kind == TokenKind::Greater || kind == TokenKind::Shr ||
+           kind == TokenKind::GreaterEqual || kind == TokenKind::ShrAssign;
+}
 
 
 
