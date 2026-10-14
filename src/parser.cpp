@@ -408,7 +408,7 @@ Namespace* Parser::parse_namespace_decl(SpecList &ml, Location &loc) {
 
 std::vector<Decl*> Parser::parse_members() {
     std::vector<Decl*> members;
-    SpecList default_specs;    // 修饰符指令（pub: / modf ...: / modf no:）作用于后续成员
+    SpecList default_specs;    // 修饰符指令（pub: / spec ...: / spec no:）作用于后续成员
     if (curr().kind == TokenKind::BraceL) {
         advance();
     }
@@ -451,9 +451,9 @@ bool Parser::parse_modifier_directive(SpecList& defaults) {
         consume_statement_end();
         return true;
     }
-    // modf: 清空默认修饰符
-    // modf <modf>...: 修改默认修饰符
-    if (curr().kind == TokenKind::Modf) {
+    // spec: 清空默认修饰符
+    // spec <spec>...: 修改默认修饰符
+    if (curr().kind == TokenKind::Spec) {
         advance();
         auto sp = point();
         if (curr().kind == TokenKind::Colon) {

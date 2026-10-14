@@ -609,15 +609,15 @@ main(int argc, char-** argv) int r { }
 
 ## 十六、语法糖
 
-`modf modifier:` 声明此后的同级声明都是 modifier 修饰：
+`spec modifier:` 声明此后的同级声明都是 modifier 修饰：
 
 ```cx
 @foo {
     pub:
     int a
-    modf static const:
+    spec static const:
     int b = 1
-    modf:
+    spec:
     int c
 }
 ```

@@ -1,7 +1,7 @@
 @Foo {
     pub:
     int a = 1
-    modf static:
+    spec static:
     int b = 2
 }
 main() { }

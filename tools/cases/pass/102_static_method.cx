@@ -1,6 +1,6 @@
 @C {
     pub INIT() { }
-    modf static:
+    spec static:
     pub f(int a) int r { r = a + 1 }
 }
 main() {

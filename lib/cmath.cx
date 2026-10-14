@@ -70,6 +70,6 @@ extern "C" {
     fmin(double x double y) double r{}
     fma(double x double y double z) double r{}
 
-    // 邻接值；modf 是修饰符关键字，不声明
+    // 邻接值；spec 是修饰符关键字，不声明
     nextafter(double x double y) double r{}
 }
