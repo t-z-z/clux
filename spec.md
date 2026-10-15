@@ -293,6 +293,17 @@ main() {
 }
 ```
 
+可以指定枚举值
+
+```cx
+enum Errno {
+    EPERM = 1
+    ENOENT = 2
+    ESRCH = 3
+    ...
+}
+```
+
 ### 命名
 
 同一作用域下：

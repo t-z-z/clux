@@ -1,13 +1,12 @@
 // cmath.cx
 // C 数学函数，对应 <math.h>
-// 只声明 double 版本：clux 无 long double，float 后缀版本按需再补
+// clux 无 long double
 
 extern "C" {
-    // 三角函数
     acos(double x) double r{}
     asin(double x) double r{}
     atan(double x) double r{}
-    atan2(double y double x) double r{}
+    atan2(double y, double x) double r{}
     cos(double x) double r{}
     sin(double x) double r{}
     tan(double x) double r{}
@@ -18,34 +17,68 @@ extern "C" {
     sinh(double x) double r{}
     tanh(double x) double r{}
 
-    // 指数与对数
+    acosf(float x) float r{}
+    asinf(float x) float r{}
+    atanf(float x) float r{}
+    atan2f(float y, float x) float r{}
+    cosf(float x) float r{}
+    sinf(float x) float r{}
+    tanf(float x) float r{}
+    acoshf(float x) float r{}
+    asinhf(float x) float r{}
+    atanhf(float x) float r{}
+    coshf(float x) float r{}
+    sinhf(float x) float r{}
+    tanhf(float x) float r{}
+
     exp(double x) double r{}
     exp2(double x) double r{}
     expm1(double x) double r{}
-    frexp(double value int-* exp) double r{}
-    ldexp(double x int exp) double r{}
+    frexp(double value, int-* exp) double r{}
+    ldexp(double x, int exp) double r{}
     ilogb(double x) int r{}
     log(double x) double r{}
     log10(double x) double r{}
     log1p(double x) double r{}
     log2(double x) double r{}
     logb(double x) double r{}
-    scalbn(double x int n) double r{}
-    scalbln(double x long n) double r{}
+    scalbn(double x, int n) double r{}
+    scalbln(double x, long n) double r{}
 
-    // 幂与根
+    expf(float x) float r{}
+    exp2f(float x) float r{}
+    expm1f(float x) float r{}
+    frexpf(float value, int-* exp) float r{}
+    ldexpf(float x, int exp) float r{}
+    ilogbf(float x) int r{}
+    logf(float x) float r{}
+    log10f(float x) float r{}
+    log1pf(float x) float r{}
+    log2f(float x) float r{}
+    logbf(float x) float r{}
+    scalbnf(float x, int n) float r{}
+    scalblnf(float x, long n) float r{}
+
     cbrt(double x) double r{}
-    hypot(double x double y) double r{}
-    pow(double x double y) double r{}
+    hypot(double x, double y) double r{}
+    pow(double x, double y) double r{}
     sqrt(double x) double r{}
 
-    // 误差函数与伽马函数
+    cbrtf(float x) float r{}
+    hypotf(float x, float y) float r{}
+    powf(float x, float y) float r{}
+    sqrtf(float x) float r{}
+
     erf(double x) double r{}
     erfc(double x) double r{}
     lgamma(double x) double r{}
     tgamma(double x) double r{}
 
-    // 取整与绝对值
+    erff(float x) float r{}
+    erfcf(float x) float r{}
+    lgammaf(float x) float r{}
+    tgammaf(float x) float r{}
+
     ceil(double x) double r{}
     fabs(double x) double r{}
     floor(double x) double r{}
@@ -58,18 +91,41 @@ extern "C" {
     llround(double x) long r{}
     trunc(double x) double r{}
 
-    // 取余与符号
-    fmod(double x double y) double r{}
-    remainder(double x double y) double r{}
-    remquo(double x double y int-* quo) double r{}
-    copysign(double x double y) double r{}
+    ceilf(float x) float r{}
+    fabsf(float x) float r{}
+    floorf(float x) float r{}
+    nearbyintf(float x) float r{}
+    rintf(float x) float r{}
+    lrintf(float x) long r{}
+    llrintf(float x) long r{}
+    roundf(float x) float r{}
+    lroundf(float x) long r{}
+    llroundf(float x) long r{}
+    truncf(float x) float r{}
 
-    // 最值与乘加
-    fdim(double x double y) double r{}
-    fmax(double x double y) double r{}
-    fmin(double x double y) double r{}
-    fma(double x double y double z) double r{}
+    fmod(double x, double y) double r{}
+    remainder(double x, double y) double r{}
+    remquo(double x, double y, int-* quo) double r{}
+    copysign(double x, double y) double r{}
 
-    // 邻接值；spec 是修饰符关键字，不声明
-    nextafter(double x double y) double r{}
+    fmodf(float x, float y) float r{}
+    remainderf(float x, float y) float r{}
+    remquof(float x, float y, int-* quo) float r{}
+    copysignf(float x, float y) float r{}
+
+    fdim(double x, double y) double r{}
+    fmax(double x, double y) double r{}
+    fmin(double x, double y) double r{}
+    fma(double x, double y, double z) double r{}
+
+    fdimf(float x, float y) float r{}
+    fmaxf(float x, float y) float r{}
+    fminf(float x, float y) float r{}
+    fmaf(float x, float y, float z) float r{}
+
+    modf(double x, double-* iptr) double r{}
+    nextafterf(float x, float y) float r{}
+    
+    modff(float x, float-* iptr) float r{}
+    nextafter(double x, double y) double r{}
 }

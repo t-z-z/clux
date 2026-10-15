@@ -1,11 +1,17 @@
 // cinttypes.cx
 // 最大宽度整数类型的转换，对应 <inttypes.h>
-// intmax_t / uintmax_t 在 LP64 下与 long / ulong 同宽
 // PRId64 一类格式宏是宏，不声明
+
+imaxdiv_t {
+    pub:
+    long quot
+    long rem
+}
 
 extern "C" {
     imaxabs(long j) long r{}
+    imaxdiv(long numer long denom) imaxdiv_t r{}
     strtoimax(const char-* nptr char-** endptr int base) long r{}
     strtoumax(const char-* nptr char-** endptr int base) ulong r{}
-    // imaxdiv 返回聚合类型，wcstoimax/wcstoumax 需要宽字符，均不声明
+    // wcstoimax/wcstoumax 需要宽字符，均不声明
 }
