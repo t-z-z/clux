@@ -301,6 +301,10 @@ class SemanticAnalyzer : public ASTVisitor {
     std::deque<std::string> literal_pool_;
     // T[] 的长度待推导；推导不出来时在收尾统一报错
     std::vector<Type*> pending_infer_arrays_;
+    // T[] 推导不出长度时所处的声明位置：位置决定可用的补救写法
+    enum class InferSite : uint8_t { Other, Local, Param, Return, Field };
+    std::unordered_map<const Type*, InferSite> infer_sites_;
+    void mark_infer_site(Type* t, InferSite site);
     // extern 块内的变量声明：存储在外部库，不受模块级变量限制
     std::unordered_set<const Decl*> extern_vars_;
     void collect_extern_vars();

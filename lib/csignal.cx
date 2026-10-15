@@ -1,6 +1,14 @@
 // csignal.cx
 // C 信号处理，对应 <signal.h>
-// SIGxxx 与 SIG_DFL/SIG_IGN 是宏，不声明；处理器类型写作 $(int)void
+//
+// 只提供两个 C 标准函数的声明，不做任何额外封装。
+//
+// 已知限制（由 C 标准本身和 clux 类型系统共同决定）：
+//   - SIG* 信号编号是宏，本文件不声明；需要时用户自行定义常量
+//   - SIG_DFL / SIG_IGN 是特殊指针值，$(int)void 无法直接表达
+//   - 信号处理器异步执行，能安全调用的函数极少
+//
+// 使用者自行决定如何处理以上问题。标准库不提供默认策略。
 
 extern "C" {
     signal(int sig $(int)void handler) $(int)void r{}

@@ -719,16 +719,53 @@ void SemanticAnalyzer::resolve_infer_array_len(Type& type, Type* init_type,
         resolve_infer_array_len(*arr->element, elem_type, elem_expr);
 }
 
+// T[] 的长度只能来自初值，故报错措辞随声明位置不同：形参/返回值/字段没有
+// 初值可用，写成切片也不是出路，只能给定长；只有局部变量能靠初值定长
+void SemanticAnalyzer::mark_infer_site(Type* t, InferSite site) {
+    if (!t) return;
+    if (auto* arr = t->get_array_type()) {
+        if (arr->kind == ArrayKind::Infer && !arr->length)
+            infer_sites_[t] = site;
+        mark_infer_site(arr->element, site);
+        return;
+    }
+    if (auto* p = t->get_pointer()) mark_infer_site(p->pointee, site);
+    else if (auto* r = t->get_reference()) mark_infer_site(r->target, site);
+}
+
 void SemanticAnalyzer::report_infer_arrays() {
     for (Type* t : pending_infer_arrays_) {
         if (!t || !t->is_array_type()) continue;
         auto* arr = t->get_array_type();
         if (arr->kind != ArrayKind::Infer || arr->length) continue;
-        error(t->loc, "cannot infer array length: give it an initializer of "
-                      "known length, or write T{} for a slice whose length is "
-                      "only known at run time");
+        auto site = infer_sites_.find(t);
+        InferSite s = site == infer_sites_.end() ? InferSite::Other
+                                                  : site->second;
+        switch (s) {
+        case InferSite::Param:
+            error(t->loc, "cannot infer the length of an array parameter: a "
+                          "parameter has no initializer, write T[N]");
+            break;
+        case InferSite::Return:
+            error(t->loc, "cannot infer the length of an array return type: "
+                          "write T[N]");
+            break;
+        case InferSite::Field:
+            error(t->loc, "cannot infer the length of an array field: write T[N]");
+            break;
+        case InferSite::Local:
+            error(t->loc, "cannot infer array length: give it an initializer of "
+                          "known length, or write T{} and initialize it for a "
+                          "length known only at run time");
+            break;
+        case InferSite::Other:
+            error(t->loc, "cannot infer array length: no initializer here, "
+                          "write T[N] with an explicit length");
+            break;
+        }
     }
     pending_infer_arrays_.clear();
+    infer_sites_.clear();
 }
 
 void SemanticAnalyzer::visit_var_list(VarList& vl) {
@@ -778,11 +815,20 @@ void SemanticAnalyzer::visit_var_list(VarList& vl) {
         Type* dt = var->type ? var->type : vl.type;
         // T[]：长度由初值推导。多个变量共用一个类型节点时按声明顺序取第一个
         // 能定出长度的初值，各变量长度不一致由数组字面量长度检查报出
-        if (dt && dt->is_array_type())
+        if (dt && dt->is_array_type()) {
             resolve_infer_array_len(*dt, var->init ? var->init->type : nullptr,
                                     var->init);
-        // T{} / T{n}：长度必须在声明处确定，否则没有可分配的存储
-        if (is_slice_type(dt) && !dt->get_array_type()->length &&
+            InferSite site = InferSite::Local;
+            if (is_param_item(var)) site = InferSite::Param;
+            else if (is_return_var_item(var)) site = InferSite::Return;
+            else if (is_field_item(var)) site = InferSite::Field;
+            mark_infer_site(dt, site);
+        }
+        // T{} / T{n}：长度必须在声明处确定，否则没有可分配的存储。
+        // 形参/返回变量/字段本来就不许是切片，由各自的位置检查报错，不在此重复
+        if (!is_param_item(var) && !is_return_var_item(var) &&
+            !is_field_item(var) && is_slice_type(dt) &&
+            !dt->get_array_type()->length &&
             !(var->init && var->init->type &&
               (var->init->type->is_array_type() ||
                var->init->type->is_string_literal_type())))
@@ -1822,10 +1868,12 @@ void SemanticAnalyzer::visit_type_func_ptr(Type::FuncPtr& fp) {
         if (is_slice_type(p))
             error(p->loc, "array slice parameter is not allowed in a function "
                           "pointer type: pass a pointer instead");
+        mark_infer_site(p, InferSite::Param);
     }
     if (is_slice_type(fp.return_type))
         error(fp.return_type->loc, "array slice return type is not allowed in a "
                                    "function pointer type: pass a pointer instead");
+    mark_infer_site(fp.return_type, InferSite::Return);
 }
 void SemanticAnalyzer::visit_type_func_ref(Type::FuncRef&) {}
 // 引用不可重新绑定，引用不能再包引用
