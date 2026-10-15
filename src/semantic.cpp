@@ -301,10 +301,9 @@ void SemanticAnalyzer::collect_decl(Decl* decl, bool default_public) {
                 sym.default_public = default_public;
                 symbols_.insert_member(ename, std::move(sym));
             }
-            int64_t next_value = 0;
+            // 取值在 visit_enum 里按声明顺序求，显式初值要看前面的成员
             for (EnumVariant* var : e->variants) {
                 if (!var) continue;
-                var->value = next_value++;
                 var->type = make_named_type(var->loc, e->name, e, enum_scope);
                 if (enum_scope) {
                     Symbol var_sym(SymbolKind::EnumVar, var);
@@ -996,13 +995,36 @@ void SemanticAnalyzer::check_embedded_layout() {
 
 void SemanticAnalyzer::visit_namespace(Namespace&) {}
 void SemanticAnalyzer::visit_extern(Extern&) {}
+// 枚举成员按声明顺序定值：显式初值先语义分析再常量求值，
+// 故只能引用已定值的前序成员；缺省初值沿用前一个值加一
 void SemanticAnalyzer::visit_enum(Enum& e) {
     std::unordered_map<std::string_view, bool> seen;
+    int64_t next_value = 0;
     for (EnumVariant* v : e.variants) {
         if (!v) continue;
+        std::string vname(v->name);
         if (!seen.emplace(v->name, true).second) {
-            error(v->loc, "redefinition of enum variant '" + std::string(v->name) + "'");
+            error(v->loc, "redefinition of enum variant '" + vname + "'");
         }
+        int64_t val = next_value;
+        if (v->init) {
+            walk(*v->init);
+            auto cv = eval_const(v->init, const_sink_);
+            if (!cv || !cv->is_int()) {
+                error(v->loc, "enum variant '" + vname + "' value must be a "
+                              "compile-time integer constant; only variants "
+                              "declared earlier can be referenced");
+            } else {
+                val = cv->i64();
+            }
+        }
+        // 枚举在 IR 里是 i32，初值装不下须报错而不是截断
+        if (val < INT32_MIN || val > INT32_MAX) {
+            error(v->loc, "enum variant '" + vname + "' value out of range for 'int'");
+        }
+        v->value = val;
+        v->has_value = true;
+        next_value = val + 1;
     }
     if (e.variants.empty()) {
         warning(e.loc, "enum '" + std::string(e.name) + "' declares no variants");
@@ -1828,10 +1850,7 @@ void SemanticAnalyzer::visit_type_pointer(Type::Pointer& p) {
 // 返回 nullptr 表示不是编译期整数常量
 Expr* SemanticAnalyzer::const_length_literal(Expr* len, int depth) {
     if (!len || depth > 16) return nullptr;
-    ConstEvalSink sink;
-    sink.warn  = [this](const Location& l, const std::string& m) { warning(l, m); };
-    sink.error = [this](const Location& l, const std::string& m) { error(l, m); };
-    auto v = eval_const(len, sink);
+    auto v = eval_const(len, const_sink_);
     if (!v || !v->is_int()) return nullptr;
     return make_int_literal(len->loc, (size_t)v->u);
 }

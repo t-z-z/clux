@@ -674,11 +674,13 @@ struct Keep : Decl {
 
 struct EnumVariant : ASTNode {
     std::string_view name;
+    Expr* init = nullptr;   // 显式初值（= 后的表达式），缺省按声明顺序递增
     int64_t value = 0;      // 语义阶段写入：编译期整数值
+    bool has_value = false; // 语义阶段写入：value 是否已定
     Type* type = nullptr;   // 语义阶段写入：所属枚举类型
     EnumVariant() = default;
-    EnumVariant(const Location& loc, std::string_view n)
-        : ASTNode(loc), name(n) {}
+    EnumVariant(const Location& loc, std::string_view n, Expr* i = nullptr)
+        : ASTNode(loc), name(n), init(i) {}
 };
 
 struct Enum : Decl {

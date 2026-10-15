@@ -76,6 +76,7 @@ static ConstValue make_null() {
 static std::optional<ConstValue> eval_expr(Expr* e, ConstEvalSink& sink, int depth);
 
 static std::optional<ConstValue> eval_literal(const Expr::Literal& lit,
+                                              Type* ty,
                                               const Location& loc,
                                               ConstEvalSink& sink) {
     (void)sink; (void)loc;
@@ -87,7 +88,13 @@ static std::optional<ConstValue> eval_literal(const Expr::Literal& lit,
             unsigned long long v = 0;
             if (!parse_uint_literal(lit.value, v)) return std::nullopt;
             bool sign = true; int bits = 32;
-            literal_int_range(lit.kind, sign, bits);
+            // 无后缀整数字面量的宽度由 P1 按字面量大小定（见 visit_expr_literal），
+            // 只按 LiteralKind 取宽度会把放不进 int 的值按 32 位截断
+            if (auto* p = ty ? ty->get_primitive() : nullptr) {
+                primitive_int_range(p->kind, sign, bits);
+            } else {
+                literal_int_range(lit.kind, sign, bits);
+            }
             return make_int(v, sign, bits);
         }
         case LiteralKind::Char: {
@@ -119,7 +126,8 @@ static std::optional<ConstValue> eval_symbol_value(Expr* e, ConstEvalSink& sink,
     if (!sym) return std::nullopt;
     if (sym->kind == SymbolKind::EnumVar) {
         auto* ev = dynamic_cast<EnumVariant*>(sym->node);
-        if (!ev) return std::nullopt;
+        // has_value 为假表示该成员排在自己的初值之后（向前引用），值尚未定
+        if (!ev || !ev->has_value) return std::nullopt;
         return make_int((unsigned long long)ev->value, true, 32);
     }
     if (sym->is_const()) {
@@ -338,7 +346,7 @@ static std::optional<ConstValue> eval_binary(const Expr::Binary& b,
 static std::optional<ConstValue> eval_expr(Expr* e, ConstEvalSink& sink, int depth) {
     if (!e || depth > 64) return std::nullopt;
 
-    if (auto* lit = e->get_literal())     return eval_literal(*lit, e->loc, sink);
+    if (auto* lit = e->get_literal())     return eval_literal(*lit, e->type, e->loc, sink);
     if (auto* un  = e->get_unary())       return eval_unary(*un, e->loc, sink, depth);
     if (auto* bin = e->get_binary())      return eval_binary(*bin, e->loc, sink, depth);
     if (auto* ter = e->get_ternary()) {

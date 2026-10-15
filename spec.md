@@ -633,13 +633,21 @@ main(int argc, char-** argv) int r { }
 }
 ```
 
-`alias foo = bar:` 将下文作用域中的 `foo` 当 `bar` 处理，仅编译期文本作用：
+`define foo = bar:` 将下文作用域中的 `foo` 当 `bar` 处理，仅编译期token级别处理，不跨模块
 
 ```cx
 namespace foo {
-    alias a = b
+    define a = b
     int a = 123     // 实际 int b = 123
 }
+```
+
+`typedef` 为类型取别名，可以跨模块生效
+`exprdef` 为表达式取别名，可以跨模块生效
+
+```cx
+typedef size_t = long
+exprdef errno = __errno_location()-*
 ```
 
 ## 十七、操作符优先级表

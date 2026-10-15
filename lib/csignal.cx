@@ -1,16 +1,43 @@
 // csignal.cx
 // C 信号处理，对应 <signal.h>
-//
-// 只提供两个 C 标准函数的声明，不做任何额外封装。
-//
-// 已知限制（由 C 标准本身和 clux 类型系统共同决定）：
-//   - SIG* 信号编号是宏，本文件不声明；需要时用户自行定义常量
-//   - SIG_DFL / SIG_IGN 是特殊指针值，$(int)void 无法直接表达
-//   - 信号处理器异步执行，能安全调用的函数极少
-//
-// 使用者自行决定如何处理以上问题。标准库不提供默认策略。
+// 本文件针对 Linux/glibc。
 
 extern "C" {
     signal(int sig $(int)void handler) $(int)void r{}
     raise(int sig) int r{}
+}
+
+// Linux 信号编号（glibc / x86_64）
+enum SIG {
+    HUP = 1
+    INT = 2
+    QUIT = 3
+    ILL = 4
+    TRAP = 5
+    ABRT = 6
+    BUS = 7
+    FPE = 8
+    KILL = 9
+    USR1 = 10
+    SEGV = 11
+    USR2 = 12
+    PIPE = 13
+    ALRM = 14
+    TERM = 15
+    STKFLT = 16
+    CHLD = 17
+    CONT = 18
+    STOP = 19
+    TSTP = 20
+    TTIN = 21
+    TTOU = 22
+    URG = 23
+    XCPU = 24
+    XFSZ = 25
+    VTALRM = 26
+    PROF = 27
+    WINCH = 28
+    IO = 29
+    PWR = 30
+    SYS = 31
 }
