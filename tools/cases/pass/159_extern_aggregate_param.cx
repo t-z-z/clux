@@ -1,0 +1,23 @@
+// extern 按值收聚合：声明与调用都按 C ABI 传结构体本身，而不是类值的存储指针。
+// libc 里没有"按值收小结构"的接口，这里借 imaxdiv 的真实 ABI 来验证：
+// {i64,i64} 按值进出正好走两个整数寄存器，与 (intmax_t, intmax_t) -> imaxdiv_t 一致
+import cstdio
+
+Pair {
+    pub long quot
+    pub long rem
+    pub INIT(long a, long b) { quot = a  rem = b }
+}
+
+extern "C" {
+    imaxdiv(Pair p) Pair r{}
+}
+
+main() int r {
+    Pair q = imaxdiv(Pair(17, 5))
+    int bad = 0
+    if q.quot != 3 bad = 1
+    if q.rem != 2 bad = 2
+    printf("%ld %ld %d\n", q.quot, q.rem, bad)
+    r = bad
+}

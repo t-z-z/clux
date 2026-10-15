@@ -1,6 +1,15 @@
 // cstdio.cx
 // C 标准输入输出的 clux 绑定，对应 <stdio.h>
 
+exprdef EOF = -1
+exprdef SEEK_SET = 0
+exprdef SEEK_CUR = 1
+exprdef SEEK_END = 2
+
+exprdef _IOFBF = 0
+exprdef _IOLBF = 1
+exprdef _IONBF = 2
+
 extern "C" {
     // 标准流
     void-* stdin
@@ -13,13 +22,13 @@ extern "C" {
     fclose(void-* stream) int r{}
     fflush(void-* stream) int r{}
     setbuf(void-* stream char-* buf) {}
-    setvbuf(void-* stream char-* buf int mode ulong size) int r{}
+    setvbuf(void-* stream char-* buf int mode size_t size) int r{}
 
     // 格式化输出
     printf(const char-* fmt ...) int r{}
     fprintf(void-* stream const char-* fmt ...) int r{}
     sprintf(char-* buf const char-* fmt ...) int r{}
-    snprintf(char-* buf ulong size const char-* fmt ...) int r{}
+    snprintf(char-* buf size_t size const char-* fmt ...) int r{}
 
     // 格式化输入
     scanf(const char-* fmt ...) int r{}
@@ -42,8 +51,8 @@ extern "C" {
     // gets 已从 C11 移除，不声明
 
     // 二进制 I/O
-    fread(void-* ptr ulong size ulong nmemb void-* stream) ulong r{}
-    fwrite(const void-* ptr ulong size ulong nmemb void-* stream) ulong r{}
+    fread(void-* ptr size_t size size_t nmemb void-* stream) size_t r{}
+    fwrite(const void-* ptr size_t size size_t nmemb void-* stream) size_t r{}
 
     // 文件定位
     fseek(void-* stream long offset int whence) int r{}

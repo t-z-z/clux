@@ -2964,7 +2964,10 @@ void Translator::emit_declare(Func& f) {
         if (!vl) continue;
         for (VarItem* vi : vl->vars) {
             Type* pt = vi->type ? vi->type : vl->type;
-            params.push_back((pt ? object_type(pt) : "i32") + " %a" +
+            // extern 按值收聚合：形参是真实结构体，不是类值的存储指针
+            Class* pc = pt ? as_class(pt) : nullptr;
+            params.push_back((pc ? classes_[pc].llvm_name
+                                 : (pt ? object_type(pt) : "i32")) + " %a" +
                              std::to_string(idx++));
         }
     }
@@ -3176,12 +3179,17 @@ std::string Translator::eval_plain_call(Expr* e, Expr::Call* c, Func* fn) {
     // param_ref 标记引用形参：实参传地址而非值
     std::vector<std::string> param_ir;
     std::vector<bool> param_ref;
+    // extern 按值收聚合的形参：类型是真实结构体，实参要从类值里 load 出来
+    std::vector<bool> param_agg;
     for (VarList* vl : fn->params) {
         if (!vl) continue;
         for (VarItem* vi : vl->vars) {
             Type* pt = vi->type ? vi->type : vl->type;
-            param_ir.push_back(pt ? object_type(pt) : "i32");
+            Class* pc = (fn->is_extern_decl && pt) ? as_class(pt) : nullptr;
+            param_ir.push_back(pc ? classes_[pc].llvm_name
+                                  : (pt ? object_type(pt) : "i32"));
             param_ref.push_back(is_ref_item(vi, nullptr));
+            param_agg.push_back(pc != nullptr);
         }
     }
     for (size_t ai = 0; ai < c->args.size(); ++ai) {
@@ -3225,7 +3233,16 @@ std::string Translator::eval_plain_call(Expr* e, Expr::Call* c, Func* fn) {
         std::string want = ai < param_ir.size() ? param_ir[ai] : at;
         std::string v;
         bool converted = needs_convert(a);
-        if (converted)
+        // extern 按值收聚合：实参是类值（存储指针），按 ABI 取出结构体本身
+        bool agg_param = ai < param_agg.size() && param_agg[ai] &&
+                         ai < param_ref.size() && !param_ref[ai];
+        if (agg_param) {
+            // 类值是存储指针，按 ABI 传结构体本身：先把值取出来
+            std::string reg = ir_.reg();
+            emit_instr(reg + " = load " + want + ", ptr " +
+                       (converted ? eval_converted(a) : eval(a)));
+            v = reg;
+        } else if (converted)
             v = eval_converted(a);
         else if (want == "{ ptr, i32 }" && a && a->type &&
             a->type->is_string_literal_type())

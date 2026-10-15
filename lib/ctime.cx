@@ -3,17 +3,20 @@
 // time_t / clock_t → long，struct tm 用 tm 表达：字段名与顺序同 C，访问用 `p-*.tm_year`
 
 tm {
-    pub int tm_sec
-    pub int tm_min
-    pub int tm_hour
-    pub int tm_mday
-    pub int tm_mon
-    pub int tm_year
-    pub int tm_wday
-    pub int tm_yday
-    pub int tm_isdst
-    pub long tm_gmtoff
-    pub char-* tm_zone
+    pub:
+    int tm_sec
+    int tm_min
+    int tm_hour
+    int tm_mday
+    int tm_mon
+    int tm_year
+    int tm_wday
+    int tm_yday
+    int tm_isdst
+    long tm_gmtoff
+    char-* tm_zone
+    long tm_gmtoff      // glibc 扩展
+    char-* tm_zone      // glibc 扩展
 }
 
 extern "C" {
@@ -28,5 +31,5 @@ extern "C" {
     gmtime(const long-* timer) tm-* r{}
     localtime(const long-* timer) tm-* r{}
     mktime(tm-* timeptr) long r{}
-    strftime(char-* s ulong maxsize const char-* format const tm-* timeptr) ulong r{}
+    strftime(char-* s size_t maxsize const char-* format const tm-* timeptr) size_t r{}
 }
