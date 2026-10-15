@@ -1,0 +1,20 @@
+// 显式枚举值：缺省初值沿用前一个值加一，初值可引用已定值的前序成员
+enum Errno {
+    EPERM = 1
+    ENOENT
+    ESRCH = 0x10
+    EAGAIN = Errno::EPERM + Errno::ESRCH
+    NEXT = Errno::EAGAIN << 1
+}
+
+main() {
+    int[Errno::NEXT] arr
+    arr[0] = int(Errno::EPERM)
+    arr[1] = int(Errno::ENOENT)
+    arr[2] = int(Errno::ESRCH)
+    arr[3] = int(Errno::EAGAIN)
+    if arr[0] != 1 return 1
+    if arr[1] != 2 return 2
+    if arr[2] != 16 return 3
+    if arr[3] != 17 return 4
+}

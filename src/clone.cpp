@@ -229,7 +229,8 @@ Decl* CompUnit::clone_decl(Decl* d) {
             std::vector<EnumVariant*> variants;
             variants.reserve(e->variants.size());
             for (auto* v : e->variants) {
-                variants.push_back(add_node<EnumVariant>(v->loc, v->name));
+                variants.push_back(
+                    add_node<EnumVariant>(v->loc, v->name, clone_expr(v->init)));
             }
             return add_node<Enum>(e->loc, e->name, e->specs, std::move(variants));
         }

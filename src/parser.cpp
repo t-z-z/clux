@@ -685,8 +685,16 @@ Enum* Parser::parse_enum_decl(SpecList& ml, Location& loc) {
     }
     advance();
     while (curr().is_ident()) {
-        variants.push_back(cu_.add_node<EnumVariant>(get_loc(), curr().get_val()));
+        Location vloc = get_loc();
+        std::string_view vname = curr().get_val();
         advance();
+        Expr* init = nullptr;
+        if (curr().kind == TokenKind::Assign) {
+            advance();
+            init = parse_expr();
+            if (!init) add_error("expected expression after '='");
+        }
+        variants.push_back(cu_.add_node<EnumVariant>(vloc, vname, init));
     }
     if (curr().kind == TokenKind::BraceR) {
         advance();

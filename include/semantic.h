@@ -12,6 +12,7 @@
 #include "inject.h"
 #include "flow_check.h"
 #include "diagnostic.h"
+#include "const_eval.h"
 #include "string_view_map.h"
 
 namespace cx {
@@ -293,6 +294,8 @@ class SemanticAnalyzer : public ASTVisitor {
     // 单模块时用自带状态，多模块时由前端传入共享状态
     GenericState own_generics_;
     GenericState* generics_ = &own_generics_;
+    // 常量求值的诊断出口：溢出、除零等直接进诊断表
+    ConstEvalSink const_sink_;
     FlowChecker flow_;
     std::vector<Diagnostic> diagnostics_;
     bool has_error_ = false;
@@ -334,6 +337,8 @@ public:
             [this](const Location& loc, const std::string& msg) { error(loc, msg); },
             [this](const Location& loc, const std::string& msg) { warning(loc, msg); },
             [this](Decl* d, bool dp) { collect_decl(d, dp); });
+        const_sink_.warn  = [this](const Location& loc, const std::string& msg) { warning(loc, msg); };
+        const_sink_.error = [this](const Location& loc, const std::string& msg) { error(loc, msg); };
         #define X(name,str) type##name = make_type(Location(), Type::Primitive{PrimitiveTypeKind::name});
         TYPE
         #undef X
