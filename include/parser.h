@@ -32,18 +32,18 @@ private:
     // 保证 restore(point) 仍能回退。由 parse_type 的守卫设置。
     bool trial_ = false;
     StringPool& pool_;
-    struct AliasDecl{
+    struct DefineDecl{
         std::string_view name;
         std::vector<Token> alias;
         // 覆盖者的位置
         size_t cvr_lv = ~size_t(0);
         size_t cvr_id = ~size_t(0);
     };
-    // alias 别名作用域层级
-    std::vector<std::vector<AliasDecl>> aliases_;
-    // alias 别名展开缓冲；泛型闭合符裂解后的余部也排在这里
+    // define 替换的作用域层级
+    std::vector<std::vector<DefineDecl>> defines_;
+    // define 替换缓冲；泛型闭合符裂解后的余部也排在这里
     std::deque<Token> pending_;
-    bool use_alias_ = true;
+    bool use_define_ = true;
     // 泛型嵌套深度：'-<' 进层，闭合 '>' 出层，决定 get_token 是否裂解
     size_t generic_depth_ = 0;
 
@@ -55,10 +55,10 @@ private:
         warnings_.push_back(Diagnostic(DiagLevel::Warning, msg, get_loc()));
     }
 
-    // 从外向内查找别名解开链式别名
-    std::optional<std::vector<Token>> lookup_alias_expended(const Token& name) const;
+    // 从外向内查找 define 替换解开链式替换
+    std::optional<std::vector<Token>> expand_define(const Token& name) const;
 
-    void scan_alias_decl();
+    void scan_define_decl();
 
     // 泛型闭合符裂解：嵌套内以 '>' 起始的操作符先出闭合 '>'，余部排回 pending_ 重派
     Token generic_split(Token tok);
@@ -71,23 +71,23 @@ private:
             return generic_split(std::move(tok));
         }
         Token tok = lexer_.next_token();
-        if (tok.kind == TokenKind::Alias) {
-            scan_alias_decl();
+        if (tok.kind == TokenKind::Define) {
+            scan_define_decl();
             return get_token();
         }
-        // 处理 alias 别名展开
+        // 处理 define 替换
         if (tok.is_word()) {
-            const auto target = lookup_alias_expended(tok);
+            const auto target = expand_define(tok);
             if (target) {
                 pending_.insert(pending_.end(), target->begin(), target->end());
                 return get_token();
             }
         }
-        // 维护别名作用域（'{}' 进出）
+        // 维护 define 作用域（'{}' 进出）
         if (tok.kind == TokenKind::BraceL) {
-            aliases_.push_back({});
+            defines_.push_back({});
         } else if (tok.kind == TokenKind::BraceR) {
-            if (!aliases_.empty()) aliases_.pop_back();
+            if (!defines_.empty()) defines_.pop_back();
         }
 
         return generic_split(std::move(tok));
@@ -181,6 +181,8 @@ private:
     bool parse_modifier_directive(SpecList& defaults);
     bool is_slice_brace();
     VarList* parse_var_decl(SpecList &ml, Location &loc);
+    Decl* parse_typedef_decl();
+    Decl* parse_exprdef_decl();
     Func* parse_func_decl(SpecList &ml, Location &loc);
     Class* parse_class_decl(SpecList &ml, Location &loc, std::vector<Type*> injs = {});
     Namespace* parse_namespace_decl(SpecList &ml, Location &loc);

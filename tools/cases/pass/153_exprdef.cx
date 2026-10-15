@@ -1,0 +1,12 @@
+// exprdef：表达式取别名，使用点展开成目标表达式的副本，副本在使用点作用域解析
+import cstdio
+import cerrno
+
+exprdef answer = 40 + 2
+exprdef errno_slot = __errno_location()-*
+
+main() int r {
+    errno_slot = 5
+    printf("%d %d\n", answer, errno_slot)
+    r = 0
+}

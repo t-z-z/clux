@@ -1,0 +1,18 @@
+// typedef：类型取别名，使用点展开成目标类型的副本，可链式、可进签名
+import cstdio
+
+typedef size_t = long
+typedef count_t = size_t
+typedef pcount = count_t-*
+typedef pair_t = int[2]
+
+sum(size_t a, int b) size_t r { r = a + b }
+
+main() int r {
+    size_t a = 3
+    count_t b = 4
+    pcount p = a-&
+    pair_t t = [1 2]
+    printf("%ld %d %d\n", sum(a, b), p == a-&, t[1])
+    r = 0
+}

@@ -5,20 +5,21 @@
 #include <string_view>
 
 namespace cx {
-    // 从外向内查找别名解开链式别名
-std::optional<std::vector<Token>> Parser::lookup_alias_expended(const Token& name) const {
-    if (aliases_.empty() || !use_alias_) return std::nullopt;
+    // 从外向内查找 define 替换解开链式替换
+std::optional<std::vector<Token>> Parser::expand_define(const Token& name) const {
+    if (defines_.empty() || !use_define_) return std::nullopt;
     std::vector<Token> r = {name};
-    for (size_t i = 0; i < aliases_.size(); ++i) {
-        const auto& level = aliases_[i];
+    for (size_t i = 0; i < defines_.size(); ++i) {
+        const auto& level = defines_[i];
         for (size_t j = 0; j < r.size(); ++j) {
             if (!r[j].is_word()) continue;
-            for (size_t k = 0; k < level.size(); ++k) {
+            // 替换后 j 跳到插入段之后，可能已越界：插入的 token 由 get_token 重新派发再替换
+            for (size_t k = 0; k < level.size() && j < r.size(); ++k) {
                 if (level[k].name == r[j].get_val() 
-                    && !( // 覆盖它的别名如果存在则不触发此别名
-                        level[k].cvr_lv < aliases_.size()
-                        && level[k].cvr_id < aliases_[level[k].cvr_lv].size()
-                        && level[k].name == aliases_[level[k].cvr_lv][level[k].cvr_id].name)
+                    && !( // 覆盖它的 define 如果存在则不触发此替换
+                        level[k].cvr_lv < defines_.size()
+                        && level[k].cvr_id < defines_[level[k].cvr_lv].size()
+                        && level[k].name == defines_[level[k].cvr_lv][level[k].cvr_id].name)
                 ) {
                     r.erase(r.begin() + j);
                     r.insert(r.begin() + j, level[k].alias.begin(), level[k].alias.end());
@@ -29,12 +30,13 @@ std::optional<std::vector<Token>> Parser::lookup_alias_expended(const Token& nam
     }
     return r;
 }
-void Parser::scan_alias_decl() {
-    if (!use_alias_) return;
+// define foo = bar: foo 在本作用域内按 bar 的 token 替换，'}' 处失效
+void Parser::scan_define_decl() {
+    if (!use_define_) return;
     Token name_tok = get_token();
     Token assign = lexer_.next_token();
     if (assign.kind != TokenKind::Assign) {
-        add_error("expected '=' after alias name");
+        add_error("expected '=' after define name");
         return;
     }
     std::vector<Token> target;
@@ -44,21 +46,21 @@ void Parser::scan_alias_decl() {
         target.push_back(t);
     }
     if (target.size() == 1 && target[0].get_val() == name_tok.get_val()) {
-        add_warning("the alias is the same as the original name");
+        add_warning("the define is the same as the original name");
     }
-    // 覆盖最靠近的别名
-    for (size_t i = aliases_.size(); i-- > 0; ) {
-        auto& level = aliases_[i];
+    // 覆盖最靠近的 define
+    for (size_t i = defines_.size(); i-- > 0; ) {
+        auto& level = defines_[i];
         for (size_t j = level.size(); j-- > 0; ) {
             if (level[j].name == name_tok.get_val()) {
-                level[j].cvr_lv = aliases_.size() -1;
-                level[j].cvr_id = aliases_.back().size();
+                level[j].cvr_lv = defines_.size() -1;
+                level[j].cvr_id = defines_.back().size();
                 return;
             }
         }
     }
-    if (aliases_.empty()) aliases_.push_back({});
-    aliases_.back().push_back({name_tok.get_val(), std::move(target), ~size_t(0), ~size_t(0)});
+    if (defines_.empty()) defines_.push_back({});
+    defines_.back().push_back({name_tok.get_val(), std::move(target), ~size_t(0), ~size_t(0)});
 }
 // 申明解析部分
 
@@ -215,6 +217,8 @@ Decl* Parser::parse_decl() {
     if (Class* c = parse_class_decl(ml, loc)) return c;
     restore(sp);
     // 易于确定的优先级更高
+    if (curr().kind == TokenKind::TypeDef) return parse_typedef_decl();
+    if (curr().kind == TokenKind::ExprDef) return parse_exprdef_decl();
     if (curr().kind == TokenKind::Enum) return parse_enum_decl(ml, loc);
     if (curr().kind == TokenKind::Keep) return parse_keep_decl(ml, loc);
     if (curr().kind == TokenKind::Operator) return parse_operator_overload(ml, loc);
@@ -379,6 +383,52 @@ VarList* Parser::parse_var_decl(SpecList &ml, Location &loc) {
     return cu_.add_node<VarList>(
         loc, ml, type, vars
     );
+}
+
+// typedef 名 = 类型：为类型取别名，右边就是一个类型，没有终止符
+Decl* Parser::parse_typedef_decl() {
+    Location loc = get_loc();
+    advance();
+    if (!curr().is_ident()) {
+        add_error("expected identifier after 'typedef'");
+        return nullptr;
+    }
+    std::string_view name = curr().get_val();
+    advance();
+    if (curr().kind != TokenKind::Assign) {
+        add_error("expected '=' after typedef name");
+        return nullptr;
+    }
+    advance();
+    Type* target = parse_type();
+    if (!target) {
+        add_error("expected type after '=' in typedef");
+        return nullptr;
+    }
+    return cu_.add_node<TypeDef>(loc, name, target);
+}
+
+// exprdef 名 = 表达式：为表达式取别名，右边就是一个表达式，没有终止符
+Decl* Parser::parse_exprdef_decl() {
+    Location loc = get_loc();
+    advance();
+    if (!curr().is_ident()) {
+        add_error("expected identifier after 'exprdef'");
+        return nullptr;
+    }
+    std::string_view name = curr().get_val();
+    advance();
+    if (curr().kind != TokenKind::Assign) {
+        add_error("expected '=' after exprdef name");
+        return nullptr;
+    }
+    advance();
+    Expr* target = parse_expr();
+    if (!target) {
+        add_error("expected expression after '=' in exprdef");
+        return nullptr;
+    }
+    return cu_.add_node<ExprDef>(loc, name, target);
 }
 
 // 当前 '{' 是否为切片类型的长度括号而非类体：只在 `T{n} 变量名` 中出现，
@@ -792,6 +842,13 @@ Stmt* Parser::parse_stmt() {
         result = parse_asm_stmt();
     }else if (curr().kind == TokenKind::Keep){
         result = parse_keep_stmt();
+    }else if (curr().kind == TokenKind::TypeDef ||
+              curr().kind == TokenKind::ExprDef) {
+        // 函数体内的 typedef / exprdef：作用域限于所在块，向下生效
+        Location loc = get_loc();
+        Decl* d = curr().kind == TokenKind::TypeDef
+            ? parse_typedef_decl() : parse_exprdef_decl();
+        result = d ? cu_.add_node<Stmt>(loc, Stmt::Def{d}) : nullptr;
     }else {
     {
         auto sp = point();
@@ -1896,15 +1953,15 @@ std::optional<std::vector<T>> Parser::parse_list(
 }
 
 std::string_view Parser::parse_code() {
-    use_alias_ = false;
+    use_define_ = false;
     if (curr().kind != TokenKind::RawCode) {
         add_error("expected code block");
-        use_alias_ = true;
+        use_define_ = true;
         return "";
     }
     std::string_view code = curr().val;
     advance();
-    use_alias_ = true;
+    use_define_ = true;
     return code;
 }
 

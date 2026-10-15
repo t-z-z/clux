@@ -1,0 +1,9 @@
+// 类型别名不能当值用：展开只在类型位置发生，值位置须报错
+typedef size_t = long
+
+main() int r {
+    size_t a = 1
+    int b = 0
+    b = size_t
+    r = 0
+}

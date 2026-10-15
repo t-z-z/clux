@@ -30,14 +30,16 @@ void Lexer::skip_space() {
 }
 
 void Lexer::skip_comment() {
+    // 越界位置上的 curr_char() 是 '\0'，拿它比 EOF 永远成立，advance() 又不再前进，
+    // 于是注释一直读到文件末尾没有换行时死循环；终止一律以 is_eof() 为准
     if(curr_char()=='/' && peek_char()=='/') {
         advance(2);
-        while(curr_char()!=EOF && curr_char()!='\n') {
+        while(!is_eof() && curr_char()!='\n') {
             advance();
         }
     } else if(curr_char()=='/' && peek_char()=='*') {
         advance(2);
-        while(curr_char()!=EOF) {
+        while(!is_eof()) {
             if(curr_char()=='*' && peek_char()=='/') {
                 advance(2);
                 return;
@@ -46,7 +48,7 @@ void Lexer::skip_comment() {
         }
     } else if(curr_char()=='"' && peek_char()=='\"' && peek_char(2)=='\"') {
         advance(3);
-        while(curr_char()!=EOF) {
+        while(!is_eof()) {
             if(curr_char()=='"' && peek_char()=='\"' && peek_char(2)=='\"') {
                 advance(3);
                 return;

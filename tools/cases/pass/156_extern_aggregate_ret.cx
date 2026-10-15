@@ -1,0 +1,20 @@
+// extern 按值返回聚合：声明与调用都按 C ABI 走聚合类型（不是指针），
+// 返回值落进调用方存储后再按类值使用
+import cinttypes
+import cstdio
+
+show(imaxdiv_t d) {
+    printf("%ld %ld\n", d.quot, d.rem)
+}
+
+main() int r {
+    // 直接把调用结果当实参传出去
+    show(imaxdiv(100, 7))
+    imaxdiv_t a = imaxdiv(-7, 2)
+    show(a)
+    // 负数除法向零截断，余数与被除数同号
+    int bad = 0
+    if a.quot != -3 bad = 1
+    if a.rem != -1 bad = 2
+    r = bad
+}

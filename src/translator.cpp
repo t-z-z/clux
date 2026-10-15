@@ -2948,7 +2948,12 @@ void Translator::emit_declare(Func& f) {
         VarList* rl = f.returns.back();
         if (!rl->vars.empty()) ret_var = rl->vars.back();
         Type* rt = (ret_var && ret_var->type) ? ret_var->type : rl->type;
-        if (rt) ret_t = object_type(rt);
+        if (rt) {
+            // 按值返回聚合的 extern 函数：声明的返回类型必须是真实结构体，
+            // 否则 ABI 就对不上了（类值在 IR 里是存储指针，只在跨 ABI 时按结构体收发）
+            if (Class* cls = as_class(rt)) ret_t = classes_[cls].llvm_name;
+            else ret_t = object_type(rt);
+        }
     }
 
     std::vector<std::string> params;
@@ -3148,6 +3153,10 @@ std::string Translator::eval_plain_call(Expr* e, Expr::Call* c, Func* fn) {
 
     bool via_reg = fn->ret_via_reg && ret_var;
     Class* ret_cls = (!via_reg && ret_var) ? as_class(ret_expr) : nullptr;
+    // extern 按值返回聚合：返回值按 C ABI 进寄存器/栈，收到后落进调用方的存储，
+    // 再把存储指针当类值交出去。clux 自身函数的类返回走 sret，不走这条路
+    Class* extern_ret_cls = (via_reg && ret_var && fn->is_extern_decl)
+        ? as_class(ret_expr) : nullptr;
     std::string sret_slot;
     if (ret_var && !via_reg) {
         if (ret_cls) {
@@ -3254,7 +3263,8 @@ std::string Translator::eval_plain_call(Expr* e, Expr::Call* c, Func* fn) {
     bool plain_main = is_main && !ret_var && ret_t == "void";
 
     std::string call_ret;
-    if (via_reg) call_ret = ret_t;
+    if (via_reg)
+        call_ret = extern_ret_cls ? classes_[extern_ret_cls].llvm_name : ret_t;
     else call_ret = ret_var ? "void" : (plain_main ? "i32" : ret_t);
     std::string sig;
     if (fn->is_variadic) {
@@ -3293,6 +3303,13 @@ std::string Translator::eval_plain_call(Expr* e, Expr::Call* c, Func* fn) {
     }
     std::string r = ir_.reg();
     emit_instr(r + " = call " + sig);
+    if (extern_ret_cls) {
+        // 聚合返回值没有自己的存储，拷进入口块槽位后按类值（存储指针）返回
+        std::string agg = classes_[extern_ret_cls].llvm_name;
+        std::string slot = entry_alloca(agg);
+        emit_instr("store " + agg + " " + r + ", ptr " + slot);
+        return slot;
+    }
     return r;
 }
 

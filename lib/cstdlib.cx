@@ -1,6 +1,8 @@
 // cstdlib.cx
 // C 标准库的通用工具，对应 <stdlib.h>
-// size_t → ulong，ptrdiff_t → long，wchar_t → int，long long → long（LP64 下同宽）
+// size_t → ulong，ptrdiff_t → long，long long → long（LP64 下同宽）
+
+import cstddef    // size_t, ptrdiff_t, NULL
 
 extern "C" {
     // 数值转换
@@ -14,17 +16,17 @@ extern "C" {
     strtoull(const char-* nptr char-** endptr int base) ulong r{}
     strtof(const char-* nptr char-** endptr) float r{}
     strtod(const char-* nptr char-** endptr) double r{}
-    // strtold 需要 long double，clux 无此类型，不声明
+    // strtold 需要 long double，clux 无此类型
 
     // 伪随机序列
     rand() int r{}
     srand(uint seed) {}
 
-    // 内存分配：malloc 是关键字，由 `T{n} malloc` 表达，不声明；
-    // free 也不声明：它是 malloc 类的内置方法，重复声明会与生成的 free 撞名
-    calloc(ulong nmemb ulong size) void-* r{}
-    realloc(void-* ptr ulong size) void-* r{}
-    aligned_alloc(ulong alignment ulong size) void-* r{}
+    // 内存分配
+    // malloc / free 不声明：malloc 是关键字，free 是 malloc 类的内置方法
+    calloc(size_t nmemb size_t size) void-* r{}
+    realloc(void-* ptr size_t size) void-* r{}
+    aligned_alloc(size_t alignment size_t size) void-* r{}
 
     // 进程与环境
     atexit($(void)void func) int r{}
@@ -33,22 +35,17 @@ extern "C" {
     _Exit(int status) {}
     quick_exit(int status) {}
     abort() {}
-    getenv(const char-* name) char-* r{}
+    getenv(const char-* name) char-* r{}   // 返回只读字符串，clux 无 const
     system(const char-* string) int r{}
 
-    // 搜索与排序：比较器类型里的 const 限定不受支持，故用 $(void-* void-*)int
-    bsearch(const void-* key const void-* base ulong nmemb ulong size $(void-* void-*)int compar) void-* r{}
-    qsort(void-* base ulong nmemb ulong size $(void-* void-*)int compar) {}
+    // 搜索与排序
+    bsearch(const void-* key const void-* base size_t nmemb size_t size $(void-* void-*)int compar) void-* r{}
+    qsort(void-* base size_t nmemb size_t size $(void-* void-*)int compar) {}
 
-    // 整数运算：div/ldiv/lldiv 返回聚合类型，extern 不支持，不声明
+    // 整数运算
     abs(int j) int r{}
     labs(long j) long r{}
-    llabs(long j) long r{}
+    llabs(long j) long r{}   // long long 在 LP64 下同 long
 
-    // 多字节与宽字符转换：wchar_t 在 Linux 上为 int
-    mblen(const char-* s ulong n) int r{}
-    mbtowc(int-* pwc const char-* s ulong n) int r{}
-    wctomb(char-* s int wc) int r{}
-    mbstowcs(int-* pwcs const char-* s ulong n) ulong r{}
-    wcstombs(char-* s const int-* pwcs ulong n) ulong r{}
+    // mblen/mbtowc/wctomb/mbstowcs/wcstombs 不做，clux 无宽字符
 }

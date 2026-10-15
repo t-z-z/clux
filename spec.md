@@ -637,7 +637,7 @@ main(int argc, char-** argv) int r { }
 
 ```cx
 namespace foo {
-    define a = b
+    define a = b:
     int a = 123     // 实际 int b = 123
 }
 ```
@@ -646,7 +646,7 @@ namespace foo {
 `exprdef` 为表达式取别名，可以跨模块生效
 
 ```cx
-typedef size_t = long
+typedef size_t = ulong
 exprdef errno = __errno_location()-*
 ```
 

@@ -1,0 +1,5 @@
+// exprdef 向下生效：声明之前的用法不算数，按未定义标识符报错
+main() {
+    int a = later
+    exprdef later = 5
+}

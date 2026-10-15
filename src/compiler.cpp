@@ -153,7 +153,11 @@ FrontendResult run_frontend(StringPool& pool, const std::string& source,
     // 否则先遍历的模块会看到尚未展开的空类作用域
     for (auto& m : modules) m->sem->expand();
     bool ok = true;
-    for (auto& m : modules) {
+    // 逆 BFS 序遍历：modules 是 BFS 装入的，被导入的模块总排在导入方之后，
+    // 逆过来就是"依赖在前"。typedef/exprdef 在主遍历里按序展开使用点，
+    // 导入方的调用点要比对被导入方的签名，被导入方得先展开完
+    for (size_t i = modules.size(); i-- > 0; ) {
+        Module* m = modules[i].get();
         m->sem->analyze_rest();
         for (const Diagnostic& d : m->sem->diagnostics()) emit_diagnostic(d);
         if (m->sem->has_error()) ok = false;

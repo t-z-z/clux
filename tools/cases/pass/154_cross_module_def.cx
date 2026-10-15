@@ -1,0 +1,9 @@
+// typedef/exprdef 跨模块生效：符号表合并后，导入方直接按别名书写
+import cstdio
+import "154_cross_module_def.inc"
+
+main() int r {
+    byte_size a = 5
+    printf("%ld %d\n", double_it(a), magic)
+    r = 0
+}

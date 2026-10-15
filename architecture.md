@@ -21,6 +21,7 @@
 | AST 与克隆 | [`include/ast.h`](include/ast.h), [`src/clone.cpp`](src/clone.cpp) | AST 节点定义、`CompUnit` 节点池、深拷贝 |
 | 类型工具 | [`include/sem_types.h`](include/sem_types.h), [`src/sem_types.cpp`](src/sem_types.cpp) | 类型谓词、类型名、字面量范围等无状态工具 |
 | 语义分析 | [`src/semantic.cpp`](src/semantic.cpp), [`include/semantic.h`](include/semantic.h) | 符号收集、作用域管理、表达式类型推导 |
+| 别名展开 | [`src/semantic_def.cpp`](src/semantic_def.cpp), [`include/semantic_def.h`](include/semantic_def.h) | `typedef` / `exprdef` 使用点展开成目标节点的克隆件 |
 | 常数求值 | [`src/const_eval.cpp`](src/const_eval.cpp), [`include/const_eval.h`](include/const_eval.h) | 编译期常量表达式求值 |
 | 修饰注入 | [`src/inject.cpp`](src/inject.cpp), [`include/inject.h`](include/inject.h) | 类 `#修饰` 展开与成员合并 |
 | 类型转换 | [`src/convert.cpp`](src/convert.cpp) | 隐式/显式转换判定与检查 |
@@ -67,7 +68,9 @@ future.md        未来特性规划
 4. 数组与 C 定长数组一致：`T[N]`（`T[]` 由初值推导长度）在 IR 里就是 `[N x T]`，存储内联、整体拷贝、可按值传参与返回，`.len` 是编译期常量，数组名退化成指针。
 5. `T{}` / `T{n}` 是拥有自己存储的切片，只出现在局部变量，不能作形参、返回类型或类字段，跨函数传递一律用指针。长度是编译期常量时存储放函数入口块、整个函数一次；长度在运行期时仍是栈上 `alloca`，用 `llvm.stacksave` / `llvm.stackrestore` 在作用域结束归还栈（`alloca` 本身只在函数返回时释放，循环里会逐轮吃栈）。`malloc` 修饰则走堆分配、不自动回收。
 6. 枚举底层是 `i32`：成员值在语义遍历时按声明顺序定值，显式初值必须是编译期整数常量且只能引用已定值的前序成员（`E::A` 限定名），缺省初值沿用前一个值加一；取值超出 `int` 范围报错而不是截断。
-7. future.md中内容均未实现
+7. 三种别名机制各管一段：`define` 是词法阶段的 token 替换，跟随 `{}` 作用域、以 `:` 收尾、不跨模块；`typedef` / `exprdef` 是语义阶段展开，别名在 `collect` 阶段登记进符号表（因而可跨模块），使用点则在语义主遍历走到它时才展开：节点内容换成目标节点的克隆件，再按新形态遍历一遍，链式别名随之逐层展开。因此别名和局部变量同序——文件作用域的别名对其后的代码生效，函数体内的别名只对该块内其后的代码生效，声明之前用不到。代价是别名须先声明后使用（与 C 的 typedef 一致）：多模块按逆 BFS 序分析，被导入方先展开完，导入方的调用点才能比对到已展开的签名。
+8. extern 函数可以按值返回聚合（`div` / `ldiv` / `imaxdiv` 一类）：声明与调用都写真实结构体类型，寄存器怎么收发由 LLVM 后端按目标平台决定；返回值拷进调用方的存储后，再按类值交出去。类在 clux 内部的值模型始终是存储指针，只有跨 ABI 边界才按结构体收发，clux 自身函数的类返回仍走 sret。
+9. future.md中内容均未实现
 
 ## 构建
 
@@ -135,5 +138,4 @@ bash tools/smoke.sh
 ## 贡献流程
 
 - 新增语言行为时，同时添加 `tools/cases/pass/` 或 `tools/cases/fail/` 用例。
-
 - 修改规范或标准库文档前，请先讨论。

@@ -20,18 +20,11 @@ extern "C" {
     fprintf(void-* stream const char-* fmt ...) int r{}
     sprintf(char-* buf const char-* fmt ...) int r{}
     snprintf(char-* buf ulong size const char-* fmt ...) int r{}
-    vprintf(const char-* fmt ...) int r{}
-    vfprintf(void-* stream const char-* fmt ...) int r{}
-    vsprintf(char-* buf const char-* fmt ...) int r{}
-    vsnprintf(char-* buf ulong size const char-* fmt ...) int r{}
 
     // 格式化输入
     scanf(const char-* fmt ...) int r{}
     fscanf(void-* stream const char-* fmt ...) int r{}
     sscanf(const char-* s const char-* fmt ...) int r{}
-    vscanf(const char-* fmt ...) int r{}
-    vfscanf(void-* stream const char-* fmt ...) int r{}
-    vsscanf(const char-* s const char-* fmt ...) int r{}
 
     // 字符输出
     putchar(int c) int r{}
@@ -69,5 +62,5 @@ extern "C" {
     remove(const char-* filename) int r{}
     rename(const char-* oldname const char-* newname) int r{}
     tmpfile() void-* r{}
-    tmpnam(char-* s) char-* r{}
+    tmpnam(char-* s) char-* r{} // 不安全
 }
