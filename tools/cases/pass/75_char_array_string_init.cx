@@ -1,4 +1,0 @@
-main() int r {
-    char[] a = "hello"
-    r = 0
-}

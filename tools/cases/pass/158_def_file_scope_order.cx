@@ -1,0 +1,12 @@
+// 文件作用域的 def 在 collect 阶段就登记进符号表，顺序无关：这里用的两个别名
+// 声明在 main 之后，照样能解析。函数体内的 def 才是块作用域 + 向下生效（见 157）
+import cstdio
+
+main() int r {
+    byte_t v = 5
+    printf("%d %d\n", v, magic)
+    r = 0
+}
+
+typedef byte_t = int
+exprdef magic = 42

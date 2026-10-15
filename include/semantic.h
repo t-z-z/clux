@@ -42,6 +42,8 @@ enum class SymbolKind {
     Namespace,
     Enum,
     EnumVar,
+    TypeAlias,
+    ExprAlias,
 };
 
 // 访问控制级别：priv 覆盖 readonly 覆盖 pub
@@ -74,6 +76,8 @@ struct Symbol {
             case DeclKind::Namespace:     kind = SymbolKind::Namespace; break;
             case DeclKind::SpecialMethod: kind = SymbolKind::Function; break;
             case DeclKind::Operator:      kind = SymbolKind::Function; break;
+            case DeclKind::TypeDef:       kind = SymbolKind::TypeAlias; break;
+            case DeclKind::ExprDef:       kind = SymbolKind::ExprAlias; break;
             default:                      kind = SymbolKind::Variable; break;
         }
     }
@@ -313,6 +317,9 @@ class SemanticAnalyzer : public ASTVisitor {
     void collect_extern_vars();
     // expand() 是否已执行，analyze_rest() 会兜底调用
     bool expanded_ = false;
+    // 别名展开深度上限：链式与互相定义到此为止
+    static constexpr int kMaxDefDepth = 32;
+    int def_depth_ = 0;
 
     // 泛型（实现见 src/semantic_generic.cpp）
     // 已实例化声明：语义主遍历之后挂到 top_decls，translator 只看得到它们
@@ -416,6 +423,7 @@ public:
     void visit_stmt_asm(Stmt::Asm&) override;
     void visit_stmt_keep(Stmt::Keep&) override;
     void visit_stmt_var_decl(Stmt::VarDecl&) override;
+    void visit_stmt_def(Stmt::Def&) override;
 
     void visit_type_primitive(Type::Primitive&) override;
     void visit_type_pointer(Type::Pointer&) override;
@@ -542,6 +550,9 @@ private:
     void collect_decl(Decl* decl, bool default_public);
     void register_func(Func& f, bool default_public);
     void register_special(SpecialMethod& sm, bool default_public);
+    // typedef/exprdef 使用点：节点内容换成目标的克隆件，再按新形态遍历一遍
+    void expand_type_alias(Symbol* sym);
+    void expand_expr_alias(Symbol* sym);
 
     bool is_scope_on_path(Scope* s) const;
     void check_access(Symbol* sym, const Location& loc);

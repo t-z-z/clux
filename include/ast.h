@@ -83,6 +83,14 @@
 //                      出现在局部变量；T[] 推导成功后 length 变为字面量、kind 变为
 //                      Fixed，推导不出来时 kind 保持 Infer、length 为空并报错。
 //
+//   TypeDef::target / ExprDef::target
+//                      [写 语法 parse(typedef 名 = 类型 / exprdef 名 = 表达式)]
+//                      [读 P1 使用点展开]
+//                      声明处不遍历目标（Stmt::Def 同理）。每个使用点克隆一份目标，
+//                      就地把节点内容换成克隆件并按新形态继续遍历，因此链式别名
+//                      逐层展开成定义处的类型。展开时机与局部变量一致，故别名
+//                      先声明后使用。
+//
 // 约定：
 //   - P1 之后，所有语义字段冻结，P2 不再写 AST（除 translator 自己的局部缓存）。
 //   - 有效表达式在 P1 结束时保证 type 与 sym 至少一个非空（见文件头规则）。
@@ -465,10 +473,12 @@ struct Stmt : ASTNode {
     struct Asm      { std::string_view code; };
     struct Keep     { std::string_view tokens; };
     struct VarDecl  { VarList* vars; };
+    // 函数体内的 typedef / exprdef：和局部变量一样，登记进当前作用域后向下生效
+    struct Def      { Decl* decl; };
     using Variant = std::variant<
         Block, ExprStmt, If, While, For,
         Return, Break, Continue, Flag, Goto,
-        Asm, Keep, VarDecl
+        Asm, Keep, VarDecl, Def
     >;
     Variant data;
     Stmt() = default;
@@ -486,11 +496,12 @@ struct Stmt : ASTNode {
     BBB(asm, Asm, Stmt)
     BBB(keep, Keep, Stmt)
     BBB(var_decl, VarDecl, Stmt)
+    BBB(def, Def, Stmt)
 };
 
 enum class DeclKind {
     // 等级从低到高
-    Keep, VarList, SpecialMethod, Func, Operator, Conversion, Enum, Class, Extern, Namespace,
+    Keep, TypeDef, ExprDef, VarList, SpecialMethod, Func, Operator, Conversion, Enum, Class, Extern, Namespace,
 };
 
 struct Decl : ASTNode {
@@ -672,6 +683,22 @@ struct Keep : Decl {
         : Decl(loc, "", DeclKind::Keep, std::move(ml)), code(c) {}
 };
 
+// typedef 名 = 类型：使用点按 target 展开，符号表合并使其可跨模块
+struct TypeDef : Decl {
+    Type* target = nullptr;
+    TypeDef() = default;
+    TypeDef(const Location& loc, std::string_view n, Type* t)
+        : Decl(loc, n, DeclKind::TypeDef), target(t) {}
+};
+
+// exprdef 名 = 表达式：使用点按 target 展开，符号表合并使其可跨模块
+struct ExprDef : Decl {
+    Expr* target = nullptr;
+    ExprDef() = default;
+    ExprDef(const Location& loc, std::string_view n, Expr* e)
+        : Decl(loc, n, DeclKind::ExprDef), target(e) {}
+};
+
 struct EnumVariant : ASTNode {
     std::string_view name;
     Expr* init = nullptr;   // 显式初值（= 后的表达式），缺省按声明顺序递增
@@ -689,8 +716,8 @@ struct Enum : Decl {
     Enum() = default;
     Enum(const Location& loc, std::string_view name, SpecList ml,
          std::vector<EnumVariant*> vs)
-        : Decl(loc, name, DeclKind::Enum, std::move(ml)),
-          variants(std::move(vs)) {}
+         : Decl(loc, name, DeclKind::Enum, std::move(ml)),
+         variants(std::move(vs)) {}
 };
 
 // 类型节点的类声明解析；非类返回 nullptr
@@ -804,6 +831,7 @@ struct ASTVisitor {
     virtual void visit_stmt_asm(Stmt::Asm&) {}
     virtual void visit_stmt_keep(Stmt::Keep&) {}
     virtual void visit_stmt_var_decl(Stmt::VarDecl&) {}
+    virtual void visit_stmt_def(Stmt::Def&) {}
 
     virtual void visit_type_primitive(Type::Primitive&) {}
     virtual void visit_type_pointer(Type::Pointer&) {}
@@ -832,6 +860,9 @@ struct ASTVisitor {
             case DeclKind::SpecialMethod: walk_children(static_cast<SpecialMethod&>(decl)); break;
             case DeclKind::Enum:          walk_children(static_cast<Enum&>(decl)); break;
             case DeclKind::Keep:          walk_children(static_cast<Keep&>(decl)); break;
+            // typedef/exprdef 的目标不在声明处遍历：它只在每个使用点展开后才被分析
+            case DeclKind::TypeDef:
+            case DeclKind::ExprDef:        break;
             default: break;
         }
     }
@@ -1062,6 +1093,9 @@ struct ASTVisitor {
             } else if constexpr (std::is_same_v<T, Stmt::VarDecl>) {
                 if (v.vars) walk(*v.vars);
                 visit_stmt_var_decl(v);
+            } else if constexpr (std::is_same_v<T, Stmt::Def>) {
+                // 只登记符号，别名目标仍不在声明处遍历：它在每个使用点展开后才被分析
+                visit_stmt_def(v);
             }
             else if constexpr (std::is_same_v<T, Stmt::Return>) visit_stmt_return(v);
             else if constexpr (std::is_same_v<T, Stmt::Break>) visit_stmt_break(v);

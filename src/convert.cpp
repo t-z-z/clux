@@ -159,9 +159,10 @@ bool SemanticAnalyzer::can_convert_to(Type* src, Type* dst) {
                         f->returns.back()->type)
                         ret = f->returns.back()->type;
                     // 函数指针 ABI：void 无返回，否则寄存器返回，
-                    // 故仅 void 返回或标量寄存器返回的函数可 decay
+                    // 故仅 void 返回或标量寄存器返回的函数可 decay；
+                    // 按值返回聚合的函数走另一套 ABI，不能取地址
                     if (is_same_type(ret, fp->return_type) &&
-                        (is_void_type(ret) || f->ret_via_reg))
+                        (is_void_type(ret) || (f->ret_via_reg && !as_class(ret))))
                         return true;
                 }
             }

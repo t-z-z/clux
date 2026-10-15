@@ -1,0 +1,23 @@
+// cstddef.cx
+// C 标准定义，对应 <stddef.h>
+// 其他标准库文件通过 import cstddef 使用这些类型，不重复定义。
+
+// 以下默认值针对 Linux x86-64（LP64）。
+
+typedef size_t = ulong        // 对象大小，无符号
+typedef ssize_t = long        // 带符号大小，POSIX
+typedef ptrdiff_t = long      // 指针差值，带符号
+typedef wchar_t = int         // 宽字符，Linux 上为 int
+
+exprdef NULL = 0              // 空指针，等价于 clux 的 null
+
+// 说明
+//
+// offsetof：C 的 offsetof 是宏，依赖编译器内建。
+// clux 不提供；需要时用 metatype 或内联汇编获取字段偏移。
+//
+// max_align_t：C11 类型，描述最大对齐。
+// clux 不声明；对齐由 malloc 修饰符或 aligned_alloc 处理。
+//
+// wchar_t 在多数字典中使用；若目标平台 wchar_t 宽度不同，
+// 平台层覆盖。

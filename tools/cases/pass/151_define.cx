@@ -1,0 +1,21 @@
+// define：编译期 token 替换，本作用域内把名字换成另一串 token，
+// '}' 处失效，同名内层 define 覆盖外层，链式 define 逐层替换
+import cstdio
+
+define N = 4:
+define SIZE = N:
+
+main() int r {
+    int arr[N]
+    arr[0] = 10
+    arr[SIZE - 1] = 20
+    printf("%d %d\n", arr[0], arr[SIZE - 1])
+    {
+        define N = 2:
+        int small[N]
+        small[0] = 7
+        printf("%d\n", small[0])
+    }
+    printf("%d\n", arr[0])
+    r = 0
+}

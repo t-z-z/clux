@@ -1,0 +1,5 @@
+// typedef 同名重定义：别名符号也走符号表，重复声明须报错
+typedef size_t = long
+typedef size_t = int
+
+main() { }

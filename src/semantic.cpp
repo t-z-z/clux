@@ -317,6 +317,20 @@ void SemanticAnalyzer::collect_decl(Decl* decl, bool default_public) {
             register_special(*static_cast<SpecialMethod*>(decl), default_public);
             break;
         }
+
+        case DeclKind::TypeDef:
+        case DeclKind::ExprDef: {
+            bool is_type = decl->kind == DeclKind::TypeDef;
+            Symbol sym(is_type ? SymbolKind::TypeAlias : SymbolKind::ExprAlias, decl);
+            sym.specs = &decl->specs;
+            sym.default_public = default_public;
+            if (!symbols_.insert_member(std::string(decl->name), std::move(sym))) {
+                error(decl->loc, "redefinition of " +
+                      std::string(is_type ? "typedef" : "exprdef") + " '" +
+                      std::string(decl->name) + "'");
+            }
+            break;
+        }
         default:
             break;
     }
@@ -493,8 +507,11 @@ void SemanticAnalyzer::visit_func(Func& f) {
                 ty = rl->type;
             }
             if (ty) {
+                // 聚合按值返回同样走寄存器通道：ABI 怎么收发由 LLVM 后端按目标平台
+                // 决定（译者的类值是存储指针，跨 ABI 边界时才按结构体收发）
                 bool ok = ty->get_primitive() || ty->get_pointer() ||
-                          ty->get_reference() || ty->get_func_ptr();
+                          ty->get_reference() || ty->get_func_ptr() ||
+                          as_class(ty);
                 if (ok) f.ret_via_reg = true;
                 else error(ty_loc, "extern 函数不支持聚合返回类型");
             }
@@ -1098,6 +1115,11 @@ void SemanticAnalyzer::visit_expr_identifier(Expr::Identifier& id) {
         return;
     }
     Symbol* sym = symbols_.lookup_local(id.name);
+    // 块内的 exprdef 与局部变量同一套查找，先判别名再走变量路径
+    if (sym && sym->kind == SymbolKind::ExprAlias) {
+        expand_expr_alias(sym);
+        return;
+    }
     if (sym) {
         current_expr->sym = sym;
         Type* st = sym->get_type();
@@ -1110,6 +1132,16 @@ void SemanticAnalyzer::visit_expr_identifier(Expr::Identifier& id) {
 
     Symbol* member = symbols_.lookup_member(std::string(id.name));
     if (member) {
+        if (member->kind == SymbolKind::ExprAlias) {
+            check_access(member, current_expr->loc);
+            expand_expr_alias(member);
+            return;
+        }
+        if (member->kind == SymbolKind::TypeAlias) {
+            error(current_expr->loc,
+                  "typedef '" + std::string(id.name) + "' used as a value");
+            return;
+        }
         current_expr->sym = member;
         check_access(member, current_expr->loc);
         if (member->kind == SymbolKind::Variable) {
@@ -1804,6 +1836,22 @@ void SemanticAnalyzer::visit_stmt_goto(Stmt::Goto&) {}
 void SemanticAnalyzer::visit_stmt_asm(Stmt::Asm&) {}
 void SemanticAnalyzer::visit_stmt_keep(Stmt::Keep&) {}
 void SemanticAnalyzer::visit_stmt_var_decl(Stmt::VarDecl&) {}
+
+// 函数体内的 typedef / exprdef：登记进当前作用域，之后的代码才看得到
+void SemanticAnalyzer::visit_stmt_def(Stmt::Def& d) {
+    Decl* decl = d.decl;
+    if (!decl) return;
+    if (symbols_.current_scope() &&
+        symbols_.current_scope()->lookup_local(decl->name)) {
+        error(decl->loc, "redefinition of " +
+              std::string(decl->kind == DeclKind::TypeDef ? "typedef" : "exprdef") +
+              " '" + std::string(decl->name) + "'");
+        return;
+    }
+    Symbol sym(decl->kind == DeclKind::TypeDef
+        ? SymbolKind::TypeAlias : SymbolKind::ExprAlias, decl);
+    symbols_.insert_local(decl->name, std::move(sym));
+}
 // spawn(call)：类型继承被调函数的返回类型，禁止传入栈上的指针或引用
 void SemanticAnalyzer::visit_expr_spawn(Expr::Spawn& sp) {
     if (!sp.call) {
@@ -1918,10 +1966,62 @@ void SemanticAnalyzer::visit_type_void(Type::Void&) {
 
 void SemanticAnalyzer::visit_type_inferred(Type::Inferred&) {}
 
+// typedef 使用点：节点内容换成目标类型的克隆件，再按新形态遍历一遍，
+// 克隆件内部的别名随之继续展开。def 在 collect 登记符号、在此处按序展开，
+// 所以函数体里的 typedef 一样只对其后的代码生效
+void SemanticAnalyzer::expand_type_alias(Symbol* sym) {
+    TypeDef* td = sym->get<TypeDef>();
+    if (!td || !td->target) return;
+    if (def_depth_ >= kMaxDefDepth) {
+        error(current_type->loc, "circular typedef '" + std::string(td->name) + "'");
+        current_type->data = Type::Inferred{};
+        return;
+    }
+    Type* copy = cu_.clone_type(td->target);
+    Location use_loc = current_type->loc;
+    *current_type = std::move(*copy);
+    current_type->loc = use_loc;
+    ++def_depth_;
+    walk_children(*current_type);
+    --def_depth_;
+}
+
+// exprdef 使用点：同上，节点内容换成目标表达式的克隆件
+void SemanticAnalyzer::expand_expr_alias(Symbol* sym) {
+    ExprDef* ed = sym->get<ExprDef>();
+    if (!ed || !ed->target) return;
+    if (def_depth_ >= kMaxDefDepth) {
+        error(current_expr->loc, "circular exprdef '" + std::string(ed->name) + "'");
+        current_expr->data = Expr::Inferred{};
+        current_expr->type = nullptr;
+        current_expr->is_lvalue = false;
+        return;
+    }
+    Expr* copy = cu_.clone_expr(ed->target);
+    Location use_loc = current_expr->loc;
+    current_expr->data = std::move(copy->data);
+    current_expr->loc = use_loc;
+    ++def_depth_;
+    walk_children(*current_expr);
+    --def_depth_;
+}
+
 // 类型位置的裸名：按类型解析
 void SemanticAnalyzer::visit_type_identifier(Type::Identifier& id) {
     std::string name(id.name);
-    Symbol* s = symbols_.lookup_member(name);
+    // 块内的 typedef 只在其后生效，与局部变量同一套查找
+    Symbol* s = symbols_.lookup_local(name);
+    if (!s) s = symbols_.lookup_member(name);
+    if (s && s->kind == SymbolKind::TypeAlias) {
+        check_access(s, current_type->loc);
+        expand_type_alias(s);
+        return;
+    }
+    if (s && s->kind == SymbolKind::ExprAlias) {
+        error(current_type->loc,
+              "exprdef '" + name + "' used as a type");
+        return;
+    }
     if (s && (s->kind == SymbolKind::Class ||
               s->kind == SymbolKind::Namespace ||
               s->kind == SymbolKind::Enum)) {

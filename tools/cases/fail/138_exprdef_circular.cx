@@ -1,0 +1,7 @@
+// exprdef 互相引用：展开深度到上限即报错，不能无限展开
+exprdef ping = pong + 1
+exprdef pong = ping + 1
+
+main() {
+    int a = ping
+}
