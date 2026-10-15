@@ -513,7 +513,8 @@ void SemanticAnalyzer::visit_func(Func& f) {
                           ty->get_reference() || ty->get_func_ptr() ||
                           as_class(ty);
                 if (ok) f.ret_via_reg = true;
-                else error(ty_loc, "extern 函数不支持聚合返回类型");
+                // 标记，有待修复
+                else error(ty_loc, "unsupported extern return type");
             }
         }
         return;
@@ -535,9 +536,6 @@ void SemanticAnalyzer::visit_func(Func& f) {
     flow_.check_initialization(f.body, f.params, f.returns);
     if (flow_.can_use_register_ret(f)) f.ret_via_reg = true;
 }
-
-
-
 
 // 引用返回绑定的根变量：逐层剥到最外层。
 // 局部变量的存储在栈帧上，返回即悬垂；形参、全局量、字段沿此路径都被剥掉
@@ -820,7 +818,8 @@ void SemanticAnalyzer::visit_var_list(VarList& vl) {
                  var->init->type->is_string_literal_type());
             bool decl_aggregate = dt && (dt->is_array_type() ||
                                          dt->is_string_literal_type());
-            if (init_aggregate || decl_aggregate)
+            // 标记bug
+                                         if (init_aggregate || decl_aggregate)
                 error(var->loc, "module-level variable cannot be an array or "
                       "string: its storage would not outlive the initializer");
         }

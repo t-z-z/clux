@@ -1,0 +1,13 @@
+// 按值收/返回聚合的 extern 函数走另一套 ABI，函数指针调用只按标量发，故不能取地址
+Pair {
+    pub long a
+    pub long b
+}
+
+extern "C" {
+    takes_pair(Pair p) Pair r{}
+}
+
+main() {
+    $(Pair)Pair f = takes_pair
+}

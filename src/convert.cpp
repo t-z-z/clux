@@ -153,6 +153,10 @@ bool SemanticAnalyzer::can_convert_to(Type* src, Type* dst) {
                 bool ok = true;
                 for (size_t i = 0; i < params.size(); ++i)
                     if (!is_same_type(params[i], fp->params[i])) { ok = false; break; }
+                // extern 按值收聚合的形参也走另一套 ABI，同样不能取地址
+                if (ok && f->is_extern_decl)
+                    for (Type* p : params)
+                        if (as_class(p)) { ok = false; break; }
                 if (ok) {
                     Type* ret = typeVoid;
                     if (!f->returns.empty() && f->returns.back() &&

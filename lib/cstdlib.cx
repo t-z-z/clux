@@ -1,6 +1,6 @@
 // cstdlib.cx
 // C 标准库的通用工具，对应 <stdlib.h>
-// size_t → ulong，ptrdiff_t → long，long long → long（LP64 下同宽）
+// ptrdiff_t → long，long long → long（LP64 下同宽）
 
 import cstddef    // size_t, ptrdiff_t, NULL
 

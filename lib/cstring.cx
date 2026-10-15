@@ -1,38 +1,38 @@
 // cstring.cx
 // C 字符串与内存块操作，对应 <string.h>
-// 长度参数 size_t → ulong
+import cstddef
 
 extern "C" {
     // 内存块
-    memcpy(void-* dest const void-* src ulong n) void-* r{}
-    memmove(void-* dest const void-* src ulong n) void-* r{}
-    memset(void-* s int c ulong n) void-* r{}
-    memcmp(const void-* p1 const void-* p2 ulong n) int r{}
-    memchr(const void-* s int c ulong n) void-* r{}
+    memcpy(void-* dest const void-* src size_t n) void-* r{}
+    memmove(void-* dest const void-* src size_t n) void-* r{}
+    memset(void-* s int c size_t n) void-* r{}
+    memcmp(const void-* p1 const void-* p2 size_t n) int r{}
+    memchr(const void-* s int c size_t n) void-* r{}
 
     // 字符串复制与拼接
     strcpy(char-* dest const char-* src) char-* r{}
-    strncpy(char-* dest const char-* src ulong n) char-* r{}
+    strncpy(char-* dest const char-* src size_t n) char-* r{}
     strcat(char-* dest const char-* src) char-* r{}
-    strncat(char-* dest const char-* src ulong n) char-* r{}
+    strncat(char-* dest const char-* src size_t n) char-* r{}
 
     // 比较与转换
     strcmp(const char-* s1 const char-* s2) int r{}
-    strncmp(const char-* s1 const char-* s2 ulong n) int r{}
+    strncmp(const char-* s1 const char-* s2 size_t n) int r{}
     strcoll(const char-* s1 const char-* s2) int r{}
-    strxfrm(char-* dest const char-* src ulong n) ulong r{}
+    strxfrm(char-* dest const char-* src size_t n) size_t r{}
 
     // 查找与切分
     strchr(const char-* s int c) char-* r{}
     strrchr(const char-* s int c) char-* r{}
     strpbrk(const char-* s1 const char-* s2) char-* r{}
     strstr(const char-* haystack const char-* needle) char-* r{}
-    strcspn(const char-* s1 const char-* s2) ulong r{}
-    strspn(const char-* s1 const char-* s2) ulong r{}
+    strcspn(const char-* s1 const char-* s2) size_t r{}
+    strspn(const char-* s1 const char-* s2) size_t r{}
     strtok(char-* str const char-* delim) char-* r{}
 
     // 长度与错误描述
-    strlen(const char-* s) ulong r{}
-    strnlen(const char-* s ulong maxlen) ulong r{}
+    strlen(const char-* s) size_t r{}
+    strnlen(const char-* s size_t maxlen) size_t r{}
     strerror(int errnum) char-* r{}
 }
