@@ -942,9 +942,9 @@ Stmt* Parser::parse_stmt() {
         result = parse_break_stmt();
     }else if (curr().kind == TokenKind::Continue) {
         result = parse_continue_stmt();
-    }else if (curr().kind == TokenKind::Flag) {
-        result = parse_flag_stmt();
-    }else if (curr().kind == TokenKind::ToFlag) {
+    }else if (curr().kind == TokenKind::Label) {
+        result = parse_label_stmt();
+    }else if (curr().kind == TokenKind::Goto) {
         result = parse_goto_stmt();
     }else if (curr().kind == TokenKind::Asm) {
         result = parse_asm_stmt();
@@ -1162,30 +1162,30 @@ Stmt* Parser::parse_continue_stmt() {
     );
 }
 
-Stmt* Parser::parse_flag_stmt() {
-    if (curr().kind != TokenKind::Flag) return nullptr;
+Stmt* Parser::parse_label_stmt() {
+    if (curr().kind != TokenKind::Label) return nullptr;
     Location loc = get_loc();
     advance();
     
     if (!curr().is_ident()) {
-        add_error("expected label name after 'flag'");
+        add_error("expected label name after 'label'");
         return nullptr;
     }
     std::string_view label = curr().get_val();
     advance();
     return cu_.add_node<Stmt>(
         loc,
-        Stmt::Flag{label}
+        Stmt::Label{label}
     );
 }
 
 Stmt* Parser::parse_goto_stmt() {
-    if (curr().kind != TokenKind::ToFlag) return nullptr;
+    if (curr().kind != TokenKind::Goto) return nullptr;
     Location loc = get_loc();
     advance();
     
     if (!curr().is_ident()) {
-        add_error("expected label name after 'toflag'");
+        add_error("expected label name after 'goto'");
         return nullptr;
     }
     std::string_view label = curr().get_val();
@@ -1307,8 +1307,8 @@ bool Parser::is_statement_boundary() {
         case TokenKind::Return:
         case TokenKind::Break:
         case TokenKind::Continue:
-        case TokenKind::Flag:
-        case TokenKind::ToFlag:
+        case TokenKind::Label:
+        case TokenKind::Goto:
         case TokenKind::Asm:
         case TokenKind::Keep:
             return true;

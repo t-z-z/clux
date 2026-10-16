@@ -207,8 +207,8 @@ for int i = 0; i < n; i += 1 { ... }
 break
 continue
 return
-flag label
-toflag label
+label label_name
+goto label_name
 ```
 
 ## 六、函数
@@ -522,11 +522,11 @@ for($void item) in (T collection $void body)
 break
 continue
 return
-flag label
-toflag label
+label label_name
+goto label_name
 ```
 
-`flag` 与 `toflag` 是标签跳转，规则和cpp相同。
+`label` 与 `goto` 是标签跳转，规则和cpp相同。
 
 ## 十一、并发与异步
 

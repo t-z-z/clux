@@ -135,7 +135,7 @@ Stmt* CompUnit::clone_stmt(Stmt* s) {
     if (s->is_return()) return add_node<Stmt>(loc, Stmt::Return{});
     if (s->is_break()) return add_node<Stmt>(loc, Stmt::Break{});
     if (s->is_continue()) return add_node<Stmt>(loc, Stmt::Continue{});
-    if (auto* v = s->get_flag()) return add_node<Stmt>(loc, Stmt::Flag{v->label});
+    if (auto* v = s->get_label()) return add_node<Stmt>(loc, Stmt::Label{v->label});
     if (auto* v = s->get_goto()) return add_node<Stmt>(loc, Stmt::Goto{v->label});
     if (auto* v = s->get_asm()) return add_node<Stmt>(loc, Stmt::Asm{v->code});
     if (auto* v = s->get_keep()) return add_node<Stmt>(loc, Stmt::Keep{v->tokens});

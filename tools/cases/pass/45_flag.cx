@@ -1,6 +1,6 @@
 main() {
     int i = 0
-    flag top
+    label top
     i = i + 1
-    if i < 3 { toflag top }
+    if i < 3 { goto top }
 }

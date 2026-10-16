@@ -17,7 +17,7 @@ struct JumpPoint {
     std::string label;
     std::vector<int> scope_path;
     int loop_depth = 0;
-    bool is_flag = false;
+    bool is_label = false;
     Location loc;
 };
 
@@ -26,16 +26,16 @@ struct JumpPoint {
 
 void FlowChecker::check_jumps(Stmt* body) {
     if (!body) return;
-    std::vector<JumpPoint> flags;
+    std::vector<JumpPoint> labels;
     std::vector<JumpPoint> gotos;
     int scope_counter = 0;
 
-    // 收集本体内所有 flag / toflag 及其作用域路径
+    // 收集本体内所有 label / goto 及其作用域路径
     std::function<void(Stmt*, std::vector<int>, int)> scan =
         [&](Stmt* st, std::vector<int> path, int loops) {
         if (!st) return;
-        if (auto* f = st->get_flag()) {
-            flags.push_back({std::string(f->label), path, loops, true, st->loc});
+        if (auto* f = st->get_label()) {
+            labels.push_back({std::string(f->label), path, loops, true, st->loc});
             return;
         }
         if (auto* g = st->get_goto()) {
@@ -68,10 +68,10 @@ void FlowChecker::check_jumps(Stmt* body) {
     };
     scan(body, {}, 0);
 
-    // 逐个检查 toflag
+    // 逐个检查 goto
     for (const JumpPoint& g : gotos) {
         bool found = false;
-        for (const JumpPoint& f : flags) {
+        for (const JumpPoint& f : labels) {
             if (f.label != g.label) continue;
             found = true;
             // 目标作用域必须是跳转点作用域的祖先或自身

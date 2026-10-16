@@ -468,7 +468,7 @@ struct Stmt : ASTNode {
     struct Return   { };
     struct Break    { };
     struct Continue { };
-    struct Flag     { std::string_view label; };
+    struct Label     { std::string_view label; };
     struct Goto     { std::string_view label; };
     struct Asm      { std::string_view code; };
     struct Keep     { std::string_view tokens; };
@@ -477,7 +477,7 @@ struct Stmt : ASTNode {
     struct Def      { Decl* decl; };
     using Variant = std::variant<
         Block, ExprStmt, If, While, For,
-        Return, Break, Continue, Flag, Goto,
+        Return, Break, Continue, Label, Goto,
         Asm, Keep, VarDecl, Def
     >;
     Variant data;
@@ -491,7 +491,7 @@ struct Stmt : ASTNode {
     BBB(return, Return, Stmt)
     BBB(break, Break, Stmt)
     BBB(continue, Continue, Stmt)
-    BBB(flag, Flag, Stmt)
+    BBB(label, Label, Stmt)
     BBB(goto, Goto, Stmt)
     BBB(asm, Asm, Stmt)
     BBB(keep, Keep, Stmt)
@@ -842,7 +842,7 @@ struct ASTVisitor {
     virtual void visit_stmt_return(Stmt::Return&) {}
     virtual void visit_stmt_break(Stmt::Break&) {}
     virtual void visit_stmt_continue(Stmt::Continue&) {}
-    virtual void visit_stmt_flag(Stmt::Flag&) {}
+    virtual void visit_stmt_label(Stmt::Label&) {}
     virtual void visit_stmt_goto(Stmt::Goto&) {}
     virtual void visit_stmt_asm(Stmt::Asm&) {}
     virtual void visit_stmt_keep(Stmt::Keep&) {}
@@ -1116,7 +1116,7 @@ struct ASTVisitor {
             else if constexpr (std::is_same_v<T, Stmt::Return>) visit_stmt_return(v);
             else if constexpr (std::is_same_v<T, Stmt::Break>) visit_stmt_break(v);
             else if constexpr (std::is_same_v<T, Stmt::Continue>) visit_stmt_continue(v);
-            else if constexpr (std::is_same_v<T, Stmt::Flag>) visit_stmt_flag(v);
+            else if constexpr (std::is_same_v<T, Stmt::Label>) visit_stmt_label(v);
             else if constexpr (std::is_same_v<T, Stmt::Goto>) visit_stmt_goto(v);
             else if constexpr (std::is_same_v<T, Stmt::Asm>) visit_stmt_asm(v);
             else if constexpr (std::is_same_v<T, Stmt::Keep>) visit_stmt_keep(v);

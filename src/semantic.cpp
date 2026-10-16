@@ -1906,7 +1906,7 @@ void SemanticAnalyzer::visit_stmt_continue(Stmt::Continue&) {
     }
 }
 
-void SemanticAnalyzer::visit_stmt_flag(Stmt::Flag&) {}
+void SemanticAnalyzer::visit_stmt_label(Stmt::Label&) {}
 void SemanticAnalyzer::visit_stmt_goto(Stmt::Goto&) {}
 void SemanticAnalyzer::visit_stmt_asm(Stmt::Asm&) {}
 void SemanticAnalyzer::visit_stmt_keep(Stmt::Keep&) {}

@@ -1047,10 +1047,10 @@ void Translator::emit_stmt(Stmt* s) {
     // 不能放任死代码进入 emit_var_decl / emit_for 等分支：那些分支照常调用
     // ir_.reg() 消耗寄存器号，但指令被 emit_instr 丢弃；随后 open_block 又
     // 无条件复位 ctx_.term 复活控制流，就会发射出引用未定义寄存器的指令。
-    // Flag 是 goto 跳转目标，Block 内部可能含 Flag，二者必须继续处理，
+    // Label 是 goto 跳转目标，Block 内部可能含 Label，二者必须继续处理，
     // 否则跳转目标无法重新开启新块。
     if (ctx_.term &&
-        !std::holds_alternative<Stmt::Flag>(s->data) &&
+        !std::holds_alternative<Stmt::Label>(s->data) &&
         !std::holds_alternative<Stmt::Block>(s->data)) {
         return;
     }
@@ -1077,8 +1077,8 @@ void Translator::emit_stmt(Stmt* s) {
             emit_break(v);
         } else if constexpr (std::is_same_v<T, Stmt::Continue>) {
             emit_continue(v);
-        } else if constexpr (std::is_same_v<T, Stmt::Flag>) {
-            emit_flag(v);
+        } else if constexpr (std::is_same_v<T, Stmt::Label>) {
+            emit_label(v);
         } else if constexpr (std::is_same_v<T, Stmt::Goto>) {
             emit_goto(v);
         } else if constexpr (std::is_same_v<T, Stmt::Keep>) {
@@ -1488,14 +1488,14 @@ void Translator::emit_continue(Stmt::Continue&) {
     if (!ctx_.term) emit_term("br label %" + loops_.back().continue_label);
 }
 
-void Translator::emit_flag(Stmt::Flag& f) {
-    std::string tgt = "flag." + std::string(f.label);
+void Translator::emit_label(Stmt::Label& f) {
+    std::string tgt = "label." + std::string(f.label);
     if (!ctx_.term) emit_term("br label %" + tgt);
     open_block(tgt);
 }
 
 void Translator::emit_goto(Stmt::Goto& g) {
-    std::string tgt = "flag." + std::string(g.label);
+    std::string tgt = "label." + std::string(g.label);
     emit_term("br label %" + tgt);
 }
 
