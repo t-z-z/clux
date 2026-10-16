@@ -1,0 +1,122 @@
+// cstdint.cx
+// C 定宽整数，对应 <stdint.h>
+// 目标平台：x86_64 Linux (LP64)
+
+import cstddef
+
+// 类型
+
+// 精确宽度
+typedef int8_t   = char
+typedef int16_t  = short
+typedef int32_t  = int
+typedef int64_t  = long
+
+typedef uint8_t  = uchar
+typedef uint16_t = ushort
+typedef uint32_t = uint
+typedef uint64_t = ulong
+
+// 最小宽度
+typedef int_least8_t   = char
+typedef int_least16_t  = short
+typedef int_least32_t  = int
+typedef int_least64_t  = long
+
+typedef uint_least8_t  = uchar
+typedef uint_least16_t = ushort
+typedef uint_least32_t = uint
+typedef uint_least64_t = ulong
+
+// 最快最小宽度（x86_64 glibc：fast16/32/64 都提升到 64 位）
+typedef int_fast8_t   = char
+typedef int_fast16_t  = long
+typedef int_fast32_t  = long
+typedef int_fast64_t  = long
+
+typedef uint_fast8_t  = uchar
+typedef uint_fast16_t = ulong
+typedef uint_fast32_t = ulong
+typedef uint_fast64_t = ulong
+
+// 指针宽度
+typedef intptr_t  = long
+typedef uintptr_t = ulong
+
+// 最大宽度
+typedef intmax_t  = long
+typedef uintmax_t = ulong
+
+// 常量：精确宽度
+
+exprdef INT8_MIN = -128
+exprdef INT8_MAX = 127
+exprdef UINT8_MAX = 255
+
+exprdef INT16_MIN = -32768
+exprdef INT16_MAX = 32767
+exprdef UINT16_MAX = 65535
+
+exprdef INT32_MIN = -2147483647 - 1
+exprdef INT32_MAX = 2147483647
+exprdef UINT32_MAX = 0xFFFFFFFF
+
+exprdef INT64_MIN = -9223372036854775807 - 1
+exprdef INT64_MAX = 9223372036854775807
+exprdef UINT64_MAX = 0xFFFFFFFFFFFFFFFF
+
+// 常量：最小宽度
+
+exprdef INT_LEAST8_MIN = -128
+exprdef INT_LEAST8_MAX = 127
+exprdef UINT_LEAST8_MAX = 255
+
+exprdef INT_LEAST16_MIN = -32768
+exprdef INT_LEAST16_MAX = 32767
+exprdef UINT_LEAST16_MAX = 65535
+
+exprdef INT_LEAST32_MIN = -2147483647 - 1
+exprdef INT_LEAST32_MAX = 2147483647
+exprdef UINT_LEAST32_MAX = 0xFFFFFFFF
+
+exprdef INT_LEAST64_MIN = -9223372036854775807 - 1
+exprdef INT_LEAST64_MAX = 9223372036854775807
+exprdef UINT_LEAST64_MAX = 0xFFFFFFFFFFFFFFFF
+
+// 常量：最快最小宽度（fast16/32/64 均为 64 位）
+
+exprdef INT_FAST8_MIN = -128
+exprdef INT_FAST8_MAX = 127
+exprdef UINT_FAST8_MAX = 255
+
+exprdef INT_FAST16_MIN = -9223372036854775807 - 1
+exprdef INT_FAST16_MAX = 9223372036854775807
+exprdef UINT_FAST16_MAX = 0xFFFFFFFFFFFFFFFF
+
+exprdef INT_FAST32_MIN = -9223372036854775807 - 1
+exprdef INT_FAST32_MAX = 9223372036854775807
+exprdef UINT_FAST32_MAX = 0xFFFFFFFFFFFFFFFF
+
+exprdef INT_FAST64_MIN = -9223372036854775807 - 1
+exprdef INT_FAST64_MAX = 9223372036854775807
+exprdef UINT_FAST64_MAX = 0xFFFFFFFFFFFFFFFF
+
+// 常量：指针与最大宽度
+
+exprdef INTPTR_MIN = -9223372036854775807 - 1
+exprdef INTPTR_MAX = 9223372036854775807
+exprdef UINTPTR_MAX = 0xFFFFFFFFFFFFFFFF
+
+exprdef INTMAX_MIN = -9223372036854775807 - 1
+exprdef INTMAX_MAX = 9223372036854775807
+exprdef UINTMAX_MAX = 0xFFFFFFFFFFFFFFFF
+
+// 常量：其他（来自 stdint.h 的标准宏）
+
+exprdef PTRDIFF_MIN = -9223372036854775807 - 1
+exprdef PTRDIFF_MAX = 9223372036854775807
+
+exprdef SIG_ATOMIC_MIN = -2147483647 - 1
+exprdef SIG_ATOMIC_MAX = 2147483647
+
+exprdef SIZE_MAX = 0xFFFFFFFFFFFFFFFF

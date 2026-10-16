@@ -27,3 +27,4 @@ probe/
 *.ll
 *.in
 !architecture.md
+!cextern.md

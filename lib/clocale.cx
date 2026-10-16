@@ -1,0 +1,240 @@
+// clocale.cx
+// C 本地化，对应 <locale.h>
+// 目标平台：x86_64 Linux (glibc)
+// 仅供 C99 完整性，clux 自身 IO 不依赖 locale
+
+import cstddef
+
+// 宏常量
+
+exprdef LC_CTYPE = 0
+exprdef LC_NUMERIC = 1
+exprdef LC_TIME = 2
+exprdef LC_COLLATE = 3
+exprdef LC_MONETARY = 4
+exprdef LC_MESSAGES = 5
+exprdef LC_ALL = 6
+
+// C 函数
+
+extern "C" {
+    setlocale(int category const char-* locale) char-* r{}
+    localeconv() lconv-* r{}
+}
+
+// LLVMIR 符号声明
+
+extern "LLVMIR" {
+    lconv{}
+
+    // char* 字段（10 个）
+    lconv_decimal_point(lconv-& p) char-* r{}
+    lconv_thousands_sep(lconv-& p) char-* r{}
+    lconv_grouping(lconv-& p) char-* r{}
+    lconv_int_curr_symbol(lconv-& p) char-* r{}
+    lconv_currency_symbol(lconv-& p) char-* r{}
+    lconv_mon_decimal_point(lconv-& p) char-* r{}
+    lconv_mon_thousands_sep(lconv-& p) char-* r{}
+    lconv_mon_grouping(lconv-& p) char-* r{}
+    lconv_positive_sign(lconv-& p) char-* r{}
+    lconv_negative_sign(lconv-& p) char-* r{}
+
+    // char 字段（14 个）
+    lconv_int_frac_digits(lconv-& p) char r{}
+    lconv_frac_digits(lconv-& p) char r{}
+    lconv_p_cs_precedes(lconv-& p) char r{}
+    lconv_p_sep_by_space(lconv-& p) char r{}
+    lconv_n_cs_precedes(lconv-& p) char r{}
+    lconv_n_sep_by_space(lconv-& p) char r{}
+    lconv_p_sign_posn(lconv-& p) char r{}
+    lconv_n_sign_posn(lconv-& p) char r{}
+    lconv_int_p_cs_precedes(lconv-& p) char r{}
+    lconv_int_p_sep_by_space(lconv-& p) char r{}
+    lconv_int_n_cs_precedes(lconv-& p) char r{}
+    lconv_int_n_sep_by_space(lconv-& p) char r{}
+    lconv_int_p_sign_posn(lconv-& p) char r{}
+    lconv_int_n_sign_posn(lconv-& p) char r{}
+}
+
+// IR 实现
+
+keep `
+%lconv = type {
+    ptr, ptr, ptr, ptr, ptr, ptr, ptr, ptr, ptr, ptr,
+    i8, i8, i8, i8, i8, i8, i8, i8, i8, i8, i8, i8, i8, i8
+}
+
+; char* 字段
+
+define ptr @lconv_decimal_point(ptr nocapture readonly %p) #0 {
+entry:
+  %q = getelementptr %lconv, ptr %p, i32 0, i32 0
+  %v = load ptr, ptr %q, align 8
+  ret ptr %v
+}
+
+define ptr @lconv_thousands_sep(ptr nocapture readonly %p) #0 {
+entry:
+  %q = getelementptr %lconv, ptr %p, i32 0, i32 1
+  %v = load ptr, ptr %q, align 8
+  ret ptr %v
+}
+
+define ptr @lconv_grouping(ptr nocapture readonly %p) #0 {
+entry:
+  %q = getelementptr %lconv, ptr %p, i32 0, i32 2
+  %v = load ptr, ptr %q, align 8
+  ret ptr %v
+}
+
+define ptr @lconv_int_curr_symbol(ptr nocapture readonly %p) #0 {
+entry:
+  %q = getelementptr %lconv, ptr %p, i32 0, i32 3
+  %v = load ptr, ptr %q, align 8
+  ret ptr %v
+}
+
+define ptr @lconv_currency_symbol(ptr nocapture readonly %p) #0 {
+entry:
+  %q = getelementptr %lconv, ptr %p, i32 0, i32 4
+  %v = load ptr, ptr %q, align 8
+  ret ptr %v
+}
+
+define ptr @lconv_mon_decimal_point(ptr nocapture readonly %p) #0 {
+entry:
+  %q = getelementptr %lconv, ptr %p, i32 0, i32 5
+  %v = load ptr, ptr %q, align 8
+  ret ptr %v
+}
+
+define ptr @lconv_mon_thousands_sep(ptr nocapture readonly %p) #0 {
+entry:
+  %q = getelementptr %lconv, ptr %p, i32 0, i32 6
+  %v = load ptr, ptr %q, align 8
+  ret ptr %v
+}
+
+define ptr @lconv_mon_grouping(ptr nocapture readonly %p) #0 {
+entry:
+  %q = getelementptr %lconv, ptr %p, i32 0, i32 7
+  %v = load ptr, ptr %q, align 8
+  ret ptr %v
+}
+
+define ptr @lconv_positive_sign(ptr nocapture readonly %p) #0 {
+entry:
+  %q = getelementptr %lconv, ptr %p, i32 0, i32 8
+  %v = load ptr, ptr %q, align 8
+  ret ptr %v
+}
+
+define ptr @lconv_negative_sign(ptr nocapture readonly %p) #0 {
+entry:
+  %q = getelementptr %lconv, ptr %p, i32 0, i32 9
+  %v = load ptr, ptr %q, align 8
+  ret ptr %v
+}
+
+; char 字段
+
+define i8 @lconv_int_frac_digits(ptr nocapture readonly %p) #0 {
+entry:
+  %q = getelementptr %lconv, ptr %p, i32 0, i32 10
+  %v = load i8, ptr %q, align 1
+  ret i8 %v
+}
+
+define i8 @lconv_frac_digits(ptr nocapture readonly %p) #0 {
+entry:
+  %q = getelementptr %lconv, ptr %p, i32 0, i32 11
+  %v = load i8, ptr %q, align 1
+  ret i8 %v
+}
+
+define i8 @lconv_p_cs_precedes(ptr nocapture readonly %p) #0 {
+entry:
+  %q = getelementptr %lconv, ptr %p, i32 0, i32 12
+  %v = load i8, ptr %q, align 1
+  ret i8 %v
+}
+
+define i8 @lconv_p_sep_by_space(ptr nocapture readonly %p) #0 {
+entry:
+  %q = getelementptr %lconv, ptr %p, i32 0, i32 13
+  %v = load i8, ptr %q, align 1
+  ret i8 %v
+}
+
+define i8 @lconv_n_cs_precedes(ptr nocapture readonly %p) #0 {
+entry:
+  %q = getelementptr %lconv, ptr %p, i32 0, i32 14
+  %v = load i8, ptr %q, align 1
+  ret i8 %v
+}
+
+define i8 @lconv_n_sep_by_space(ptr nocapture readonly %p) #0 {
+entry:
+  %q = getelementptr %lconv, ptr %p, i32 0, i32 15
+  %v = load i8, ptr %q, align 1
+  ret i8 %v
+}
+
+define i8 @lconv_p_sign_posn(ptr nocapture readonly %p) #0 {
+entry:
+  %q = getelementptr %lconv, ptr %p, i32 0, i32 16
+  %v = load i8, ptr %q, align 1
+  ret i8 %v
+}
+
+define i8 @lconv_n_sign_posn(ptr nocapture readonly %p) #0 {
+entry:
+  %q = getelementptr %lconv, ptr %p, i32 0, i32 17
+  %v = load i8, ptr %q, align 1
+  ret i8 %v
+}
+
+define i8 @lconv_int_p_cs_precedes(ptr nocapture readonly %p) #0 {
+entry:
+  %q = getelementptr %lconv, ptr %p, i32 0, i32 18
+  %v = load i8, ptr %q, align 1
+  ret i8 %v
+}
+
+define i8 @lconv_int_p_sep_by_space(ptr nocapture readonly %p) #0 {
+entry:
+  %q = getelementptr %lconv, ptr %p, i32 0, i32 19
+  %v = load i8, ptr %q, align 1
+  ret i8 %v
+}
+
+define i8 @lconv_int_n_cs_precedes(ptr nocapture readonly %p) #0 {
+entry:
+  %q = getelementptr %lconv, ptr %p, i32 0, i32 20
+  %v = load i8, ptr %q, align 1
+  ret i8 %v
+}
+
+define i8 @lconv_int_n_sep_by_space(ptr nocapture readonly %p) #0 {
+entry:
+  %q = getelementptr %lconv, ptr %p, i32 0, i32 21
+  %v = load i8, ptr %q, align 1
+  ret i8 %v
+}
+
+define i8 @lconv_int_p_sign_posn(ptr nocapture readonly %p) #0 {
+entry:
+  %q = getelementptr %lconv, ptr %p, i32 0, i32 22
+  %v = load i8, ptr %q, align 1
+  ret i8 %v
+}
+
+define i8 @lconv_int_n_sign_posn(ptr nocapture readonly %p) #0 {
+entry:
+  %q = getelementptr %lconv, ptr %p, i32 0, i32 23
+  %v = load i8, ptr %q, align 1
+  ret i8 %v
+}
+
+attributes #0 = { alwaysinline nounwind }
+`

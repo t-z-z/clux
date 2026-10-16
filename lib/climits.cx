@@ -1,0 +1,30 @@
+// climits.cx
+// C 整数特性，对应 <limits.h>
+// 目标平台：x86_64 Linux (LP64)
+
+exprdef CHAR_BIT = 8
+
+exprdef SCHAR_MIN = -128
+exprdef SCHAR_MAX = 127
+exprdef UCHAR_MAX = 255
+
+exprdef CHAR_MIN = -128
+exprdef CHAR_MAX = 127
+
+exprdef MB_LEN_MAX = 16
+
+exprdef SHRT_MIN = -32768
+exprdef SHRT_MAX = 32767
+exprdef USHRT_MAX = 65535
+
+exprdef INT_MIN = -2147483647 - 1
+exprdef INT_MAX = 2147483647
+exprdef UINT_MAX = 0xFFFFFFFF
+
+exprdef LONG_MIN = -9223372036854775807 - 1
+exprdef LONG_MAX = 9223372036854775807
+exprdef ULONG_MAX = 0xFFFFFFFFFFFFFFFF
+
+exprdef LLONG_MIN = -9223372036854775807 - 1
+exprdef LLONG_MAX = 9223372036854775807
+exprdef ULLONG_MAX = 0xFFFFFFFFFFFFFFFF

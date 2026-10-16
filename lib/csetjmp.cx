@@ -1,0 +1,55 @@
+// csetjmp.cx
+// C 非局部跳转，对应 <setjmp.h>
+// 目标平台：x86_64 Linux (glibc)
+//
+// 注意：C 的 setjmp / sigsetjmp 是宏，展开为 _setjmp / __sigsetjmp。
+// clux 无函数式宏，故直接暴露底层真实符号 _setjmp / __sigsetjmp。
+// 用户若要 C 风格 setjmp(env)，需自行用 _setjmp(env)。
+
+// C 函数
+
+extern "C" {
+    // setjmp(env) 的真实符号：不保存信号掩码
+    _setjmp(jmp_buf-& env) int r{}
+
+    // sigsetjmp(env, savemask) 的真实符号：savemask 决定是否保存信号掩码
+    __sigsetjmp(jmp_buf-& env int savemask) int r{}
+
+    // longjmp(env, val)：跳转回 setjmp 点，使其“返回” val
+    longjmp(jmp_buf-& env int val) void r{}
+
+    // _longjmp：不恢复信号掩码的 longjmp
+    _longjmp(jmp_buf-& env int val) void r{}
+
+    // siglongjmp：与 sigsetjmp 配对，按 savemask 决定是否恢复信号掩码
+    siglongjmp(jmp_buf-& env int val) void r{}
+}
+
+// LLVMIR 符号声明
+
+extern "LLVMIR" {
+    jmp_buf{}
+}
+
+// IR 实现
+
+keep `
+; x86_64 glibc:
+; struct __jmp_buf_tag {
+;     long __jmpbuf[8];        ; offset 0,   64 bytes
+;     int  __mask_was_saved;   ; offset 64,  4 bytes
+;                              ; offset 68,  4 bytes padding
+;     __sigset_t __saved_mask; ; offset 72,  128 bytes
+; };                           ; total 200 bytes
+;
+; typedef struct __jmp_buf_tag jmp_buf[1];
+;
+; jmp_buf 字段不应被用户代码直接读写，clux 侧仅作不透明类型使用，
+; 故不提供 getter，仅声明类型布局。
+
+%jmp_buf = type {
+    [8 x i64],
+    i32,
+    [128 x i8]
+}
+`
