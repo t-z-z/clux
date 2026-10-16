@@ -1,4 +1,0 @@
-main() {
-    const int N = 5
-    int[N] arr
-}

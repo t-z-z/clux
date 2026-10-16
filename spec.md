@@ -585,17 +585,22 @@ define i32 @add(i32 %a, i32 %b) {
 
 ## 十四、外部函数接口
 
-```cx
-extern "opengl32" {
-    glBegin(int mode) {}
-    glEnd() {}
-}
 extern "C" {
     printf(const char-* s ...) int r{}
 }
 ```
 
 `...` 用于extern中不定参的声明，仅用于extern。
+
+extern "C" 仅支持的类型：
+
+- 标量：int、short、long、float、double、char、bool 
+- 指针：T-*、void-*
+- 函数指针：$(...)....
+- 变参：...
+- 纯以上类型的结构体
+
+clux不承诺内存布局。
 
 ## 十五、编译与执行
 

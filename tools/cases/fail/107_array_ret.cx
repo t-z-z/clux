@@ -1,4 +1,0 @@
-make() int[3] r { r = [1 2 3] }
-main() {
-    int[3] a = make()
-}

@@ -41,6 +41,8 @@ private:
     };
     // define 替换的作用域层级
     std::vector<std::vector<DefineDecl>> defines_;
+    // 类体嵌套深度：extern 块只允许出现在顶层与命名空间里
+    size_t class_depth_ = 0;
     // define 替换缓冲；泛型闭合符裂解后的余部也排在这里
     std::deque<Token> pending_;
     bool use_define_ = true;
@@ -49,6 +51,10 @@ private:
 
     inline void add_error(const std::string &msg) {
         errors_.push_back(Diagnostic(DiagLevel::Error, msg, get_loc()));
+    }
+
+    inline void add_error_at(const Location &loc, const std::string &msg) {
+        errors_.push_back(Diagnostic(DiagLevel::Error, msg, loc));
     }
 
     inline void add_warning(const std::string &msg) {
@@ -148,10 +154,13 @@ private:
         size_t error;
         // 泛型嵌套深度随 token 流前进，回退 token 位置须一并回退
         size_t generic_depth;
+        // 类体嵌套深度同理，extern 的放置检查依赖它
+        size_t class_depth;
     };
     inline void restore(const Mark & m) {
         walk_pos_ = m.walk_pos;
         generic_depth_ = m.generic_depth;
+        class_depth_ = m.class_depth;
         if (cu_.nodes.size() > m.nodes) cu_.nodes.resize(m.nodes);
         if (errors_.size() > m.error) errors_.resize(m.error);
     }
@@ -168,7 +177,7 @@ private:
         return dq_[walk_pos_];
     }
     inline Mark point() const {
-        return Mark{walk_pos_, cu_.nodes.size(), errors_.size(), generic_depth_};
+        return Mark{walk_pos_, cu_.nodes.size(), errors_.size(), generic_depth_, class_depth_};
     }
     inline bool is_eof() {
         return curr().kind == TokenKind::Eof;

@@ -477,7 +477,9 @@ Class* Parser::parse_class_decl(SpecList &ml, Location &loc, std::vector<Type*> 
     }
     if (curr().kind != TokenKind::BraceL || is_slice_brace()) return nullptr;
     ml.merge(nml);
+    ++class_depth_;
     std::vector<Decl*> members = parse_members();
+    --class_depth_;
     Class* raw = cu_.add_node<Class>(
         loc, std::move(name), std::move(ml), std::move(members),
         std::move(injs), std::move(trailing)
@@ -686,30 +688,122 @@ Conversion* Parser::parse_conversion_decl(SpecList &ml, Location &loc) {
         std::move(params), std::move(returns), body);
 }
 
+// 库名最终以 "-l<name>" 交给链接器，故只放行常规库名字符：不含路径分隔符、
+// 冒号、空格与前导 '-'，避免库名变成链接器参数之外的任意目标
+static bool valid_extern_lib_name(std::string_view name) {
+    if (name.empty() || name.size() > 128) return false;
+    char c0 = name.front();
+    if (!((c0 >= 'a' && c0 <= 'z') || (c0 >= 'A' && c0 <= 'Z') || c0 == '_'))
+        return false;
+    for (char c : name) {
+        bool ok = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+                  (c >= '0' && c <= '9') || c == '_' || c == '+' ||
+                  c == '.' || c == '-';
+        if (!ok) return false;
+    }
+    return true;
+}
+
+// extern 里只有声明，没有定义体：描述定义的修饰（链接方式、存储、代码生成）
+// 写在这里要么被静默忽略，要么与"外部符号"自相矛盾（static 尤其容易让人以为
+// 拿到了内部链接的符号，实际仍然导出）。可见性与 const 是声明本身的属性，放行
+static bool extern_def_spec(const SpecList& specs, std::string& out) {
+    if (specs.has(SpecKind::Static)) { out = "static"; return true; }
+    if (specs.has(SpecKind::Inline)) { out = "inline"; return true; }
+    if (specs.has(SpecKind::Malloc)) { out = "malloc"; return true; }
+    return false;
+}
+
+// extern 块内只允许 C 意义上的声明：函数声明与外部变量。其余成员要么是 clux
+// 独有的构造（在外部符号空间里没有对应物），要么是容器（会让译者在发声明时
+// 漏掉它，生成残缺甚至非法的 IR），一律报错
+static const char* extern_member_kind_error(DeclKind kind) {
+    switch (kind) {
+        case DeclKind::Class:
+            return "'class' is not allowed inside an extern block: an external "
+                   "type has no definition here, declare it in clux";
+        case DeclKind::Enum:
+            return "'enum' is not allowed inside an extern block: an external "
+                   "enum has no definition here, declare it in clux";
+        case DeclKind::Namespace:
+            return "'namespace' is not allowed inside an extern block";
+        case DeclKind::Extern:
+            return "an extern block cannot be nested in another extern block";
+        case DeclKind::Operator:
+        case DeclKind::Conversion:
+        case DeclKind::SpecialMethod:
+            return "only function declarations are allowed inside an extern "
+                   "block: an operator, conversion or special method is a "
+                   "clux construct with no external counterpart";
+        case DeclKind::Keep:
+            return "'keep' is not allowed inside an extern block";
+        case DeclKind::TypeDef:
+        case DeclKind::ExprDef:
+            return "an alias is not allowed inside an extern block";
+        default: return nullptr;
+    }
+}
+
 Extern* Parser::parse_extern_decl(SpecList &ml, Location &loc) {
     if (curr().kind != TokenKind::Extern) return nullptr;
     advance();
-    
+
     if (curr().kind != TokenKind::StringLiteral) {
         add_error("expected library name string after 'extern'");
         return cu_.add_node<Extern>();
     }
+    Location lib_loc = get_loc();
     std::string_view lib_name = curr().get_val();
     advance();
-    
+
+    if (class_depth_ > 0) {
+        add_error_at(loc, "an extern block is not allowed inside a class: the "
+                          "symbols it declares live in the external library's "
+                          "namespace, not in the class");
+    }
+    std::string bad_spec;
+    if (extern_def_spec(ml, bad_spec)) {
+        add_error_at(loc, "'" + bad_spec + "' is not allowed on an extern "
+                          "block: it declares external symbols, there is no "
+                          "definition to attach the modifier to");
+    }
+    if (!valid_extern_lib_name(lib_name)) {
+        add_error_at(lib_loc, "invalid library name '" + std::string(lib_name) +
+                                  "': expected a name like m, z, stdc++, "
+                                  "opengl32");
+    }
+
     if (curr().kind != TokenKind::BraceL) {
         add_error("expected '{' after extern library name");
         return cu_.add_node<Extern>();
     }
-    
+
     std::vector<Decl*> members = parse_members();
+    // 块名即绑定目标：`c` / `C` 是 C 的语言标识，其余是待链接的库名。
+    // C 的调用约定推出来的约束只对前者生效
+    ExternLang lang = extern_lang_of(lib_name);
     for (Decl* m : members) {
         if (!m) continue;
-        if (m->kind == DeclKind::Func ||
-            m->kind == DeclKind::Operator ||
-            m->kind == DeclKind::Conversion) {
-            static_cast<Func*>(m)->is_extern_decl = true;
+        if (const char* why = extern_member_kind_error(m->kind)) {
+            add_error_at(m->loc, why);
+            continue;
         }
+        if (m->kind != DeclKind::Func && m->kind != DeclKind::VarList) continue;
+        if (extern_def_spec(m->specs, bad_spec)) {
+            add_error_at(m->loc, "'" + bad_spec + "' is not allowed on an "
+                                 "extern declaration: it declares an external "
+                                 "symbol, there is no definition to attach the "
+                                 "modifier to");
+        }
+        if (m->kind != DeclKind::Func) continue;
+        auto* f = static_cast<Func*>(m);
+        f->extern_lang = lang;
+        // extern 的符号名保持原样，泛型实例化出的多个实例会撞成同一个外部
+        // 符号，且实例被当普通函数发射而不是声明
+        if (!f->type_params.empty())
+            add_error_at(m->loc, "a generic function is not allowed inside an "
+                                 "extern block: every instance would claim "
+                                 "the same external symbol");
     }
     return cu_.add_node<Extern>(
         loc,

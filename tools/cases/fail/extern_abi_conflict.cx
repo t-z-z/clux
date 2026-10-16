@@ -1,0 +1,12 @@
+// 跨模块的 extern 声明：同一个外部符号在两边签名不同，
+// 会给同一个 C 符号发出两份互相冲突的 LLVM 声明，两边按不同约定调用
+import "extern_abi_conflict.inc"
+
+extern "C" {
+    shared_fn(int a int b) {}
+}
+
+main() int r {
+    shared_fn(1 2)
+    r = 0
+}

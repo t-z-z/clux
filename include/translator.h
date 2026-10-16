@@ -161,6 +161,8 @@ private:
     void emit_instr(const std::string& s);
     void emit_term(const std::string& s);
     void open_block(const std::string& label);
+    // 函数体内的 keep：保留代码原样落进当前基本块
+    void emit_keep(std::string_view code);
 
     void emit_func(Func& f, Class* cls);
     void emit_special(SpecialMethod& sm, Class* cls);

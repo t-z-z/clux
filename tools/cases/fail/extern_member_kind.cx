@@ -1,0 +1,10 @@
+// extern 的成员只有 C 意义上的声明：类/枚举/嵌套 extern/命名空间都没有外部
+// 对应物，译者在发声明时也会漏掉它们，生成残缺甚至非法的 IR
+extern "c" {
+    Div {
+        pub long q
+        pub long r
+    }
+    idiv(Div d) Div e {}
+}
+main() int r { r = 0 }

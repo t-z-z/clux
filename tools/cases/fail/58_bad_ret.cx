@@ -1,2 +1,0 @@
-foo() int r { r = "hello" }
-main() { }

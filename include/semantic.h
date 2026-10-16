@@ -312,8 +312,9 @@ class SemanticAnalyzer : public ASTVisitor {
     enum class InferSite : uint8_t { Other, Local, Param, Return, Field };
     std::unordered_map<const Type*, InferSite> infer_sites_;
     void mark_infer_site(Type* t, InferSite site);
-    // extern 块内的变量声明：存储在外部库，不受模块级变量限制
-    std::unordered_set<const Decl*> extern_vars_;
+    // extern 块内的变量声明：存储在外部库，不受模块级变量限制。
+    // 值是所属 extern 块的外部 ABI，决定施加哪一类约束
+    std::unordered_map<const Decl*, ExternLang> extern_vars_;
     void collect_extern_vars();
     // expand() 是否已执行，analyze_rest() 会兜底调用
     bool expanded_ = false;
@@ -366,6 +367,12 @@ public:
     void analyze_rest();
     // 顶层 main 签名检查（符号表全局化后调用一次）
     void check_main();
+    // 跨模块 extern ABI 一致性：extern 的符号名保持原样，同一外部符号在各模块
+    // 的声明必须同签名，否则会给它发出两份互相冲突的 LLVM 声明（IR 非法，
+    // 且调用点会走错调用约定）。诊断记在冲突的那份声明所属模块上，
+    // 须在各模块自身诊断都已发出之后调用一次
+    static void check_extern_abi_conflicts(
+        const std::vector<SemanticAnalyzer*>& modules);
 
     // 诊断信息访问
     bool has_error() const { return has_error_; }
@@ -506,6 +513,10 @@ private:
     std::vector<Class*> embed_order_;
     // 函数签名（形参/返回类型）里不允许出现所有权切片 T{}
     void check_no_slice(const std::vector<VarList*>& lists, const char* what);
+    // extern 函数声明的 ABI 约束：形参与返回值必须能与 C 侧对上
+    void check_extern_func(Func& f);
+    // extern 变量声明的约束：存储在外部库，类型须与外部符号的对象布局对上
+    void check_extern_var_list(VarList& vl, ExternLang lang);
     std::string build_callkey(const std::string& name, const std::vector<VarList*>& params);
     std::string build_callkey(const std::string& name, const std::vector<Expr*>& args);
     

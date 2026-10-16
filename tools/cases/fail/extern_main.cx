@@ -1,0 +1,4 @@
+// 入口点必须由 clux 自己给出：声明成外部符号会让整个程序没有 main
+extern "C" {
+    main() int r {}
+}

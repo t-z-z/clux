@@ -5,6 +5,7 @@
 #include "../include/flow_check.h"
 #include "../include/const_eval.h"
 
+#include <functional>
 #include <unordered_set>
 #include <unordered_map>
 
@@ -79,14 +80,26 @@ void SemanticAnalyzer::analyze_rest() {
     check_embedded_layout();
 }
 
-// extern 块内的变量由外部库定义，存储不在本模块，其类型不受模块级限制
+// extern 块内的变量由外部库定义，存储不在本模块，其类型不受模块级限制。
+// extern 可以写在命名空间里，收集要逐层下钻，否则命名空间内的 extern 变量
+// 会被当成模块级变量，走错模块级变量的检查分支
 void SemanticAnalyzer::collect_extern_vars() {
     extern_vars_.clear();
-    for (Decl* d : cu_.top_decls) {
-        if (!d || d->kind != DeclKind::Extern) continue;
-        for (Decl* m : static_cast<Extern*>(d)->members)
-            if (m && m->kind == DeclKind::VarList) extern_vars_.insert(m);
-    }
+    std::function<void(const std::vector<Decl*>&)> walk_containers =
+        [&](const std::vector<Decl*>& members) {
+            for (Decl* m : members) {
+                if (!m) continue;
+                if (m->kind == DeclKind::Extern) {
+                    auto* ext = static_cast<Extern*>(m);
+                    for (Decl* e : ext->members)
+                        if (e && e->kind == DeclKind::VarList)
+                            extern_vars_.emplace(e, ext->language());
+                } else if (m->kind == DeclKind::Namespace) {
+                    walk_containers(static_cast<Namespace*>(m)->members);
+                }
+            }
+        };
+    walk_containers(cu_.top_decls);
 }
 
 // 模块级变量按声明顺序编号：初值只能引用序号更小的变量
@@ -477,46 +490,68 @@ void SemanticAnalyzer::check_no_slice(const std::vector<VarList*>& lists,
     }
 }
 
-void SemanticAnalyzer::visit_func(Func& f) {
-    // 变参仅用于 extern 声明
-    if (f.is_variadic) {
-        if (!f.is_extern_decl)
-            error(f.loc, "'...' is only allowed in extern declarations");
-        for (VarList* vl : f.params) {
-            if (!vl) continue;
-            for (VarItem* vi : vl->vars) {
+// extern 声明分两类约束。一类与外部 ABI 无关：符号由外部定义，本模块只有
+// 声明，因此初值/默认实参无处附着，入口点也必须由 clux 自己给出。另一类来自
+// C 的调用约定（数组按地址传、返回值的寄存器/结构体通道），只对 extern "C"
+// 生效——库名块的调用约定尚未识别，不能拿 C 的规矩去套
+void SemanticAnalyzer::check_extern_func(Func& f) {
+    bool is_c = f.extern_lang == ExternLang::C;
+    // 入口点由 clux 自己给出，声明成外部符号会让整个程序没有 main
+    if (f.name == "main")
+        error(f.loc, "'main' cannot be declared inside an extern block: the "
+                     "program entry point must be defined in clux");
+    for (VarList* vl : f.params) {
+        if (!vl) continue;
+        for (VarItem* vi : vl->vars) {
+            if (!vi) continue;
+            // C 的形参表按值传不到数组：声明成数组与 C 侧的按地址传对不上
+            if (is_c) {
                 Type* ty = vi->type ? vi->type : vl->type;
                 if (ty && ty->is_array_type())
-                    error(vi->loc, "array parameter is not allowed in a variadic function");
+                    error(vi->loc, "array parameter is not allowed in an "
+                                   "extern \"C\" declaration: C passes arrays "
+                                   "by address, write a pointer");
             }
+            if (vi->init)
+                error(vi->loc, "default argument is not allowed in an extern "
+                               "declaration: only clux code fills it in");
         }
     }
+    if (f.returns.empty() || !f.returns.back()) return;
+    VarList* rl = f.returns.back();
+    Type* ty = nullptr;
+    Location ty_loc = rl->loc;
+    if (!rl->vars.empty()) {
+        VarItem* rv = rl->vars.back();
+        ty = rv->type ? rv->type : rl->type;
+        ty_loc = rv->loc;
+    } else {
+        ty = rl->type;
+    }
+    if (!ty) return;
+    // 聚合按值返回同样走寄存器通道：ABI 怎么收发由 LLVM 后端按目标平台
+    // 决定（译者的类值是存储指针，跨 ABI 边界时才按结构体收发）
+    bool ok = ty->get_primitive() || ty->get_pointer() ||
+              ty->get_reference() || ty->get_func_ptr() || as_class(ty);
+    if (ok) {
+        f.ret_via_reg = true;
+        return;
+    }
+    if (is_c)
+        error(ty_loc, "unsupported extern \"C\" return type: an external C "
+                      "function can only return a scalar, a pointer, a "
+                      "reference or a class passed by value");
+}
+
+void SemanticAnalyzer::visit_func(Func& f) {
+    // 变参仅用于 extern 声明
+    if (f.is_variadic && !f.is_extern_decl())
+        error(f.loc, "'...' is only allowed in extern declarations");
     check_no_slice(f.params, "parameter");
     check_no_slice(f.returns, "return type");
     // extern 内的函数声明不检查返回值是否被赋值；标量/指针返回按 C ABI 走寄存器
-    if (f.is_extern_decl) {
-        if (!f.returns.empty() && f.returns.back()) {
-            VarList* rl = f.returns.back();
-            Type* ty = nullptr;
-            Location ty_loc = rl->loc;
-            if (!rl->vars.empty()) {
-                VarItem* rv = rl->vars.back();
-                ty = rv->type ? rv->type : rl->type;
-                ty_loc = rv->loc;
-            } else {
-                ty = rl->type;
-            }
-            if (ty) {
-                // 聚合按值返回同样走寄存器通道：ABI 怎么收发由 LLVM 后端按目标平台
-                // 决定（译者的类值是存储指针，跨 ABI 边界时才按结构体收发）
-                bool ok = ty->get_primitive() || ty->get_pointer() ||
-                          ty->get_reference() || ty->get_func_ptr() ||
-                          as_class(ty);
-                if (ok) f.ret_via_reg = true;
-                // 标记，有待修复
-                else error(ty_loc, "unsupported extern return type");
-            }
-        }
+    if (f.is_extern_decl()) {
+        check_extern_func(f);
         return;
     }
     // 引用返回：返回的是被引用对象的地址。返回变量只是把该地址带出去的
@@ -782,10 +817,51 @@ void SemanticAnalyzer::report_infer_arrays() {
     infer_sites_.clear();
 }
 
+// extern 变量的存储在外部库，本模块只发一条 external global 声明，
+// 故初值无处附着。类型约束则来自 C 的对象布局：clux 的类值是存储指针，
+// 把类类型的 extern 变量按指针发出去，读写的其实是另一块内存——这类约束
+// 只对 extern "C" 生效，库名块的布局尚未识别
+void SemanticAnalyzer::check_extern_var_list(VarList& vl, ExternLang lang) {
+    bool is_c = lang == ExternLang::C;
+    for (VarItem* var : vl.vars) {
+        if (!var) continue;
+        if (var->init)
+            error(var->loc, "an extern variable cannot have an initializer: its "
+                            "storage belongs to the external library");
+        if (!is_c) continue;
+        Type* vt = var->type ? var->type : vl.type;
+        if (!vt) continue;
+        if (vt->is_inferred()) {
+            error(var->loc, "the type of an extern \"C\" variable cannot be "
+                            "inferred: the C layout is fixed, write it out");
+        } else if (as_class(vt)) {
+            error(var->loc, "an extern \"C\" variable cannot be a class: the "
+                            "value of a class is a pointer to its storage, "
+                            "while the external symbol is the object itself, "
+                            "use a pointer");
+        } else if (is_slice_type(vt)) {
+            error(var->loc, "an extern \"C\" variable cannot be an array slice: "
+                            "its length is owned by the local binding, not by "
+                            "the external symbol");
+        } else if (!(vt->is_primitive() || vt->is_pointer() ||
+                     vt->is_func_ptr() || vt->is_array_type())) {
+            // 外部符号是一个存储位置，只有布局与 C 侧对象一一对应的类型能对上
+            error(var->loc, "unsupported type for an extern \"C\" variable: "
+                            "only scalars, pointers, function pointers and "
+                            "fixed-length arrays match an external storage "
+                            "location");
+        }
+    }
+}
+
 void SemanticAnalyzer::visit_var_list(VarList& vl) {
     // 模块级变量的存储是 LLVM 全局量，其类型必须是常量可表达的
-    bool module_level = !current_params && !current_members &&
-                        !extern_vars_.count(&vl);
+    auto ext = extern_vars_.find(&vl);
+    bool in_extern = ext != extern_vars_.end();
+    bool module_level = !current_params && !current_members && !in_extern;
+    if (in_extern) {
+        check_extern_var_list(vl, ext->second);
+    }
     if (module_level) {
         // 初值在 main 入口按声明顺序求值，引用后方声明的变量只会读到零值
         for (VarItem* var : vl.vars) {
@@ -2096,19 +2172,6 @@ void SemanticAnalyzer::visit_expr_generic(Expr::GenericType& g) {
     current_expr->type = base ? base->type : nullptr;
 }
 
-
-// flag / toflag 的 label 检查：遵循 C++ 的跳转规则
-// - 目标 label 必须在本函数体内定义
-// - 不得跳入某个作用域内部（即目标所在作用域必须是跳转点作用域的祖先或自身）
-// - 不得跳入循环内部
-
-
-
-
-
-
-
-
 // main 的合法形式：参数为空或 (int, char**)，返回为空或 int
 void SemanticAnalyzer::check_main() {
     Scope* root = symbols_.root();
@@ -2144,6 +2207,81 @@ void SemanticAnalyzer::check_main() {
         || (returns.size() == 1 && type_to_key(*returns.back()) == "i32");
     if (!returns_ok) {
         error(f->loc, "invalid 'main' signature: return must be empty or 'int'");
+    }
+}
+
+// extern 函数声明的 ABI 签名键：只看类型与是否变参，形参名与修饰不进 ABIs
+static std::string extern_sig_key(SemanticAnalyzer* sa, Func& f) {
+    std::string k = f.is_variadic ? "V(" : "F(";
+    Type* ret = nullptr;
+    if (!f.returns.empty() && f.returns.back()) {
+        VarList* rl = f.returns.back();
+        VarItem* rv = rl->vars.empty() ? nullptr : rl->vars.back();
+        ret = rv ? (rv->type ? rv->type : rl->type) : rl->type;
+    }
+    k += ret ? sa->type_to_key(*ret) : "void";
+    for (VarList* vl : f.params) {
+        if (!vl) continue;
+        for (VarItem* vi : vl->vars) {
+            if (!vi) continue;
+            Type* pt = vi->type ? vi->type : vl->type;
+            k += ",";
+            k += pt ? sa->type_to_key(*pt) : "?";
+        }
+    }
+    k += ")";
+    return k;
+}
+
+void SemanticAnalyzer::check_extern_abi_conflicts(
+        const std::vector<SemanticAnalyzer*>& mods) {
+    struct Seen {
+        SemanticAnalyzer* mod;
+        Func* fn;
+        std::string name;
+        std::string key;
+    };
+    std::unordered_map<std::string, Seen> first;
+    std::vector<std::pair<Seen, Seen>> conflicts;
+
+    for (SemanticAnalyzer* sa : mods) {
+        if (!sa) continue;
+        // extern 可以写在命名空间里，逐层下钻；按声明顺序遍历，诊断顺序稳定
+        std::function<void(const std::vector<Decl*>&)> walk_containers =
+            [&](const std::vector<Decl*>& members) {
+                for (Decl* d : members) {
+                    if (!d) continue;
+                    if (d->kind == DeclKind::Namespace) {
+                        walk_containers(static_cast<Namespace*>(d)->members);
+                        continue;
+                    }
+                    if (d->kind != DeclKind::Extern) continue;
+                    for (Decl* m : static_cast<Extern*>(d)->members) {
+                        if (!m || m->kind != DeclKind::Func) continue;
+                        auto* f = static_cast<Func*>(m);
+                        std::string name(f->name);
+                        std::string key = extern_sig_key(sa, *f);
+                        auto it = first.find(name);
+                        if (it == first.end()) {
+                            first.emplace(name, Seen{sa, f, name, key});
+                        } else if (it->second.key != key) {
+                            conflicts.emplace_back(it->second,
+                                                  Seen{sa, f, name, key});
+                        }
+                    }
+                }
+            };
+        walk_containers(sa->cu_.top_decls);
+    }
+
+    for (const auto& [prev, cur] : conflicts) {
+        cur.mod->error(cur.fn->loc,
+                       "conflicting declarations of the external symbol '" +
+                       cur.name + "': the signature differs from the one "
+                       "declared at " + std::string(prev.fn->loc.filename) +
+                       ":" + std::to_string(prev.fn->loc.lin) +
+                       ", so the two modules would call it by different "
+                       "conventions");
     }
 }
 

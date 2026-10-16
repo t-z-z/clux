@@ -86,6 +86,22 @@ bool expr_is_unsigned(Type* t) {
             return false;
     }
 }
+
+// 行首是块终结指令的助记符：keep 保留的代码由用户书写，
+// 只能从末行判断本块是否已被终结
+bool is_terminator_mnemonic(std::string_view line) {
+    static const char* kTerms[] = {
+        "ret", "br", "switch", "indirectbr", "invoke", "callbr",
+        "resume", "catchswitch", "catchret", "cleanupret", "unreachable"
+    };
+    for (const char* t : kTerms) {
+        size_t n = std::strlen(t);
+        if (line.size() <= n || line.compare(0, n, t) != 0) continue;
+        char c = line[n];
+        if (c == ' ' || c == '\t') return true;
+    }
+    return false;
+}
 } // namespace
 
 
@@ -569,6 +585,25 @@ void Translator::open_block(const std::string& label) {
     ctx_.term = false;
 }
 
+// 函数体内的 keep：保留的代码落在当前基本块里，而非模块头部。
+// 反引号包裹产生的首尾换行不属于代码本身，剥掉避免多出空行。
+// 末行是块终结指令时本块就此结束，翻译器随后不再发射任何指令，
+// 否则会在终结指令之后再追加指令，产出非法 IR
+void Translator::emit_keep(std::string_view code) {
+    while (!code.empty() && (code.front() == '\n' || code.front() == '\r'))
+        code.remove_prefix(1);
+    while (!code.empty() && (code.back() == '\n' || code.back() == '\r'))
+        code.remove_suffix(1);
+    if (code.empty()) return;
+    ir_.emit(code);
+    size_t nl = code.rfind('\n');
+    std::string_view last =
+        (nl == std::string_view::npos) ? code : code.substr(nl + 1);
+    while (!last.empty() && (last.front() == ' ' || last.front() == '\t'))
+        last.remove_prefix(1);
+    if (is_terminator_mnemonic(last)) ctx_.term = true;
+}
+
 // DROP 清理
 
 void Translator::emit_drops_to(int depth) {
@@ -1025,7 +1060,7 @@ void Translator::emit_stmt(Stmt* s) {
         } else if constexpr (std::is_same_v<T, Stmt::Goto>) {
             emit_goto(v);
         } else if constexpr (std::is_same_v<T, Stmt::Keep>) {
-            ir_.emit_type(std::string(v.tokens));
+            emit_keep(v.tokens);
         } else if constexpr (std::is_same_v<T, Stmt::Asm>) {
             std::string esc;
             for (char c : v.code) {
@@ -3118,8 +3153,7 @@ std::string Translator::eval_ctor_call(Expr* e, Expr::Call* c, SpecialMethod* sm
 }
 
 // 普通函数/运算符调用
-std::string Translator::eval_plain_call(Expr* e, Expr::Call* c, Func* fn) {
-    (void)e;
+std::string Translator::eval_plain_call(Expr*, Expr::Call* c, Func* fn) {
     std::string fname = mangler_.of(fn);
     std::string ret_t = "void";
     VarItem* ret_var = nullptr;
@@ -3158,7 +3192,7 @@ std::string Translator::eval_plain_call(Expr* e, Expr::Call* c, Func* fn) {
     Class* ret_cls = (!via_reg && ret_var) ? as_class(ret_expr) : nullptr;
     // extern 按值返回聚合：返回值按 C ABI 进寄存器/栈，收到后落进调用方的存储，
     // 再把存储指针当类值交出去。clux 自身函数的类返回走 sret，不走这条路
-    Class* extern_ret_cls = (via_reg && ret_var && fn->is_extern_decl)
+    Class* extern_ret_cls = (via_reg && ret_var && fn->is_extern_decl())
         ? as_class(ret_expr) : nullptr;
     std::string sret_slot;
     if (ret_var && !via_reg) {
@@ -3185,7 +3219,7 @@ std::string Translator::eval_plain_call(Expr* e, Expr::Call* c, Func* fn) {
         if (!vl) continue;
         for (VarItem* vi : vl->vars) {
             Type* pt = vi->type ? vi->type : vl->type;
-            Class* pc = (fn->is_extern_decl && pt) ? as_class(pt) : nullptr;
+            Class* pc = (fn->is_extern_decl() && pt) ? as_class(pt) : nullptr;
             param_ir.push_back(pc ? classes_[pc].llvm_name
                                   : (pt ? object_type(pt) : "i32"));
             param_ref.push_back(is_ref_item(vi, nullptr));

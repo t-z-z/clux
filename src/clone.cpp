@@ -170,7 +170,7 @@ Func* CompUnit::clone_func(Func* f) {
     for (auto* r : f->returns) returns.push_back(clone_varlist(r));
     Func* cloned = add_node<Func>(f->loc, f->name, f->specs,
         std::move(params), std::move(returns), clone_stmt(f->body));
-    cloned->is_extern_decl = f->is_extern_decl;
+    cloned->extern_lang = f->extern_lang;
     cloned->is_variadic = f->is_variadic;
     cloned->ret_via_reg = f->ret_via_reg;
     cloned->type_params = clone_type_params(f->type_params);

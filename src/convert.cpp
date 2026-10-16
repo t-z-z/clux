@@ -3,6 +3,40 @@
 
 namespace cx {
 
+// 函数引用 → 函数指针走的是"只按标量发"的调用约定。extern "C" 里有两种函数
+// 的实际约定与之不同，经指针调用就会走样，故一律不取地址。返回 nullptr 表示
+// 取地址没问题，否则返回不可取的具体原因，供诊断直接使用。库名块的外部约定
+// 尚未识别，不在此列
+static const char* func_ptr_abi_block(Func* f) {
+    if (!f || f->extern_lang != ExternLang::C) return nullptr;
+    // 变参调用要把已用浮点寄存器的个数写进 %al，函数指针类型里没有 '...'，
+    // 经指针调用这一信息丢失，浮点变参会走错通道
+    if (f->is_variadic)
+        return "a variadic function cannot be used as a function pointer: the "
+               "number of float registers already used is passed only at a "
+               "direct call site";
+    // 跨 C 的 ABI 按值收发聚合的函数收发的是结构体本身
+    for (VarList* vl : f->params) {
+        if (!vl) continue;
+        for (VarItem* vi : vl->vars) {
+            if (!vi) continue;
+            Type* pt = vi->type ? vi->type : vl->type;
+            if (pt && as_class(pt))
+                return "a function taking an aggregate by value across the "
+                       "ABI boundary cannot be used as a function pointer";
+        }
+    }
+    if (!f->returns.empty() && f->returns.back()) {
+        VarList* rl = f->returns.back();
+        VarItem* rv = rl->vars.empty() ? nullptr : rl->vars.back();
+        Type* rt = rv ? (rv->type ? rv->type : rl->type) : rl->type;
+        if (rt && as_class(rt))
+            return "a function returning an aggregate by value across the "
+                   "ABI boundary cannot be used as a function pointer";
+    }
+    return nullptr;
+}
+
 
 // 类型转换判定与检查集中于此：本组逻辑分支密集、最易出错，
 // 单独成文件以便评审与测试。
@@ -153,20 +187,16 @@ bool SemanticAnalyzer::can_convert_to(Type* src, Type* dst) {
                 bool ok = true;
                 for (size_t i = 0; i < params.size(); ++i)
                     if (!is_same_type(params[i], fp->params[i])) { ok = false; break; }
-                // extern 按值收聚合的形参也走另一套 ABI，同样不能取地址
-                if (ok && f->is_extern_decl)
-                    for (Type* p : params)
-                        if (as_class(p)) { ok = false; break; }
+                if (ok && func_ptr_abi_block(f)) ok = false;
                 if (ok) {
                     Type* ret = typeVoid;
                     if (!f->returns.empty() && f->returns.back() &&
                         f->returns.back()->type)
                         ret = f->returns.back()->type;
                     // 函数指针 ABI：void 无返回，否则寄存器返回，
-                    // 故仅 void 返回或标量寄存器返回的函数可 decay；
-                    // 按值返回聚合的函数走另一套 ABI，不能取地址
+                    // 故仅 void 返回或标量寄存器返回的函数可 decay
                     if (is_same_type(ret, fp->return_type) &&
-                        (is_void_type(ret) || (f->ret_via_reg && !as_class(ret))))
+                        (is_void_type(ret) || f->ret_via_reg))
                         return true;
                 }
             }
@@ -255,11 +285,18 @@ void SemanticAnalyzer::check_param_array_len(Expr* arg, Type* at, Type* pt,
     }
 }
 
+// 外部符号的 ABI 与函数指针调用约定对不上时给出具体原因，比"类型不兼容"有用
 bool SemanticAnalyzer::check_conversion(Type* src, Type* dst, const std::string& context,
                                         const Location& loc, bool explicit_cast) {
     if (!src || !dst) return false;
     if (is_same_type(src, dst)) return true;
     if (has_conversion(src, dst)) return true;
+    if (src->is_func_ref() && dst->is_func_ptr()) {
+        if (const char* why = func_ptr_abi_block(src->get_func_ref()->func)) {
+            error(loc, std::string(why) + ", in " + context);
+            return false;
+        }
+    }
     // 切片长度运行期才知道，不能当定长数组用；反向的数组 → 切片是允许的
     if (src->is_array_type() && dst->is_array_type() &&
         is_slice_type(src) && !is_slice_type(dst)) {

@@ -565,14 +565,25 @@ struct TypeParam : ASTNode {
         : ASTNode(loc), name(n) {}
 };
 
+// extern 块绑定的外部 ABI。块名本身就是绑定目标：`"c"` / `"C"` 是 C 的语言
+// 标识（C 运行时由链接器默认带上，不生成 -l），其余名字是待链接的库名。
+// clux 目前只实现 C 的调用约定：库名块仍按 C 路径翻译，但不施加 C 的约束，
+// 因为它们的调用约定尚未识别
+enum class ExternLang : uint8_t { None, C, Unknown };
+
+inline ExternLang extern_lang_of(std::string_view name) {
+    return (name == "c" || name == "C") ? ExternLang::C : ExternLang::Unknown;
+}
+
 struct Func : Decl {
     std::vector<VarList*> params;   // 圆括号(int a, $bool cond)
     std::vector<VarList*> returns;  // 返回值声明
     std::vector<TypeParam*> type_params;  // 泛型形参 `foo-<T>`，非空即泛型声明
     Stmt* body = nullptr;           // 函数体
-    bool is_extern_decl = false;    // extern 内的声明，不检查返回值赋值
+    ExternLang extern_lang = ExternLang::None;  // 非 None 即 extern 内的声明
     bool is_variadic = false;        // 形参表末尾有 '...'（仅 extern 支持）
     bool ret_via_reg = false;       // 标量返回且路径末尾恰好一次赋值：用寄存器 ret 而非 sret
+    bool is_extern_decl() const { return extern_lang != ExternLang::None; }
     Func() = default;
     Func(const Location& loc,
         std::string_view name,
@@ -633,6 +644,8 @@ struct Extern : Cont {
            SpecList ml,
            std::vector<Decl*> m)
         : Cont(loc, name, DeclKind::Extern, std::move(ml), std::move(m)) {}
+    // 块名即绑定目标，由名字识别出的外部 ABI
+    ExternLang language() const { return extern_lang_of(name); }
 };
 
 struct Class : Cont {

@@ -1,6 +1,0 @@
-// 同上，字符串切片也不行
-char[] greeting = "hello"
-main() int r {
-    r = 0
-    return
-}
