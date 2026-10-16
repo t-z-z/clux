@@ -1,0 +1,9 @@
+// extern "LLVMIR" 里的类只是 clux 侧的类型名，译者为整个块不发任何东西：
+// 方法体是 clux 代码，永远不会被发射出去，写在这里等于凭空消失。
+extern "LLVMIR" {
+    Node {
+        pub int v
+        next(Node-* n) {}
+    }
+}
+main() int r { r = 0 }

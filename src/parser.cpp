@@ -716,7 +716,8 @@ static bool extern_def_spec(const SpecList& specs, std::string& out) {
 
 // extern 块内只允许 C 意义上的声明：函数声明与外部变量。其余成员要么是 clux
 // 独有的构造（在外部符号空间里没有对应物），要么是容器（会让译者在发声明时
-// 漏掉它，生成残缺甚至非法的 IR），一律报错
+// 漏掉它，生成残缺甚至非法的 IR），一律报错。extern "LLVMIR" 另开一条路：
+// 那里的一切实现都来自 keep`` 的 IR，类只是 clux 侧的类型名，不发射任何声明
 static const char* extern_member_kind_error(DeclKind kind) {
     switch (kind) {
         case DeclKind::Class:
@@ -779,11 +780,24 @@ Extern* Parser::parse_extern_decl(SpecList &ml, Location &loc) {
     }
 
     std::vector<Decl*> members = parse_members();
-    // 块名即绑定目标：`c` / `C` 是 C 的语言标识，其余是待链接的库名。
-    // C 的调用约定推出来的约束只对前者生效
+    // 块名即绑定目标：`c` / `C` 是 C 的语言标识，`LLVMIR` 的符号实现由 keep``
+    // 提供，其余是待链接的库名。C 的调用约定推出来的约束只对前者生效
     ExternLang lang = extern_lang_of(lib_name);
     for (Decl* m : members) {
         if (!m) continue;
+        // extern "LLVMIR" 里类只是类型名：布局与实现都在 keep`` 的 IR 中，
+        // 译者为它不发任何东西，因此允许出现在块内。类体内只能有字段——
+        // 方法体是 clux 代码，却不会被发射出去
+        if (m->kind == DeclKind::Class && lang == ExternLang::LLVMIR) {
+            for (Decl* cm : static_cast<Class*>(m)->members) {
+                if (!cm || cm->kind == DeclKind::VarList) continue;
+                add_error_at(cm->loc, "only field declarations are allowed in "
+                                      "a class inside an extern \"LLVMIR\" "
+                                      "block: its body is clux code, which is "
+                                      "never emitted there");
+            }
+            continue;
+        }
         if (const char* why = extern_member_kind_error(m->kind)) {
             add_error_at(m->loc, why);
             continue;

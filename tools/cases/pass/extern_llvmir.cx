@@ -1,0 +1,28 @@
+// extern "LLVMIR"：符号只在 clux 侧有声明，声明与实现全部由 keep`` 的 IR 给出，
+// 译者为它们既不发 declare 也不发 external global，也不生成 -l。
+// 类同理：块内的类只是 clux 侧的类型名，%Box 这个结构体由 keep`` 定义。
+extern "LLVMIR" {
+    Box { pub long v }
+    Box box
+    box_new(long v) Box r {}
+    box_get(Box-* b) long r {}
+}
+
+keep`
+%Box = type { i64 }
+@box = global ptr null
+@box_store = global %Box zeroinitializer
+define ptr @box_new(i64 %v) {
+    store i64 %v, ptr @box_store
+    ret ptr @box_store
+}
+define i64 @box_get(ptr %b) {
+    %v = load i64, ptr %b
+    ret i64 %v
+}
+`
+
+main() int r {
+    box = box_new(20)
+    r = box_get(box-&) + 1
+}

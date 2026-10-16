@@ -24,6 +24,8 @@ struct TranslatorClass {
     // static 字段：存储在模块级全局变量，不进实例 layout。
     // 其 LLVM 符号名由 Mangler::field_of 统一分配
     std::vector<TranslatorField> static_fields;
+    // extern "LLVMIR" 块内的类：布局由 keep`` 的 IR 给出，译者为它发类型
+    bool from_keep_ir = false;
 };
 
 // 跨模块共享的翻译期表。AST 里的 Decl* 在各模块之间是同一批对象，
@@ -85,11 +87,12 @@ private:
         std::string sym;      // LLVM 全局符号名（不含 @）
         std::string ir_type;
         bool is_extern = false;   // extern 声明：由外部库定义，此处只声明不初始化
+        bool skip_emit = false;   // extern "LLVMIR"：实现由 keep`` 给出，两样都不发
     };
     // 顶层 / 命名空间 / extern 内的 VarList：模块级变量
     std::vector<GlobalVar> globals_;
     void collect_globals_decl(Decl* d, const std::string& prefix,
-                              bool is_extern = false);
+                              ExternLang lang = ExternLang::None);
 
     struct LoopCtx { std::string break_label, continue_label; int scope_depth; };
     struct CleanupEntry {
@@ -138,7 +141,7 @@ private:
     int aux_fn_counter_ = 0;
 
     void collect_classes();
-    void collect_classes_decl(Decl* d);
+    void collect_classes_decl(Decl* d, bool from_keep_ir = false);
     // 每个类的内联类字段所指向的类
     std::unordered_map<Class*, std::vector<Class*>> inline_deps() const;
     // 按内联字段依赖拓扑发射全部类结构体类型

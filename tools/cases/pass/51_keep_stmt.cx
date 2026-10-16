@@ -1,7 +1,8 @@
-main() {
-    keep `
+
+keep `
     define i32 @foo() {
-        ret i32 0
-    }
-    `
+    ret i32 0
+}
+`
+main() {
 }

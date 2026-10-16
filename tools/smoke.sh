@@ -28,6 +28,7 @@ declare -A EXPECT=(
     [ptr_to_array]=52
     [148_malloc_var_assign]=5
     [varargs_float]=15
+    [extern_llvmir]=25
 )
 
 tmp=$(mktemp -d)

@@ -1,0 +1,16 @@
+// extern "C" 仅支持的类型约束（标量/指针/函数指针/变参、数组形参按地址传、
+// 外部变量不能是类……）来自 C 的调用约定。extern "LLVMIR" 的调用约定写在
+// keep`` 的手写 IR 里，clux 无从施加，故一律放行。
+Pair {
+    pub long a
+    pub long b
+}
+
+extern "LLVMIR" {
+    legacy(int tag char[4] s) {}
+    variadic(int a ...) {}
+    Pair boxed
+    apply($(int) int f, int x) int r {}
+}
+
+main() int r { r = 0 }
