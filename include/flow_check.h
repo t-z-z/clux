@@ -23,7 +23,7 @@ public:
                 ErrorFn error)
         : var_symbols_(var_symbols), error_(std::move(error)) {}
 
-    // flag / toflag 的 label 检查：遵循 C++ 的跳转规则
+    // label / goto 的 label 检查：遵循 C++ 的跳转规则
     void check_jumps(Stmt* body);
     // 变量初始化检查：不得读取未赋值过的变量
     void check_initialization(Stmt* body, const std::vector<VarList*>& params,

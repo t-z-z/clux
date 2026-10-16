@@ -56,8 +56,8 @@ namespace cx{
     X(Extern, "extern") \
     X(Asm, "asm") \
     X(Keep, "keep") \
-    X(Flag, "flag") \
-    X(ToFlag, "toflag") \
+    X(Label, "label") \
+    X(Goto, "goto") \
     X(Spec, "spec") \
     X(Operator, "operator") \
     X(Drop, "DROP") \

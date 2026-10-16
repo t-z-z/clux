@@ -186,7 +186,7 @@ private:
     void emit_return(Stmt::Return& r);
     void emit_break(Stmt::Break& b);
     void emit_continue(Stmt::Continue& c);
-    void emit_flag(Stmt::Flag& f);
+    void emit_label(Stmt::Label& f);
     void emit_goto(Stmt::Goto& g);
 
     std::string eval(Expr* e);

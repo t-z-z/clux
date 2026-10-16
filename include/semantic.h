@@ -425,7 +425,7 @@ public:
     void visit_stmt_return(Stmt::Return&) override;
     void visit_stmt_break(Stmt::Break&) override;
     void visit_stmt_continue(Stmt::Continue&) override;
-    void visit_stmt_flag(Stmt::Flag&) override;
+    void visit_stmt_label(Stmt::Label&) override;
     void visit_stmt_goto(Stmt::Goto&) override;
     void visit_stmt_asm(Stmt::Asm&) override;
     void visit_stmt_keep(Stmt::Keep&) override;

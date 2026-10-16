@@ -213,7 +213,7 @@ private:
     Stmt* parse_return_stmt();
     Stmt* parse_break_stmt();
     Stmt* parse_continue_stmt();
-    Stmt* parse_flag_stmt();
+    Stmt* parse_label_stmt();
     Stmt* parse_goto_stmt();
     Stmt* parse_asm_stmt();
     Stmt* parse_keep_stmt();
