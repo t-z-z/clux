@@ -1,6 +1,8 @@
 // cstdio.cx
 // C 标准输入输出的 clux 绑定，对应 <stdio.h>
 
+import cstddef    // size_t
+
 exprdef EOF = -1
 exprdef SEEK_SET = 0
 exprdef SEEK_CUR = 1

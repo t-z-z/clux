@@ -172,6 +172,23 @@ FrontendResult run_frontend(StringPool& pool, const std::string& source,
         for (size_t i = before; i < ds.size(); ++i) emit_diagnostic(ds[i]);
         if (ds.size() > before) ok = false;
     }
+
+    // extern ABI 一致性跨模块比对，在各模块自身诊断都发完之后追加
+    {
+        std::vector<SemanticAnalyzer*> sems;
+        std::vector<size_t> diag_before;
+        for (auto& m : modules) {
+            sems.push_back(m->sem.get());
+            diag_before.push_back(m->sem->diagnostics().size());
+        }
+        SemanticAnalyzer::check_extern_abi_conflicts(sems);
+        for (size_t i = 0; i < modules.size(); ++i) {
+            const std::vector<Diagnostic>& ds = modules[i]->sem->diagnostics();
+            for (size_t k = diag_before[i]; k < ds.size(); ++k)
+                emit_diagnostic(ds[k]);
+            if (ds.size() > diag_before[i]) ok = false;
+        }
+    }
     result.ok = ok;
     result.modules = std::move(modules);
     return result;
@@ -183,20 +200,30 @@ bool check(const std::string& source, const std::string& filename,
     return run_frontend(pool, source, filename, lib_dir).ok;
 }
 
-// 收集 extern 块声明的库名。`extern "c"` 表示 C 运行时，
-// 由 clang++ 默认链接，不生成 -l
+// 收集 extern 块声明的库名。`extern "c"` 是 C 的语言标识，表示 C 运行时，
+// 由 clang++ 默认链接，不生成 -l；其余名字是库名。extern 可以写在命名空间里，
+// 须逐层下钻，否则库名会被静默丢掉，链接时以"符号未定义"的形式失败
+static void collect_extern_libs_decl(const std::vector<Decl*>& members,
+                                     std::vector<std::string>& out) {
+    for (Decl* d : members) {
+        if (!d) continue;
+        if (d->kind == DeclKind::Extern) {
+            if (static_cast<Extern*>(d)->language() == ExternLang::C) continue;
+            std::string_view name = d->name;
+            if (std::find(out.begin(), out.end(), name) == out.end())
+                out.emplace_back(name);
+        } else if (d->kind == DeclKind::Namespace) {
+            collect_extern_libs_decl(static_cast<Namespace*>(d)->members, out);
+        }
+    }
+}
+
 void collect_extern_libs(
         const std::vector<std::unique_ptr<Module>>& modules,
         std::vector<std::string>& out) {
     for (const auto& mp : modules) {
         if (!mp || !mp->cu) continue;
-        for (Decl* d : mp->cu->top_decls) {
-            if (!d || d->kind != DeclKind::Extern) continue;
-            std::string_view name = d->name;
-            if (name == "c" || name == "C") continue;
-            if (std::find(out.begin(), out.end(), name) == out.end())
-                out.emplace_back(name);
-        }
+        collect_extern_libs_decl(mp->cu->top_decls, out);
     }
 }
 

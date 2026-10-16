@@ -1,0 +1,13 @@
+// clux 的类值是存储指针，类类型的 extern 变量会按指针发出去，
+// 读写的并不是外部符号指向的那块内存
+Pair {
+    pub long a
+    pub long b
+}
+extern "C" {
+    Pair gPair
+}
+main() int r {
+    gPair.a = 1
+    r = 0
+}

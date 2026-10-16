@@ -1,6 +1,0 @@
-// 尾随代码块：语法可读，但当前不产生节点，报不支持
-extern "c" { putchar(int c) int r {} }
-with(int x) { putchar(x) }
-main() {
-    with(66)--{ putchar(67) }
-}

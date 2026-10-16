@@ -1,7 +1,7 @@
 // 枚举初值必须是编译期整数常量
-f() int r = 1
+int g = 1
 enum E {
-    A = f()
+    A = g
 }
 main() {
 }

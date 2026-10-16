@@ -1,0 +1,7 @@
+// extern 里只有声明：static 会让人以为拿到了内部链接的符号，实际仍然导出，
+// inline / malloc 描述的是定义体，在这里无处附着
+extern "c" {
+    spec static:
+    g() {}
+}
+main() int r { r = 0 }

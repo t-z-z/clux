@@ -1,0 +1,9 @@
+// C 不按值传数组：形参一律按地址传，写成数组会把数组当结构体按值发出去
+extern "c" {
+    arr(char[3] s) {}
+}
+main() int r {
+    char[3] b
+    arr(b)
+    r = 0
+}

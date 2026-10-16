@@ -1,0 +1,26 @@
+// extern 块名即绑定目标：`"C"` / `"c"` 是 C 的语言标识（C 运行时，不生成 -l），
+// 其余名字是待链接的库名。C 的调用约定推出来的约束——数组形参按地址传、对象
+// 布局按 C 的结构体、变参调用要 %al 里的浮点寄存器计数——只对 extern "C" 生效：
+// 库名块的外部约定尚未识别，不能拿 C 的规矩去套。
+// 与外部 ABI 无关的约束（符号由外部定义、无初值、无默认实参等）两类都适用。
+Pair {
+    pub long a
+    pub long b
+}
+
+extern "m" {
+    sin(double x) double r {}
+    // 以下声明在 extern "C" 下都会被拒，在约定未识别的库名块上放行
+    legacy(int tag char[4] s) {}
+    variadic(int a ...) {}
+    Pair boxed
+}
+
+extern "C" {
+    printf(const char-* fmt ...) int r {}
+}
+
+main() int r {
+    printf("%.1f\n", sin(0.0))
+    r = 0
+}

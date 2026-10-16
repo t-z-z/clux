@@ -1,6 +1,0 @@
-extern "c" {
-    putchar(int c) int r
-}
-main() int r {
-    r = 0
-}
