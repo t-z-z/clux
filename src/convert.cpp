@@ -1,5 +1,6 @@
 #include "../include/semantic.h"
 #include "../include/sem_types.h"
+#include "ast.h"
 
 namespace cx {
 
@@ -308,12 +309,9 @@ bool SemanticAnalyzer::check_conversion(Type* src, Type* dst, const std::string&
         // 仅当显式 cast 能落到确定语义时才放行；否则报错，避免生成非法 IR
         Type* us = src;
         Type* ud = dst;
-        bool base_same = us && ud && is_same_type(us, ud);
-        bool both_ptr = us && ud && (us->is_pointer() || us->is_reference()) &&
-                        (ud->is_pointer() || ud->is_reference());
+        bool base_same = is_same_type(us, ud);
         // 指针 <-> 整数：底层地址值的重解释
-        bool ptr_int = us && ud &&
-            ((us->is_pointer() && is_integer_type(ud)) ||
+        bool ptr_int = ((us->is_pointer() && is_integer_type(ud)) ||
              (is_integer_type(us) && ud->is_pointer()));
         if (ptr_int) {
             // 目标平台指针 64 位：窄于 64 位的整数会截断/扩展地址
@@ -328,6 +326,18 @@ bool SemanticAnalyzer::check_conversion(Type* src, Type* dst, const std::string&
             }
             return true;
         }
+        if (auto usp = us->get_pointer()) {
+            if (auto udp = ud->get_pointer()) {
+                if (auto spp = usp->pointee->get_primitive()) {
+                    if(spp->kind == PrimitiveTypeKind::Void) return true;
+                }
+                if (auto upp = udp->pointee->get_primitive()) {
+                    if (upp->kind == PrimitiveTypeKind::Void) return true;
+                }
+            }
+        }
+        bool both_ptr = (us->is_pointer() || us->is_reference() || us->is_func_ptr()) &&
+            (ud->is_pointer() || ud->is_reference() || ud->is_func_ptr());
         if (base_same || both_ptr) {
             warning(loc, "explicit cast between incompatible types in " + context);
             return true;
