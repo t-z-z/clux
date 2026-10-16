@@ -1586,6 +1586,16 @@ void Translator::emit_fields_copy(Class* cls, const std::string& src,
     auto it = classes_.find(cls);
     if (it == classes_.end()) return;
     const std::string& cls_ir = it->second.llvm_name;
+    // extern "LLVMIR" 的类布局由 keep`` 给出：clux 侧没有字段表，逐字段搬
+    // 会一个字节都不拷，目标存储保持未初始化。这种类的值按结构体本身收发，
+    // 与 extern 聚合实参/返回值的处理一致（见 eval_plain_call）
+    if (it->second.from_keep_ir) {
+        if (src.empty() || dst.empty()) return;
+        std::string v = ir_.reg();
+        emit_instr(v + " = load " + cls_ir + ", ptr " + src);
+        emit_instr("store " + cls_ir + " " + v + ", ptr " + dst);
+        return;
+    }
     for (auto& f : it->second.fields) {
         std::string sa = ir_.reg();
         emit_instr(sa + " = getelementptr " + cls_ir + ", ptr " + src +

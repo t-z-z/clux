@@ -1,35 +1,97 @@
 // ctime.cx
-// C 时间与日期，对应 <time.h>
-// time_t / clock_t → long，struct tm 用 tm 表达：字段名与顺序同 C，访问用 `p-*.tm_year`
+// C 时间日期，对应 <time.h>
 
-tm {
-    pub:
-    int tm_sec
-    int tm_min
-    int tm_hour
-    int tm_mday
-    int tm_mon
-    int tm_year
-    int tm_wday
-    int tm_yday
-    int tm_isdst
-    long tm_gmtoff
-    char-* tm_zone
-    long tm_gmtoff      // glibc 扩展
-    char-* tm_zone      // glibc 扩展
-}
+import cstddef
 
+typedef time_t = long
+typedef clock_t = long
+
+exprdef CLOCKS_PER_SEC = 1000000
+
+// C 函数
 extern "C" {
-    // 取时
-    clock() long r{}
-    time(long-* timer) long r{}
-    difftime(long time1 long time2) double r{}
-
-    // 转换
+    clock() clock_t r{}
+    time(time_t-* timer) time_t r{}
+    difftime(time_t t1 time_t t0) double r{}
+    mktime(tm-* timeptr) time_t r{}
+    localtime(const time_t-* timer) tm-* r{}
+    gmtime(const time_t-* timer) tm-* r{}
     asctime(const tm-* timeptr) char-* r{}
-    ctime(const tm-* timeptr) char-* r{}
-    gmtime(const long-* timer) tm-* r{}
-    localtime(const long-* timer) tm-* r{}
-    mktime(tm-* timeptr) long r{}
+    ctime(const time_t-* timer) char-* r{}
     strftime(char-* s size_t maxsize const char-* format const tm-* timeptr) size_t r{}
 }
+
+// LLVMIR 符号声明
+extern "LLVMIR" {
+    tm{}
+    tm_sec(tm-* p) int r{}
+    tm_min(tm-* p) int r{}
+    tm_hour(tm-* p) int r{}
+    tm_mday(tm-* p) int r{}
+    tm_mon(tm-* p) int r{}
+    tm_year(tm-* p) int r{}
+    tm_wday(tm-* p) int r{}
+    tm_yday(tm-* p) int r{}
+    tm_isdst(tm-* p) int r{}
+}
+
+// IR 实现
+keep `
+%tm = type {i32, i32, i32, i32, i32, i32, i32, i32, i32, i64, ptr}
+
+define i32 @tm_sec(ptr %p) #0 {
+    %q = getelementptr %tm, ptr %p, i32 0, i32 0
+    %v = load i32, ptr %q
+    ret i32 %v
+}
+
+define i32 @tm_min(ptr %p) #0 {
+    %q = getelementptr %tm, ptr %p, i32 0, i32 1
+    %v = load i32, ptr %q
+    ret i32 %v
+}
+
+define i32 @tm_hour(ptr %p) #0 {
+    %q = getelementptr %tm, ptr %p, i32 0, i32 2
+    %v = load i32, ptr %q
+    ret i32 %v
+}
+
+define i32 @tm_mday(ptr %p) #0 {
+    %q = getelementptr %tm, ptr %p, i32 0, i32 3
+    %v = load i32, ptr %q
+    ret i32 %v
+}
+
+define i32 @tm_mon(ptr %p) #0 {
+    %q = getelementptr %tm, ptr %p, i32 0, i32 4
+    %v = load i32, ptr %q
+    ret i32 %v
+}
+
+define i32 @tm_year(ptr %p) #0 {
+    %q = getelementptr %tm, ptr %p, i32 0, i32 5
+    %v = load i32, ptr %q
+    ret i32 %v
+}
+
+define i32 @tm_wday(ptr %p) #0 {
+    %q = getelementptr %tm, ptr %p, i32 0, i32 6
+    %v = load i32, ptr %q
+    ret i32 %v
+}
+
+define i32 @tm_yday(ptr %p) #0 {
+    %q = getelementptr %tm, ptr %p, i32 0, i32 7
+    %v = load i32, ptr %q
+    ret i32 %v
+}
+
+define i32 @tm_isdst(ptr %p) #0 {
+    %q = getelementptr %tm, ptr %p, i32 0, i32 8
+    %v = load i32, ptr %q
+    ret i32 %v
+}
+
+attributes #0 = { alwaysinline nounwind }
+`

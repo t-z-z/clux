@@ -1,17 +1,273 @@
 // cinttypes.cx
-// 最大宽度整数类型的转换，对应 <inttypes.h>
-// PRId64 一类格式宏是宏，不声明
+// C 整数类型格式，对应 <inttypes.h>
+// 针对 Linux x86-64（LP64）。
+//
+// 说明：
+// - wcstoimax / wcstoumax 不声明：clux 不做宽字符。
+// - INT*_C / UINT*_C 不提供：clux 无法表达 token 拼接。
 
-imaxdiv_t {
-    pub:
-    long quot
-    long rem
+import cstddef
+
+typedef int8_t = char
+typedef int16_t = short
+typedef int32_t = int
+typedef int64_t = long
+typedef uint8_t = uchar
+typedef uint16_t = ushort
+typedef uint32_t = uint
+typedef uint64_t = ulong
+
+typedef intptr_t = long
+typedef uintptr_t = ulong
+typedef intmax_t = long
+typedef uintmax_t = ulong
+
+// PRI 宏（printf 用）
+
+// 8 位
+exprdef PRId8 = "d"
+exprdef PRIi8 = "i"
+exprdef PRIo8 = "o"
+exprdef PRIu8 = "u"
+exprdef PRIx8 = "x"
+exprdef PRIX8 = "X"
+
+// 16 位
+exprdef PRId16 = "d"
+exprdef PRIi16 = "i"
+exprdef PRIo16 = "o"
+exprdef PRIu16 = "u"
+exprdef PRIx16 = "x"
+exprdef PRIX16 = "X"
+
+// 32 位
+exprdef PRId32 = "d"
+exprdef PRIi32 = "i"
+exprdef PRIo32 = "o"
+exprdef PRIu32 = "u"
+exprdef PRIx32 = "x"
+exprdef PRIX32 = "X"
+
+// 64 位
+exprdef PRId64 = "ld"
+exprdef PRIi64 = "li"
+exprdef PRIo64 = "lo"
+exprdef PRIu64 = "lu"
+exprdef PRIx64 = "lx"
+exprdef PRIX64 = "lX"
+
+// 最小宽度
+exprdef PRIdLEAST8 = "d"
+exprdef PRIiLEAST8 = "i"
+exprdef PRIoLEAST8 = "o"
+exprdef PRIuLEAST8 = "u"
+exprdef PRIxLEAST8 = "x"
+exprdef PRIXLEAST8 = "X"
+
+exprdef PRIdLEAST16 = "d"
+exprdef PRIiLEAST16 = "i"
+exprdef PRIoLEAST16 = "o"
+exprdef PRIuLEAST16 = "u"
+exprdef PRIxLEAST16 = "x"
+exprdef PRIXLEAST16 = "X"
+
+exprdef PRIdLEAST32 = "d"
+exprdef PRIiLEAST32 = "i"
+exprdef PRIoLEAST32 = "o"
+exprdef PRIuLEAST32 = "u"
+exprdef PRIxLEAST32 = "x"
+exprdef PRIXLEAST32 = "X"
+
+exprdef PRIdLEAST64 = "ld"
+exprdef PRIiLEAST64 = "li"
+exprdef PRIoLEAST64 = "lo"
+exprdef PRIuLEAST64 = "lu"
+exprdef PRIxLEAST64 = "lx"
+exprdef PRIXLEAST64 = "lX"
+
+// 最快宽度
+exprdef PRIdFAST8 = "d"
+exprdef PRIiFAST8 = "i"
+exprdef PRIoFAST8 = "o"
+exprdef PRIuFAST8 = "u"
+exprdef PRIxFAST8 = "x"
+exprdef PRIXFAST8 = "X"
+
+exprdef PRIdFAST16 = "d"
+exprdef PRIiFAST16 = "i"
+exprdef PRIoFAST16 = "o"
+exprdef PRIuFAST16 = "u"
+exprdef PRIxFAST16 = "x"
+exprdef PRIXFAST16 = "X"
+
+exprdef PRIdFAST32 = "d"
+exprdef PRIiFAST32 = "i"
+exprdef PRIoFAST32 = "o"
+exprdef PRIuFAST32 = "u"
+exprdef PRIxFAST32 = "x"
+exprdef PRIXFAST32 = "X"
+
+exprdef PRIdFAST64 = "ld"
+exprdef PRIiFAST64 = "li"
+exprdef PRIoFAST64 = "lo"
+exprdef PRIuFAST64 = "lu"
+exprdef PRIxFAST64 = "lx"
+exprdef PRIXFAST64 = "lX"
+
+// 指针宽度
+exprdef PRIdPTR = "ld"
+exprdef PRIiPTR = "li"
+exprdef PRIoPTR = "lo"
+exprdef PRIuPTR = "lu"
+exprdef PRIxPTR = "lx"
+exprdef PRIXPTR = "lX"
+
+// 最大宽度
+exprdef PRIdMAX = "ld"
+exprdef PRIiMAX = "li"
+exprdef PRIoMAX = "lo"
+exprdef PRIuMAX = "lu"
+exprdef PRIxMAX = "lx"
+exprdef PRIXMAX = "lX"
+
+// SCN 宏（scanf 用）
+// 注意：SCN 没有大写 X 版本。
+
+// 8 位
+exprdef SCNd8 = "hhd"
+exprdef SCNi8 = "hhi"
+exprdef SCNo8 = "hho"
+exprdef SCNu8 = "hhu"
+exprdef SCNx8 = "hhx"
+
+// 16 位
+exprdef SCNd16 = "hd"
+exprdef SCNi16 = "hi"
+exprdef SCNo16 = "ho"
+exprdef SCNu16 = "hu"
+exprdef SCNx16 = "hx"
+
+// 32 位
+exprdef SCNd32 = "d"
+exprdef SCNi32 = "i"
+exprdef SCNo32 = "o"
+exprdef SCNu32 = "u"
+exprdef SCNx32 = "x"
+
+// 64 位
+exprdef SCNd64 = "ld"
+exprdef SCNi64 = "li"
+exprdef SCNo64 = "lo"
+exprdef SCNu64 = "lu"
+exprdef SCNx64 = "lx"
+
+// 最小宽度
+exprdef SCNdLEAST8 = "hhd"
+exprdef SCNiLEAST8 = "hhi"
+exprdef SCNoLEAST8 = "hho"
+exprdef SCNuLEAST8 = "hhu"
+exprdef SCNxLEAST8 = "hhx"
+
+exprdef SCNdLEAST16 = "hd"
+exprdef SCNiLEAST16 = "hi"
+exprdef SCNoLEAST16 = "ho"
+exprdef SCNuLEAST16 = "hu"
+exprdef SCNxLEAST16 = "hx"
+
+exprdef SCNdLEAST32 = "d"
+exprdef SCNiLEAST32 = "i"
+exprdef SCNoLEAST32 = "o"
+exprdef SCNuLEAST32 = "u"
+exprdef SCNxLEAST32 = "x"
+
+exprdef SCNdLEAST64 = "ld"
+exprdef SCNiLEAST64 = "li"
+exprdef SCNoLEAST64 = "lo"
+exprdef SCNuLEAST64 = "lu"
+exprdef SCNxLEAST64 = "lx"
+
+// 最快宽度
+exprdef SCNdFAST8 = "hhd"
+exprdef SCNiFAST8 = "hhi"
+exprdef SCNoFAST8 = "hho"
+exprdef SCNuFAST8 = "hhu"
+exprdef SCNxFAST8 = "hhx"
+
+exprdef SCNdFAST16 = "hd"
+exprdef SCNiFAST16 = "hi"
+exprdef SCNoFAST16 = "ho"
+exprdef SCNuFAST16 = "hu"
+exprdef SCNxFAST16 = "hx"
+
+exprdef SCNdFAST32 = "d"
+exprdef SCNiFAST32 = "i"
+exprdef SCNoFAST32 = "o"
+exprdef SCNuFAST32 = "u"
+exprdef SCNxFAST32 = "x"
+
+exprdef SCNdFAST64 = "ld"
+exprdef SCNiFAST64 = "li"
+exprdef SCNoFAST64 = "lo"
+exprdef SCNuFAST64 = "lu"
+exprdef SCNxFAST64 = "lx"
+
+// 指针宽度
+exprdef SCNdPTR = "ld"
+exprdef SCNiPTR = "li"
+exprdef SCNoPTR = "lo"
+exprdef SCNuPTR = "lu"
+exprdef SCNxPTR = "lx"
+
+// 最大宽度
+exprdef SCNdMAX = "ld"
+exprdef SCNiMAX = "li"
+exprdef SCNoMAX = "lo"
+exprdef SCNuMAX = "lu"
+exprdef SCNxMAX = "lx"
+
+// 除法
+extern "LLVMIR" {
+    _imaxdiv_t{}
+    _imaxdiv(long numer long denom) _imaxdiv_t r{}
+    _imaxdiv_quot(_imaxdiv_t-& p) long r{}
+    _imaxdiv_rem(_imaxdiv_t-& p) long r{}
 }
 
+// 标量函数
 extern "C" {
     imaxabs(long j) long r{}
-    imaxdiv(long numer long denom) imaxdiv_t r{}
     strtoimax(const char-* nptr char-** endptr int base) long r{}
     strtoumax(const char-* nptr char-** endptr int base) ulong r{}
-    // wcstoimax/wcstoumax 需要宽字符，均不声明
+    // wcstoimax / wcstoumax 不声明：clux 没有宽字符
 }
+
+// LLVM IR 实现
+keep `
+%_imaxdiv_t = type { i64, i64 }
+
+define %_imaxdiv_t @_imaxdiv(i64 %a0, i64 %a1) #0 {
+entry:
+  %q = sdiv i64 %a0, %a1
+  %r = srem i64 %a0, %a1
+
+  %tmp0 = insertvalue %_imaxdiv_t poison, i64 %q, 0
+  %tmp1 = insertvalue %_imaxdiv_t %tmp0, i64 %r, 1
+  ret %_imaxdiv_t %tmp1
+}
+
+define i64 @_imaxdiv_quot(ptr nocapture readonly %a0) #0 {
+entry:
+  %t0 = getelementptr %_imaxdiv_t, ptr %a0, i32 0, i32 0
+  %t1 = load i64, ptr %t0, align 8
+  ret i64 %t1
+}
+
+define i64 @_imaxdiv_rem(ptr nocapture readonly %a0) #0 {
+entry:
+  %t0 = getelementptr %_imaxdiv_t, ptr %a0, i32 0, i32 1
+  %t1 = load i64, ptr %t0, align 8
+  ret i64 %t1
+}
+
+attributes #0 = { alwaysinline nounwind }
+`
