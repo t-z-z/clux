@@ -566,13 +566,16 @@ struct TypeParam : ASTNode {
 };
 
 // extern 块绑定的外部 ABI。块名本身就是绑定目标：`"c"` / `"C"` 是 C 的语言
-// 标识（C 运行时由链接器默认带上，不生成 -l），其余名字是待链接的库名。
+// 标识（C 运行时由链接器默认带上，不生成 -l），`"LLVMIR"` / `"llvmir"` 的符号
+// 由 keep`` 手写 IR 提供，译者为它们不发任何声明，其余名字是待链接的库名。
 // clux 目前只实现 C 的调用约定：库名块仍按 C 路径翻译，但不施加 C 的约束，
 // 因为它们的调用约定尚未识别
-enum class ExternLang : uint8_t { None, C, Unknown };
+enum class ExternLang : uint8_t { None, C, LLVMIR, Unknown };
 
 inline ExternLang extern_lang_of(std::string_view name) {
-    return (name == "c" || name == "C") ? ExternLang::C : ExternLang::Unknown;
+    if (name == "c" || name == "C") return ExternLang::C;
+    if (name == "llvmir" || name == "LLVMIR") return ExternLang::LLVMIR;
+    return ExternLang::Unknown;
 }
 
 struct Func : Decl {

@@ -585,7 +585,10 @@ define i32 @add(i32 %a, i32 %b) {
 
 ## 十四、外部函数接口
 
-extern "C" {
+### C语言
+
+```cx
+extern "C" { // 小写c也可以
     printf(const char-* s ...) int r{}
 }
 ```
@@ -598,9 +601,26 @@ extern "C" 仅支持的类型：
 - 指针：T-*、void-*
 - 函数指针：$(...)....
 - 变参：...
-- 纯以上类型的结构体
 
 clux不承诺内存布局。
+
+### LLVMIR
+
+```cx
+extern "LLVMIR"{ // 小写llvmir也可以
+    tm{}
+    tm_sec(tm-* p) int r{}
+}
+keep`
+declare i32 @tm_sec(ptr %p) {
+    %q = getelementptr i8, ptr %p, i64 0
+    %v = load i32, ptr %q
+    ret i32 %v
+}
+`
+```
+
+在 extern "LLVMIR" 中不生成对应的ir，仅有clux侧的符号声明作用，其实现需要由 keep`` 实现。
 
 ## 十五、编译与执行
 

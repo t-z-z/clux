@@ -121,10 +121,12 @@ void Translator::collect() {
 void Translator::run() {
     // 类布局有环时已报错，不再发射任何 IR
     if (has_error_) return;
-    for (auto& g : globals_)
+    for (auto& g : globals_) {
+        if (g.skip_emit) continue;
         ir_.emit_global(g.is_extern
             ? "@" + g.sym + " = external global " + g.ir_type
             : "@" + g.sym + " = global " + g.ir_type + " zeroinitializer");
+    }
     for (Decl* d : cu_.top_decls) emit_decl(d);
     if (uses_alwaysinline_)
         ir_.emit_module_tail("attributes #0 = { alwaysinline }");
@@ -134,6 +136,7 @@ void Translator::run() {
 void Translator::emit_class_decls() {
     emit_class_types();
     for (auto& [cls, info] : classes_) {
+        if (info.from_keep_ir) continue;
         for (auto& f : info.static_fields)
             ir_.emit_global("@" + mangler_.field_of(f.var) +
                             " = global " + f.ir_type + " zeroinitializer");
@@ -142,22 +145,22 @@ void Translator::emit_class_decls() {
 
 // 模块级变量：顶层、命名空间内、extern 内的 VarList，按 mangled 名逐个登记
 void Translator::collect_globals_decl(Decl* d, const std::string& prefix,
-                                      bool is_extern) {
+                                      ExternLang lang) {
     if (!d) {
-        for (Decl* t : cu_.top_decls) collect_globals_decl(t, prefix, is_extern);
+        for (Decl* t : cu_.top_decls) collect_globals_decl(t, prefix, lang);
         return;
     }
     if (d->kind == DeclKind::Namespace) {
         std::string here = prefix.empty()
             ? std::string(d->name) : prefix + "_" + std::string(d->name);
         for (Decl* m : static_cast<Namespace*>(d)->members)
-            collect_globals_decl(m, here, is_extern);
+            collect_globals_decl(m, here, lang);
         return;
     }
     // extern 内符号名保持原样，与 Mangler 的处理一致
     if (d->kind == DeclKind::Extern) {
         for (Decl* m : static_cast<Extern*>(d)->members)
-            collect_globals_decl(m, "", true);
+            collect_globals_decl(m, "", static_cast<Extern*>(d)->language());
         return;
     }
     if (d->kind != DeclKind::VarList) return;
@@ -170,7 +173,9 @@ void Translator::collect_globals_decl(Decl* d, const std::string& prefix,
         g.var = vi;
         g.sym = sym;
         g.ir_type = vt ? object_type(vt) : "i32";
-        g.is_extern = is_extern;
+        g.is_extern = lang != ExternLang::None;
+        // extern "LLVMIR" 的符号在 clux 侧只有声明，实现由 keep`` 给出
+        g.skip_emit = lang == ExternLang::LLVMIR;
         globals_.push_back(g);
         global_names_[vi] = sym;
     }
@@ -190,12 +195,16 @@ void Translator::emit_decl(Decl* d) {
         case DeclKind::Class:
             emit_class(static_cast<Class*>(d));
             break;
-        case DeclKind::Extern:
-            for (Decl* m : static_cast<Extern*>(d)->members) {
+        case DeclKind::Extern: {
+            auto* ext = static_cast<Extern*>(d);
+            // extern "LLVMIR" 的符号实现由 keep`` 给出，这里只保留 clux 侧可见性
+            if (ext->language() == ExternLang::LLVMIR) break;
+            for (Decl* m : ext->members) {
                 if (m && (m->kind == DeclKind::Func || m->kind == DeclKind::Operator))
                     emit_declare(*static_cast<Func*>(m));
             }
             break;
+        }
         case DeclKind::Keep:
             ir_.emit_type(std::string(static_cast<Keep*>(d)->code));
             break;
@@ -254,6 +263,8 @@ void Translator::emit_class_types() {
     }
     for (Class* c : order) {
         const auto& info = classes_[c];
+        // extern "LLVMIR" 的类布局由 keep`` 给出，类型也由 keep`` 定义
+        if (info.from_keep_ir) continue;
         std::string ty = info.llvm_name + " = type {";
         for (size_t i = 0; i < info.fields.size(); ++i) {
             if (i) ty += ", ";
@@ -264,12 +275,13 @@ void Translator::emit_class_types() {
     }
 }
 
-void Translator::collect_classes_decl(Decl* d) {
+void Translator::collect_classes_decl(Decl* d, bool from_keep_ir) {
     if (!d) return;
     switch (d->kind) {
         case DeclKind::Class: {
             Class* c = static_cast<Class*>(d);
             TranslatorClass info;
+            info.from_keep_ir = from_keep_ir;
             info.llvm_name = "%" + mangler_.of(c);
             int idx = 0;
             for (Decl* m : c->members) {
@@ -304,7 +316,7 @@ void Translator::collect_classes_decl(Decl* d) {
             own_classes_.push_back(c);
             for (Decl* m : c->members) {
                 if (m && m->kind == DeclKind::Class)
-                    collect_classes_decl(m);
+                    collect_classes_decl(m, from_keep_ir);
             }
             break;
         }
@@ -312,6 +324,16 @@ void Translator::collect_classes_decl(Decl* d) {
             for (Decl* m : static_cast<Namespace*>(d)->members)
                 collect_classes_decl(m);
             break;
+        // extern "LLVMIR" 的类布局来自 keep`` 的 IR：只登记名字与字段，
+        // 结构体类型与 static 字段存储都由 keep`` 负责
+        case DeclKind::Extern: {
+            auto* ext = static_cast<Extern*>(d);
+            if (ext->language() != ExternLang::LLVMIR) break;
+            for (Decl* m : ext->members)
+                if (m && m->kind == DeclKind::Class)
+                    collect_classes_decl(m, true);
+            break;
+        }
         default: break;
     }
 }

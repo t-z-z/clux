@@ -201,14 +201,16 @@ bool check(const std::string& source, const std::string& filename,
 }
 
 // 收集 extern 块声明的库名。`extern "c"` 是 C 的语言标识，表示 C 运行时，
-// 由 clang++ 默认链接，不生成 -l；其余名字是库名。extern 可以写在命名空间里，
+// 由 clang++ 默认链接，不生成 -l；`extern "LLVMIR"` 的符号实现来自 keep`` 的
+// IR，同样没有库可链；其余名字是库名。extern 可以写在命名空间里，
 // 须逐层下钻，否则库名会被静默丢掉，链接时以"符号未定义"的形式失败
 static void collect_extern_libs_decl(const std::vector<Decl*>& members,
                                      std::vector<std::string>& out) {
     for (Decl* d : members) {
         if (!d) continue;
         if (d->kind == DeclKind::Extern) {
-            if (static_cast<Extern*>(d)->language() == ExternLang::C) continue;
+            if (static_cast<Extern*>(d)->language() != ExternLang::Unknown)
+                continue;
             std::string_view name = d->name;
             if (std::find(out.begin(), out.end(), name) == out.end())
                 out.emplace_back(name);
