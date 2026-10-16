@@ -1,4 +1,5 @@
 #include "../include/parser.h"
+#include "token.h"
 
 #include <vector>
 #include <string>
@@ -365,7 +366,6 @@ VarList* Parser::parse_var_decl(SpecList &ml, Location &loc) {
                 init = parse_expr();
                 if (!init) {
                     add_error("expected expression");
-                    continue;
                 }
             } else if(type->is_inferred()) {
                 add_error("can not infer type");
@@ -1412,6 +1412,25 @@ Expr* Parser::parse_prefix() {
             advance();
         }
         return cu_.add_node<Expr>(c_loc, Expr::Cast{target, operand});
+    }
+
+    if (curr().kind == TokenKind::Dollar) {
+        Location loc = get_loc();
+        Type* ptrtype = parse_func_type();
+        if (curr().kind != TokenKind::ParenL) {
+            return nullptr;
+        }
+        advance();
+        Expr* operand = parse_expr();
+        if (!operand) {
+            add_error("expected expression in type conversion");
+        }
+        if (curr().kind != TokenKind::ParenR) {
+            add_error("expected ')'");
+        } else {
+            advance();
+        }
+        return cu_.add_node<Expr>(loc, Expr::Cast{ptrtype, operand});
     }
 
     if (curr().kind == TokenKind::Null) {
