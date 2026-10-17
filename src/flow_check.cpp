@@ -98,9 +98,8 @@ void FlowChecker::check_jumps(Stmt* body) {
 void FlowChecker::check_initialization(
         Stmt* body, const std::vector<VarList*>& params,
         const std::vector<VarList*>& returns, bool in_init, Class* cls) {
-    // 一次性的绑定、绑定链与返回变量改写记录都只在本方法体内有意义，
+    // 一次性的绑定链与返回变量改写记录都只在本方法体内有意义，
     // 放在函数体判空之前，免得空函数体把上一个的记录带过来
-    bound_once_.clear();
     ref_src_.clear();
     ret_written_.clear();
     ret_assigns_ = 0;
@@ -215,8 +214,10 @@ void FlowChecker::init_stmt_body(InitCtx& ctx, Stmt* s) {
         }
         if (then_ctx.terminated) {
             ctx.assigned = std::move(else_ctx.assigned);
+            ctx.bound = std::move(else_ctx.bound);
         } else if (else_ctx.terminated) {
             ctx.assigned = std::move(then_ctx.assigned);
+            ctx.bound = std::move(then_ctx.bound);
         } else {
             // 分支合并：仅在两个分支都已赋值的变量才算已赋值
             std::unordered_set<Symbol*> merged;
@@ -225,6 +226,10 @@ void FlowChecker::init_stmt_body(InitCtx& ctx, Stmt* s) {
             }
             for (Symbol* sym : ctx.assigned) merged.insert(sym);
             ctx.assigned = std::move(merged);
+            // 一次性机会取两支的并集：任一支用过，分支之后就不许再用，
+            // 两支各用一次不算冲突（每条路径各一次）
+            ctx.bound.insert(then_ctx.bound.begin(), then_ctx.bound.end());
+            ctx.bound.insert(else_ctx.bound.begin(), else_ctx.bound.end());
         }
         return;
     }
@@ -232,6 +237,8 @@ void FlowChecker::init_stmt_body(InitCtx& ctx, Stmt* s) {
         init_expr(ctx, w->condition);
         InitCtx body_ctx = ctx;
         init_stmt(body_ctx, w->body);
+        // 循环体可能一次都不走，也可能反复走：其中的赋值同样消耗掉一次机会
+        ctx.bound.insert(body_ctx.bound.begin(), body_ctx.bound.end());
         return;
     }
     if (auto* f = s->get_for()) {
@@ -240,6 +247,7 @@ void FlowChecker::init_stmt_body(InitCtx& ctx, Stmt* s) {
         InitCtx body_ctx = ctx;
         init_stmt(body_ctx, f->body);
         init_stmt(body_ctx, f->next);
+        ctx.bound.insert(body_ctx.bound.begin(), body_ctx.bound.end());
         return;
     }
     if (s->is_return()) {
@@ -332,9 +340,9 @@ VarItem* FlowChecker::ref_bind_root(Expr* e, const InitCtx& ctx) const {
 // 登记在 declared 里的是本方法体的存储（局部量、形参、返回变量、本类的
 // 受管字段），未登记的量（全局量、static 字段、他类的字段）都已带着值，
 // 不是初始化点；声明处带值的量（形参、字段初值、构造期）同理。
-// 判断"已经赋过值"不看路径：赋值写在分支里、循环里，它也是这方法体里
-// const 的那一次初始化，之后再写就是二次写入
-void FlowChecker::check_assign(InitCtx& ctx, Expr::Assign* a) {
+// 判断"已经赋过值"看当前路径：赋值写在分支里、分支之后再来一次才是二次写入，
+    // 而 if/else 各赋一次是两条路径各一次，不冲突
+    void FlowChecker::check_assign(InitCtx& ctx, Expr::Assign* a) {
     Expr* target = a ? a->target : nullptr;
     if (!target || !target->sym) return;
     Symbol* sym = target->sym;
@@ -350,21 +358,21 @@ void FlowChecker::check_assign(InitCtx& ctx, Expr::Assign* a) {
         if (!tracked) {
             error_(target->loc,
                    "cannot assign to const '" + sym_display_name(sym) + "'");
-        } else if (ctx.assigned.count(sym) || bound_once_.count(sym)) {
+        } else if (ctx.assigned.count(sym) || ctx.bound.count(sym)) {
             error_(target->loc, "cannot assign to const '" + sym_display_name(sym) +
                   "': it is already initialized");
         } else {
-            bound_once_.insert(sym);
+            ctx.bound.insert(sym);
         }
     } else if (late_ref) {
-        if (bound_once_.count(sym)) {
+        if (ctx.bound.count(sym)) {
             // 绑定之后这次赋值是写穿：写穿得先有绑定可写，
             // 绑定点写在分支里时不保证已经执行
             if (!ctx.assigned.count(sym))
                 error_(target->loc, "use of reference '" + sym_display_name(sym) +
                       "' before it is bound");
         } else {
-            bound_once_.insert(sym);
+            ctx.bound.insert(sym);
             ref_binding = true;
         }
     } else if (dt && dt->is_reference()) {

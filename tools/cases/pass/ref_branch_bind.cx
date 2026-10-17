@@ -1,0 +1,17 @@
+// 延迟绑定的引用同样按路径计：if/else 各绑一次是两条路径各绑一次，
+// 之后写穿时两边都已绑定
+main() int r {
+    r = 0
+    int a = 1
+    int b = 2
+    int-& ref
+    if r == 0 {
+        ref = a
+    } else {
+        ref = b
+    }
+    ref = 3
+    if a != 3 { r = r + 1 }
+    if b != 3 { r = r + 2 }
+    return
+}
