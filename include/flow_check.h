@@ -47,6 +47,10 @@ private:
         std::unordered_set<Symbol*> ref_fields;
         // 本方法体里声明过的局部量：存储在栈帧上，返回即失效
         std::unordered_set<Symbol*> locals;
+        // 当前路径上已被消耗的一次性机会：const 已初始化、延迟绑定的引用已绑定。
+        // 进分支时随 InitCtx 一起拷贝，if/else 合并时取两支的并集——
+        // 任一支用过，分支之后就不许再用，而各支各用一次不冲突
+        std::unordered_set<Symbol*> bound;
         Symbol* ret_sym = nullptr;   // 当前函数的返回变量（若有）
         bool terminated = false;     // 当前路径是否已终止（return）
         bool in_init = false;        // 当前检查的是 INIT 方法体
@@ -72,10 +76,6 @@ private:
 
     const std::unordered_map<VarItem*, Symbol*>& var_symbols_;
     ErrorFn error_;
-    // 本方法体里已经一次性绑定过的量：const 的第一次赋值是初始化、
-    // 延迟绑定引用的第一次赋值是绑定，之后再来就是二次写入/换绑定对象。
-    // 赋值的次序决定这两者之分，分支合并与循环回边都改变不了，故不进 InitCtx
-    std::unordered_set<Symbol*> bound_once_;
     // 延迟绑定的引用各自绑在了哪个表达式上：沿这条链才能判出绑定源
     // 最终指着谁，才能知道返回出去的地址会不会悬垂
     std::unordered_map<Symbol*, Expr*> ref_src_;

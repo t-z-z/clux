@@ -481,6 +481,8 @@ main(){
 
 const 只能赋值一次，允许延迟赋值，在类初始化只能且必须赋值一次。
 
+clux的const是弱const，随着函数返回，取地址和解引用，const标签会消失。
+
 readonly 在类内部可修改，在类外部不可修改。
 
 ### 修饰注入Injection
