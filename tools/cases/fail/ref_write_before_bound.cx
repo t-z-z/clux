@@ -1,0 +1,10 @@
+// 绑定点写在分支里就不保证执行，之后那次写穿没有可写的对象
+main() int r {
+    int c = 1
+    int a = 1
+    int-& s
+    if c > 0 { s = a }
+    s = 5
+    r = s
+    return
+}

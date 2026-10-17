@@ -1631,12 +1631,24 @@ bool Translator::field_has_default(const TranslatorField& f) {
 }
 
 // 写入单个字段的声明处默认值：引用字段的初值即绑定点，存被引用对象的地址
-void Translator::emit_field_default(const std::string& dst_addr, const TranslatorField& f) {
+void Translator::emit_field_default(const std::string& dst_addr,
+                                   const std::string& inst_addr, Class* cls,
+                                   const TranslatorField& f) {
     if (!f.var) return;
     if (f.var->type && f.var->type->is_reference()) {
-        // 引用字段一律在 INIT 中绑定，构造开始前写 null：
+        // 引用字段的初值即绑定点，存被引用对象的地址。
+        // 没有初值的字段靠 INIT 绑定，构造开始前写 null：
         // INIT 绑定语句之前就读取会确定性地失败而非读到垃圾
-        emit_instr("store ptr null, ptr " + dst_addr);
+        if (!f.var->init) {
+            emit_instr("store ptr null, ptr " + dst_addr);
+            return;
+        }
+        // 绑定源是本类的另一个字段时，初值求值处没有接收者表达式可依，
+        // 按字段下标从实例存储算它的地址
+        std::string raddr = field_addr_in(cls, inst_addr, f.var->init);
+        if (raddr.empty()) raddr = eval_ref_addr(f.var->init);
+        if (raddr.empty()) raddr = eval(f.var->init);
+        emit_instr("store ptr " + raddr + ", ptr " + dst_addr);
         return;
     }
     // 内联类字段：字段存储即嵌套对象，构造就地写进这块存储，
@@ -1682,7 +1694,7 @@ void Translator::emit_static_inits() {
         if (it == classes_.end()) continue;
         for (auto& f : it->second.static_fields) {
             if (!f.var || !field_has_default(f)) continue;
-            emit_field_default("@" + mangler_.field_of(f.var), f);
+            emit_field_default("@" + mangler_.field_of(f.var), "", nullptr, f);
         }
     }
 }
@@ -1720,7 +1732,7 @@ void Translator::emit_field_defaults(Class* cls, const std::string& slot) {
         std::string addr = ir_.reg();
         emit_instr(addr + " = getelementptr " + it->second.llvm_name +
                    ", ptr " + slot + ", i32 0, i32 " + std::to_string(f.index));
-        emit_field_default(addr, f);
+        emit_field_default(addr, slot, cls, f);
     }
 }
 
@@ -1874,6 +1886,27 @@ std::string Translator::field_addr_of(Expr* e) {
     emit_instr(addr + " = getelementptr " + it->second.llvm_name + ", ptr " + base +
                ", i32 0, i32 " + std::to_string(fit->second));
     return addr;
+}
+
+// 字段初值绑定到本类的另一个字段：初值求值处没有接收者表达式，
+// 按字段下标从实例存储算出被绑定字段的地址
+std::string Translator::field_addr_in(Class* cls, const std::string& inst_addr,
+                                       Expr* src) {
+    if (!cls || inst_addr.empty() || !src || !src->sym) return "";
+    if (src->sym->kind != SymbolKind::Variable) return "";
+    auto* sv = dynamic_cast<VarItem*>(src->sym->node);
+    if (!sv) return "";
+    auto it = classes_.find(cls);
+    if (it == classes_.end()) return "";
+    auto fit = it->second.field_index.find(sv);
+    if (fit == it->second.field_index.end()) return "";
+    std::string addr = ir_.reg();
+    emit_instr(addr + " = getelementptr " + it->second.llvm_name +
+               ", ptr " + inst_addr + ", i32 0, i32 " + std::to_string(fit->second));
+    if (!sv->type || !sv->type->is_reference()) return addr;
+    std::string loaded = ir_.reg();
+    emit_instr(loaded + " = load ptr, ptr " + addr);
+    return loaded;
 }
 
 // 引用字段的槽存被引用对象的地址，取其 lvalue 需先取出该地址
@@ -2443,6 +2476,22 @@ std::string Translator::eval_assign(Expr* e, Expr::Assign* a) {
         if (addr.empty()) addr = eval(a->value);
         emit_instr("store ptr " + addr + ", ptr " + ptr);
         return addr;
+    }
+    // 延迟绑定的局部引用：槽里还没有地址，这次赋值就是绑定，存被引用对象的
+    // 地址，与引用声明处初值同一路径。入口即绑定的形参、已带初值的引用
+    // 都在 ref_bound 里，引用返回变量在上面已单独处理；字段不在 slots 里，
+    // INIT 之外的字段赋值是写穿，都不走这里
+    if (a->op == OpKind::Assign && a->target->sym &&
+        a->target->sym->kind == SymbolKind::Variable) {
+        auto* vi = dynamic_cast<VarItem*>(a->target->sym->node);
+        if (vi && is_ref_item(vi, nullptr) && ctx_.slots.count(vi) &&
+            !ctx_.ref_bound.count(vi)) {
+            std::string addr = eval_ref_addr(a->value);
+            if (addr.empty()) addr = eval(a->value);
+            emit_instr("store ptr " + addr + ", ptr " + ptr);
+            ctx_.ref_bound.insert(vi);
+            return addr;
+        }
     }
     // 数组赋值：定长数组写进自己的存储，切片写进它拥有的存储
     if (a->op == OpKind::Assign && a->target && a->target->type &&

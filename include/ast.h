@@ -752,6 +752,9 @@ struct ASTVisitor {
     // 当前正在遍历的类型节点；解析类型只需它，无需 current_expr
     Type* current_type = nullptr;
     Func* current_func = nullptr;
+    // 当前正在遍历的方法体：方法体内的赋值由流检查判定是否合法，
+    // 方法体之外（形参默认值、字段与模块级初值）没有这样的流
+    Stmt* current_body = nullptr;
     // 当前正在遍历的形参列表：形参允许省略初值，局部声明不允许
     const std::vector<VarList*>* current_params = nullptr;
     // 当前正在遍历的类成员：字段的绑定发生在 INIT，不在声明处
@@ -884,8 +887,9 @@ struct ASTVisitor {
     }
 
     void walk_children(Func& f) {
-        Func* pre = current_func;
+        Func* pre_func = current_func;
         auto* pre_params = current_params;
+        auto* pre_body = current_body;
         current_func = &f;
         current_params = &f.params;
         scope_in(std::string(f.name));
@@ -898,10 +902,12 @@ struct ASTVisitor {
         for (auto* r : f.returns) {
             if (r) walk(*r);
         }
+        current_body = f.body;
         if (f.body) walk(*f.body);
+        current_body = pre_body;
         visit_func(f);
         scope_out();
-        current_func = pre;
+        current_func = pre_func;
         current_params = pre_params;
     }
 
@@ -956,14 +962,17 @@ struct ASTVisitor {
     }
 
     void walk_children(SpecialMethod& sm) {
+        auto* pre_body = current_body;
         auto* pre_params = current_params;
         current_params = &sm.params;
         scope_in(std::string(sm.name));
         for (auto* p : sm.params) if (p) walk(*p);
+        current_body = sm.body;
         if (sm.body) walk(*sm.body);
         visit_special_method(sm);
         scope_out();
         current_params = pre_params;
+        current_body = pre_body;
     }
     void walk_children(Enum& e) { visit_enum(e); }
     void walk_children(Keep&) {}

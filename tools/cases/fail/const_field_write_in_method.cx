@@ -1,0 +1,7 @@
+C {
+    pub:
+    const int x
+    INIT() { x = 1 }
+    set() { self.x = 2 }
+}
+main() int r { r = 1  return }

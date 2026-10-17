@@ -1,0 +1,33 @@
+// 引用字段可以在字段初始化里绑定（绑到模块级变量或本类的另一个字段），
+// 不必再在 INIT 里赋一次；构造完成后再赋值是写穿被引用的对象
+int g = 5
+Holder {
+    pub int v = 0
+    pub int-& r = g
+
+    pub INIT(int x) { self.v = x }
+}
+Alias {
+    pub int own = 0
+    pub int-& r = own
+
+    pub INIT() { }
+}
+main() int r {
+    r = 0
+    Holder h = Holder(3)
+    if h.r != 5 { r = r + 1 }
+    if h.v != 3 { r = r + 2 }
+    h.r = 9
+    if g != 9 { r = r + 4 }
+    if h.r != 9 { r = r + 8 }
+    // 另一份实例绑的是各自的初始化器
+    Holder k = Holder(1)
+    if k.r != 9 { r = r + 16 }
+    // 绑到同类的另一个字段：两个字段指向同一处存储
+    Alias a = Alias()
+    if a.r != 0 { r = r + 32 }
+    a.r = 6
+    if a.own != 6 { r = r + 64 }
+    return
+}

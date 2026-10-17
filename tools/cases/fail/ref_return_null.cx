@@ -1,5 +1,9 @@
-// 引用返回不能绑 null：引用必须指向一个对象，
-// null 引用解引用无从判断，编译期即拦下
+// null 是指针字面量，不是对象：引用没有可绑定的存储
+Node {
+    pub int v = 0
+
+    pub INIT(int x) { self.v = x }
+}
 func() Node-& r {
     r = null
     return

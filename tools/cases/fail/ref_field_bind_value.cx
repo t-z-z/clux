@@ -1,0 +1,10 @@
+// 引用字段的绑定源必须指着一个对象，当场算出来的值绑不了
+A {
+    pub int-& r
+    pub INIT(int v) { self.r = v + 1 }
+}
+main() int r {
+    A a = A(1)
+    r = 0
+    return
+}

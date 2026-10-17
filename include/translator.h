@@ -216,7 +216,10 @@ private:
     // 模块入口为所有模块级变量写入声明处默认值
     void emit_global_inits();
     // 写入单个字段的声明处默认值：引用字段的初值即绑定点，存地址而非值
-    void emit_field_default(const std::string& dst_addr, const TranslatorField& f);
+    void emit_field_default(const std::string& dst_addr, const std::string& inst_addr,
+                          Class* cls, const TranslatorField& f);
+    // 字段初值绑定到本类另一字段时，从实例存储算它的地址
+    std::string field_addr_in(Class* cls, const std::string& inst_addr, Expr* src);
     // 字段是否有需要写入的声明处默认值：无初值的引用字段写 null
     static bool field_has_default(const TranslatorField& f);
     // 合成操作符的函数体 IR：解包 __value -> 运算 -> 打包返回

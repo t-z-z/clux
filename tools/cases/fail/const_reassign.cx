@@ -1,0 +1,7 @@
+main() int r {
+    const int a
+    a = 1
+    a = 2
+    r = a
+    return
+}

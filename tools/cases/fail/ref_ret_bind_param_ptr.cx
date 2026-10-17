@@ -1,0 +1,6 @@
+// 指针形参直接绑定同样是绑它自己的栈槽；剥一层 -* 才是绑被指向的对象
+pick(int-* p) int-& r { r = p  return }
+main() int x {
+    x = 0
+    return
+}

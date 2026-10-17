@@ -222,8 +222,14 @@ void SemanticAnalyzer::collect_decl(Decl* decl, bool default_public) {
                 Symbol sym(SymbolKind::Variable, var);
                 sym.specs = &vl->specs;
                 sym.default_public = default_public;
-                if (!symbols_.insert_member(std::string(var->name), std::move(sym))) {
+                Symbol* s = symbols_.insert_member(std::string(var->name),
+                                                   std::move(sym));
+                if (!s) {
                     error(vl->loc, "duplicate declaration of variable '" + std::string(var->name) + "'");
+                } else {
+                    // 成员符号是字段的唯一身份：裸名与 `self.x` 必须解析到它，
+                    // 否则同一字段会得到两个互不相干的 Symbol
+                    var_symbols_[var] = s;
                 }
             }
             break;
@@ -555,132 +561,19 @@ void SemanticAnalyzer::visit_func(Func& f) {
         return;
     }
     // 引用返回：返回的是被引用对象的地址。返回变量只是把该地址带出去的
-    // 通道，其存储仍在栈帧上，所以必须用寄存器返回；能否绑定见 check_ref_return
+    // 通道，其存储仍在栈帧上，所以必须用寄存器返回；
+    // 绑定源能不能返回出去由流检查判定
     if (!f.returns.empty() && f.returns.back()) {
         VarList* rl = f.returns.back();
         VarItem* rv = rl->vars.empty() ? nullptr : rl->vars.back();
         Type* ty = rv ? (rv->type ? rv->type : rl->type) : rl->type;
-        if (ty && ty->is_reference()) {
-            f.ret_via_reg = true;
-            check_ref_return(f);
-        }
+        if (ty && ty->is_reference()) f.ret_via_reg = true;
     }
     // body 为空（未写 {}）时不检查返回值是否被赋值
     if (!f.body) return;
     flow_.check_jumps(f.body);
-    flow_.check_initialization(f.body, f.params, f.returns);
+    flow_.check_initialization(f.body, f.params, f.returns, false, current_class);
     if (flow_.can_use_register_ret(f)) f.ret_via_reg = true;
-}
-
-// 引用返回绑定的根变量：逐层剥到最外层。
-// 局部变量的存储在栈帧上，返回即悬垂；形参、全局量、字段沿此路径都被剥掉
-static const VarItem* ref_ret_root(Expr* e) {
-    while (e) {
-        if (e->sym && e->sym->kind == SymbolKind::Variable)
-            if (auto* vi = dynamic_cast<VarItem*>(e->sym->node)) return vi;
-        if (auto* m = e->get_member()) { e = m->target; continue; }
-        if (auto* ix = e->get_index()) { e = ix->target; continue; }
-        if (auto* u = e->get_unary()) { e = u->operand; continue; }
-        break;
-    }
-    return nullptr;
-}
-
-static void scan_ref_ret_expr(Expr* e, const VarItem* ret_var,
-                              std::vector<std::pair<Expr*, Location>>& out) {
-    if (!e) return;
-    if (auto* a = e->get_assign()) {
-        if (a->target && a->target->sym && a->target->sym->node == ret_var)
-            out.emplace_back(a->value, a->value ? a->value->loc : e->loc);
-        scan_ref_ret_expr(a->target, ret_var, out);
-        scan_ref_ret_expr(a->value, ret_var, out);
-        return;
-    }
-    if (auto* b = e->get_binary()) {
-        scan_ref_ret_expr(b->left, ret_var, out);
-        scan_ref_ret_expr(b->right, ret_var, out);
-    } else if (auto* u = e->get_unary()) {
-        scan_ref_ret_expr(u->operand, ret_var, out);
-    } else if (auto* c = e->get_call()) {
-        scan_ref_ret_expr(c->callee, ret_var, out);
-        for (Expr* a : c->args) scan_ref_ret_expr(a, ret_var, out);
-    } else if (auto* t = e->get_ternary()) {
-        scan_ref_ret_expr(t->cond, ret_var, out);
-        scan_ref_ret_expr(t->then_expr, ret_var, out);
-        scan_ref_ret_expr(t->else_expr, ret_var, out);
-    } else if (auto* ix = e->get_index()) {
-        scan_ref_ret_expr(ix->target, ret_var, out);
-        scan_ref_ret_expr(ix->index, ret_var, out);
-    } else if (auto* m = e->get_member()) {
-        scan_ref_ret_expr(m->target, ret_var, out);
-    } else if (auto* ca = e->get_cast()) {
-        scan_ref_ret_expr(ca->operand, ret_var, out);
-    } else if (auto* ar = e->get_array()) {
-        for (Expr* mem : ar->members) scan_ref_ret_expr(mem, ret_var, out);
-        scan_ref_ret_expr(ar->fill_value, ret_var, out);
-    }
-}
-
-void SemanticAnalyzer::scan_ref_ret(
-        Stmt* s, const VarItem* ret_var,
-        std::unordered_set<const VarItem*>& locals,
-        std::vector<std::pair<Expr*, Location>>& ret_values) {
-    if (!s) return;
-    if (auto* b = s->get_block()) {
-        for (Stmt* x : b->stmts) scan_ref_ret(x, ret_var, locals, ret_values);
-        return;
-    }
-    if (auto* v = s->get_var_decl()) {
-        if (v->vars)
-            for (VarItem* vi : v->vars->vars)
-                if (vi) locals.insert(vi);
-        return;
-    }
-    if (auto* e = s->get_expr()) {
-        scan_ref_ret_expr(e->expr, ret_var, ret_values);
-        return;
-    }
-    if (auto* i = s->get_if()) {
-        scan_ref_ret_expr(i->condition, ret_var, ret_values);
-        scan_ref_ret(i->then_branch, ret_var, locals, ret_values);
-        scan_ref_ret(i->else_branch, ret_var, locals, ret_values);
-        return;
-    }
-    if (auto* w = s->get_while()) {
-        scan_ref_ret_expr(w->condition, ret_var, ret_values);
-        scan_ref_ret(w->body, ret_var, locals, ret_values);
-        return;
-    }
-    if (auto* fo = s->get_for()) {
-        scan_ref_ret(fo->init, ret_var, locals, ret_values);
-        scan_ref_ret_expr(fo->condition, ret_var, ret_values);
-        scan_ref_ret(fo->next, ret_var, locals, ret_values);
-        scan_ref_ret(fo->body, ret_var, locals, ret_values);
-    }
-}
-
-// 返回值只能经返回变量带出（return 不带表达式），故核对返回变量的每次赋值：
-// 绑定目标既不能是本函数的局部变量，也不能是 null
-void SemanticAnalyzer::check_ref_return(Func& f) {
-    VarList* rl = f.returns.back();
-    VarItem* rv = (rl && !rl->vars.empty()) ? rl->vars.back() : nullptr;
-    if (!rv) return;
-    std::unordered_set<const VarItem*> locals;
-    std::vector<std::pair<Expr*, Location>> ret_values;
-    if (rv->init) ret_values.emplace_back(rv->init, rv->init->loc);
-    if (f.body) scan_ref_ret(f.body, rv, locals, ret_values);
-    for (auto& [val, loc] : ret_values) {
-        if (!val) continue;
-        if (val->type && val->type->is_null()) {
-            error(loc, "cannot return a null reference");
-            continue;
-        }
-        const VarItem* root = ref_ret_root(val);
-        if (root && locals.count(root))
-            error(loc, "cannot return a reference to local variable '" +
-                       std::string(root->name) + "': its storage is gone once "
-                       "the function returns");
-    }
 }
 
 void SemanticAnalyzer::visit_special_method(SpecialMethod& sm) {
@@ -688,7 +581,7 @@ void SemanticAnalyzer::visit_special_method(SpecialMethod& sm) {
     if (!sm.body) return;
     flow_.check_jumps(sm.body);
     flow_.check_initialization(sm.body, sm.params, {},
-                               sm.kind == SpecialMethod::Kind::Init);
+                               sm.kind == SpecialMethod::Kind::Init, current_class);
 }
 
 // 收集表达式引用的标识符符号（含成员访问），用于前向引用检测
@@ -926,32 +819,15 @@ void SemanticAnalyzer::visit_var_list(VarList& vl) {
             error(var->loc, "cannot determine the length of this slice: give "
                             "it an initializer of known length, or write T{n}");
 
-        // 引用必须创建时绑定：初值即绑定，绑定源必须是同目标类型的 lvalue。
+        // 引用的绑定源必须是同目标类型的 lvalue；绑定不走常规值转换。
+        // 引用可以延迟绑定：声明处不写初值，第一次赋值才绑定，
+        // 绑定前不得读取、绑定后不可再换对象，由流检查判定。
         // 形参在进入函数时由实参绑定，字段在 INIT 中绑定，二者都不在声明处。
-        // 绑定不走常规值转换。
+        // 没有初值就是延迟绑定：绑定点是本方法体里的第一次赋值，
+        // 绑定前不得读取、绑定后不可再换对象，都由流检查判定
         if (dt && dt->is_reference()) {
             if (is_return_var_item(var)) continue;
-            if (!var->init) {
-                if (!is_param_item(var) && !is_field_item(var))
-                    error(var->loc, "reference must be initialized");
-            } else if (!var->init->type) {
-                // 解析器已报错
-            } else if (var->init->type->is_reference()) {
-                // 初值本身已是引用（如引用返回值的接收）：沿用它的绑定即可，
-                // 调用结果不是 lvalue，但绑定对象确已存在
-                Type* it = var->init->type->get_reference()->target;
-                Type* tgt = dt->get_reference()->target;
-                if (tgt && it && !is_same_type(it, tgt))
-                    error(var->init->loc, "reference target type mismatch");
-            } else if (!var->init->is_lvalue) {
-                error(var->init->loc,
-                      "reference must be initialized with an lvalue");
-            } else {
-                Type* tgt = dt->get_reference()->target;
-                if (tgt && !tgt->is_reference() &&
-                    !is_same_type(var->init->type, tgt))
-                    error(var->init->loc, "reference target type mismatch");
-            }
+            if (var->init) check_ref_init_source(*var, *dt);
             continue;
         }
         if (!var->init || !var->init->type) continue;
@@ -988,6 +864,9 @@ void SemanticAnalyzer::visit_var_list(VarList& vl) {
     }
     for (VarItem* var : vl.vars) {
         if (!var->type) var->type = vl.type;
+        // 字段的身份是 collect 阶段登记的类成员符号，裸名与 `self.x` 都解析到它；
+        // 再登记一个同名局部量只会让同一个字段分裂成两个 Symbol
+        if (is_field_item(var)) continue;
         Symbol sym(SymbolKind::Variable, var);
         sym.specs = &vl.specs;
         sym.default_public = true;
@@ -999,22 +878,51 @@ void SemanticAnalyzer::visit_var_list(VarList& vl) {
     }
 }
 
-// 引用字段的绑定点只能是 INIT 顶层的直接赋值：嵌套在条件里的赋值不保证执行
-static bool field_bound_in_init(Class& c, const VarItem* f) {
+// 声明处初值的绑定检查：初值即绑定点，绑定源必须是同目标类型的对象，
+// 绑定不走常规值转换
+void SemanticAnalyzer::check_ref_init_source(const VarItem& var, const Type& dt) {
+    Expr* src = var.init;
+    if (!src->type) return;
+    if (src->type->is_reference()) {
+        // 初值本身已是引用（如引用返回值的接收）：沿用它的绑定即可，
+        // 调用结果不是 lvalue，但绑定对象确已存在
+        Type* it = src->type->get_reference()->target;
+        Type* tgt = dt.get_reference()->target;
+        if (tgt && it && !is_same_type(it, tgt))
+            error(src->loc, "reference target type mismatch");
+        return;
+    }
+    if (!src->is_lvalue) {
+        error(src->loc, "reference must be initialized with an lvalue");
+        return;
+    }
+    Type* tgt = dt.get_reference()->target;
+    if (tgt && !tgt->is_reference() && !is_same_type(src->type, tgt))
+        error(src->loc, "reference target type mismatch");
+}
+
+// 类里是否声明了 INIT：没有 INIT 的类只能走零参默认构造，没有字段赋值点
+static bool class_has_init(const Class& c) {
     for (Decl* m : c.members) {
         if (!m || m->kind != DeclKind::SpecialMethod) continue;
-        auto* sm = static_cast<SpecialMethod*>(m);
-        if (sm->kind != SpecialMethod::Kind::Init || !sm->body) continue;
-        auto* blk = sm->body->get_block();
-        if (!blk) return false;
-        for (Stmt* st : blk->stmts) {
-            if (!st) continue;
-            auto* es = st->get_expr();
-            auto* asg = es && es->expr ? es->expr->get_assign() : nullptr;
-            if (asg && asg->target && asg->target->sym &&
-                asg->target->sym->node == f)
-                return true;
-        }
+        if (static_cast<SpecialMethod*>(m)->kind == SpecialMethod::Kind::Init)
+            return true;
+    }
+    return false;
+}
+
+// 当前类的字段按名字取回：字段的身份是 collect 阶段登记的类成员符号
+Symbol* SemanticAnalyzer::class_field_symbol(std::string_view name) const {
+    if (!current_class || !current_class->scope) return nullptr;
+    Symbol* m = SymbolTable::lookup_member_in(current_class->scope,
+                                              std::string(name));
+    return (m && m->kind == SymbolKind::Variable) ? m : nullptr;
+}
+
+// inner 是否在 outer 之内（含自身）
+static bool scope_within(Scope* inner, Scope* outer) {
+    for (Scope* s = inner; s; s = s->parent) {
+        if (s == outer) return true;
     }
     return false;
 }
@@ -1038,21 +946,33 @@ void SemanticAnalyzer::visit_class(Class& c) {
                 if (!embed_.count(&c)) embed_order_.push_back(&c);
                 embed_[&c].emplace_back(fc, vi);
             }
-            if (!vi->type || !vi->type->is_reference()) continue;
+            if (!vi->type || !vi->type->is_reference()) {
+                // const 字段只在声明处的初值或 INIT 里赋值一次，二者都没有
+                // 就没有任何赋值点：类一旦建成就再也写不进去
+                if (vl->specs.has(SpecKind::Const) && !vi->init) {
+                    std::string f = "const field '" + std::string(vi->name) + "'";
+                    if (is_static) {
+                        error(vi->loc, f + " cannot be static: its storage is "
+                               "initialized before any INIT runs, so give it "
+                               "an initializer");
+                    } else if (!class_has_init(c)) {
+                        error(vi->loc, f + " must be assigned in INIT or by an "
+                               "initializer, but the class has no INIT");
+                    }
+                }
+                continue;
+            }
             std::string f = "reference field '" + std::string(vi->name) + "'";
             if (is_static) {
                 error(vi->loc, f + " cannot be static: a reference field can "
                       "only be bound in INIT");
                 continue;
             }
-            if (vi->init) {
-                error(vi->init->loc, f + " must be bound by an assignment at "
-                      "the top level of INIT, not by an initializer");
-                continue;
-            }
-            if (!field_bound_in_init(c, vi))
-                error(vi->loc, f + " must be bound by an assignment at the "
-                      "top level of INIT");
+            // 绑定点是字段初值，或 INIT 里的赋值：类一旦建成就再也不有绑定点，
+            // 两者都没有、连 INIT 都没有的类连绑定的地方都没有
+            if (!vi->init && !class_has_init(c))
+                error(vi->loc, f + " must be bound by an initializer or by an "
+                      "assignment in INIT, but the class has neither");
         }
     }
 }
@@ -1190,6 +1110,12 @@ void SemanticAnalyzer::visit_expr_identifier(Expr::Identifier& id) {
         return;
     }
     Symbol* sym = symbols_.lookup_local(id.name);
+    // 字段只登记为类成员，裸名查找看不到它。类作用域里的字段比外层作用域的
+    // 同名量更近，方法体里的局部量则仍按词法作用域优先
+    if (current_class && current_class->scope &&
+        (!sym || !scope_within(sym->decl_scope, current_class->scope))) {
+        if (Symbol* field = class_field_symbol(id.name)) sym = field;
+    }
     // 块内的 exprdef 与局部变量同一套查找，先判别名再走变量路径
     if (sym && sym->kind == SymbolKind::ExprAlias) {
         expand_expr_alias(sym);
@@ -1220,7 +1146,10 @@ void SemanticAnalyzer::visit_expr_identifier(Expr::Identifier& id) {
         current_expr->sym = member;
         check_access(member, current_expr->loc);
         if (member->kind == SymbolKind::Variable) {
-            current_expr->type = member->get_type();
+            // 读取引用字段即读取被绑定对象：隐式解引用为其目标类型
+            Type* mt = member->get_type();
+            if (mt && mt->is_reference()) mt = mt->get_reference()->target;
+            current_expr->type = mt;
             current_expr->is_lvalue = true;
         } else if (member->kind == SymbolKind::Function) {
             if (Decl* d = member->get_decl()) {
@@ -1326,9 +1255,12 @@ void SemanticAnalyzer::check_access(Symbol* sym, const Location& loc) {
 // 写访问控制：离开声明作用域后 priv / readonly 均不可写
 void SemanticAnalyzer::check_write_access(Symbol* sym, const Location& loc) {
     if (!sym) return;
-    // const 在任何作用域都不可写
+    // const 不可二次写入：方法体内的赋值由流检查按路径判定，第一次赋值是
+    // 初始化；方法体之外（形参默认值、字段与模块级初值）没有这样的流，
+    // 对 const 的赋值必定是二次写入
     if (sym->is_const()) {
-        error(loc, "cannot assign to const '" + sym_display_name(sym) + "'");
+        if (!current_body)
+            error(loc, "cannot assign to const '" + sym_display_name(sym) + "'");
         return;
     }
     Access acc = sym->access_level();

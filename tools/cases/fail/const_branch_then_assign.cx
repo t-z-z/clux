@@ -1,0 +1,9 @@
+main() int r {
+    const int x
+    if 0 {
+        x = 1
+    }
+    x = 0
+    r = x
+    return
+}
