@@ -502,11 +502,6 @@ private:
     void report_infer_arrays();
     // 类字段按值内嵌另一个类：自身内联或相互内联使布局无解，须报错
     void check_embedded_layout();
-    // 引用返回的绑定约束：不能绑本函数的局部变量，也不能绑 null
-    void check_ref_return(Func& f);
-    void scan_ref_ret(Stmt* s, const VarItem* ret_var,
-                      std::unordered_set<const VarItem*>& locals,
-                      std::vector<std::pair<Expr*, Location>>& ret_values);
     // 内嵌依赖图上的 DFS：返回 false 表示已报错
     bool embed_visit(Class* c, std::unordered_map<Class*, int>& state);
     std::unordered_map<Class*, std::vector<std::pair<Class*, VarItem*>>> embed_;
@@ -607,6 +602,10 @@ private:
     bool is_param_item(VarItem* vi) const;
     // vi 是否为当前类声明的字段
     bool is_field_item(VarItem* vi) const;
+    // 当前类里名为 name 的字段符号（字段只登记为类成员）
+    Symbol* class_field_symbol(std::string_view name) const;
+    // 引用声明处初值的绑定检查：绑定源必须是同目标类型的对象
+    void check_ref_init_source(const VarItem& var, const Type& dt);
 
     // 克隆辅助（深拷贝，新节点统一登记到 cu_）
 

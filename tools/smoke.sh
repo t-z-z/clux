@@ -29,6 +29,7 @@ declare -A EXPECT=(
     [148_malloc_var_assign]=5
     [varargs_float]=15
     [extern_llvmir]=25
+    [const_init_flow]=27
 )
 
 tmp=$(mktemp -d)

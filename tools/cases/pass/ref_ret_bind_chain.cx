@@ -1,0 +1,40 @@
+import cstdio
+int g = 0
+Box {
+    pub int v = 0
+
+    pub INIT(int x) { self.v = x }
+}
+// 绑定链：延迟绑定的局部引用绑在模块级变量上，剥到底后存储不在本帧
+from_global() int-& r {
+    int-& s
+    s = g
+    r = s
+    return
+}
+// 剥到类形参：槽里存的是调用方的实例指针，绑出去仍然有效
+from_param(Box b) Box-& r {
+    Box-& s
+    s = b
+    r = s
+    return
+}
+// 剥一层解引用：绑的是调用方指过来的对象，形参的槽不参与
+deref(int-* p) int-& r { r = p-*  return }
+main() int r {
+    r = 0
+    int-& ig = from_global()
+    ig = 7
+    if g != 7 { r = r + 1 }
+    Box b = Box(3)
+    Box-& ib = from_param(b)
+    ib.v = 9
+    if b.v != 9 { r = r + 2 }
+    int a = 1
+    int-* pa = a-&
+    int-& id = deref(pa)
+    id = 6
+    if a != 6 { r = r + 4 }
+    printf("%d\n", g)
+    return
+}

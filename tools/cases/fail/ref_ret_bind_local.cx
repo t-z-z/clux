@@ -1,0 +1,17 @@
+// 绑定链剥到底落在本帧的局部量上：返回出去的地址会悬垂
+Node {
+    pub int v = 0
+
+    pub INIT(int x) { self.v = x }
+}
+pick() Node-& r {
+    Node local = Node(1)
+    Node-& s
+    s = local
+    r = s
+    return
+}
+main() int x {
+    x = 0
+    return
+}

@@ -11,7 +11,6 @@ namespace cx{
     X(Pub, "pub") \
     X(Priv, "priv") \
     X(Inline, "inline") \
-    X(Own, "own") \
     X(Readonly, "readonly") \
     X(Malloc, "malloc") \
     X(Alloca, "alloca") \

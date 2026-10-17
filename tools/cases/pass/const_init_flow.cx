@@ -1,0 +1,25 @@
+// const 的第一次赋值是初始化：局部量、返回变量、类字段各一次
+C {
+    pub:
+    const int x
+    const int y = 10
+    INIT(int v) { self.x = v }
+    sum() int r { r = x + y  return }
+}
+twice(int v) const int r {
+    r = v * 2
+    return
+}
+main() int r {
+    r = 0
+    const int a
+    a = 1
+    r = r + a
+    const int b
+    b = 2
+    r = r + b
+    C c = C(4)
+    r = r + c.sum() + twice(5)
+    if r != 27 { r = 1 }
+    return
+}

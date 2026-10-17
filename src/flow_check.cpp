@@ -97,7 +97,13 @@ void FlowChecker::check_jumps(Stmt* body) {
 // 变量初始化检查：不得读取未赋值过的变量
 void FlowChecker::check_initialization(
         Stmt* body, const std::vector<VarList*>& params,
-        const std::vector<VarList*>& returns, bool in_init) {
+        const std::vector<VarList*>& returns, bool in_init, Class* cls) {
+    // 一次性的绑定、绑定链与返回变量改写记录都只在本方法体内有意义，
+    // 放在函数体判空之前，免得空函数体把上一个的记录带过来
+    bound_once_.clear();
+    ref_src_.clear();
+    ret_written_.clear();
+    ret_assigns_ = 0;
     if (!body) return;
     InitCtx ctx;
     ctx.in_init = in_init;
@@ -106,18 +112,52 @@ void FlowChecker::check_initialization(
         if (!vl) continue;
         for (VarItem* vi : vl->vars) {
             Symbol* sym = sym_of(vi);
-            if (sym) { ctx.declared.insert(sym); ctx.assigned.insert(sym); }
+            if (sym) {
+                ctx.declared.insert(sym);
+                ctx.assigned.insert(sym);
+                ctx.bound_before.insert(sym);
+            }
         }
     }
-    // 返回变量：视作普通变量，在 return 或函数末尾读取时检查是否已赋值
+    // 返回变量：视作普通变量，在 return 或函数末尾读取时检查是否已赋值。
+    // 声明处的初值同样是把地址带出去的绑定点，与函数体里的赋值一个规矩
     for (VarList* vl : returns) {
         if (!vl) continue;
         for (VarItem* vi : vl->vars) {
             Symbol* sym = sym_of(vi);
             if (!sym) continue;
             ctx.declared.insert(sym);
-            if (vi->init) ctx.assigned.insert(sym);
+            ctx.bound_before.insert(sym);
             ctx.ret_sym = sym;
+            if (vi->init) ctx.assigned.insert(sym);
+            // 引用返回变量声明处的初值就是绑定点，与函数体里的赋值一个规矩
+            if (vi->init && vi->type && vi->type->is_reference())
+                check_bind_source(ctx, sym, vi->init);
+        }
+    }
+    // 受管字段：const 字段要赋值一次，引用字段要绑定一次。
+    // 字段初值在 INIT body 之前写入，static 字段的存储是模块级的，
+    // 二者都不必在构造期赋值；其余字段在 INIT 内每条路径都必须赋值一次，
+    // 非 INIT 的方法则由构造期保证已赋值
+    if (cls) {
+        for (Decl* m : cls->members) {
+            if (!m || m->kind != DeclKind::VarList) continue;
+            VarList* vl = static_cast<VarList*>(m);
+            bool is_static = vl->specs.has(SpecKind::Static);
+            bool is_const = vl->specs.has(SpecKind::Const);
+            for (VarItem* vi : vl->vars) {
+                Type* ft = vi->type ? vi->type : vl->type;
+                if (!ft || (!ft->is_reference() && !is_const)) continue;
+                Symbol* sym = sym_of(vi);
+                if (!sym) continue;
+                ctx.declared.insert(sym);
+                if (ft->is_reference()) ctx.ref_fields.insert(sym);
+                if (vi->init || is_static || !in_init) {
+                    ctx.assigned.insert(sym);
+                } else {
+                    ctx.must_init.push_back(sym);
+                }
+            }
         }
     }
     init_stmt(ctx, body);
@@ -125,10 +165,35 @@ void FlowChecker::check_initialization(
         error_(body->loc, "return variable '" +
               sym_display_name(ctx.ret_sym) + "' is never assigned");
     }
+    // 构造完成时每个受管字段都必须已被赋值/绑定：不赋值就用不到它，
+    // 而类一旦建成就再也不有赋值点
+    if (!ctx.terminated) {
+        for (Symbol* sym : ctx.must_init) {
+            if (ctx.assigned.count(sym)) continue;
+            auto* vi = dynamic_cast<VarItem*>(sym->node);
+            Location loc = vi ? vi->loc : body->loc;
+            Type* ft = sym->get_type();
+            if (ft && ft->is_reference())
+                error_(loc, "reference field '" + sym_display_name(sym) +
+                      "' is never bound: bind it in INIT on every path");
+            else
+                error_(loc, "const field '" + sym_display_name(sym) +
+                      "' is never assigned: assign it in INIT on every path "
+                      "or give it an initializer");
+        }
+    }
 }
 
 void FlowChecker::init_stmt(InitCtx& ctx, Stmt* s) {
     if (!s) return;
+    // 语句前后比对游标：子树里改写过返回变量的，连同本语句一起记下来，
+    // can_use_register_ret 据此判断"末尾恰好一次赋值"
+    size_t mark = ret_assigns_;
+    init_stmt_body(ctx, s);
+    if (ret_assigns_ != mark) ret_written_.insert(s);
+}
+
+void FlowChecker::init_stmt_body(InitCtx& ctx, Stmt* s) {
     if (auto* b = s->get_block()) {
         for (Stmt* x : b->stmts) {
             if (ctx.terminated) break;
@@ -200,114 +265,172 @@ void FlowChecker::init_stmt(InitCtx& ctx, Stmt* s) {
                 if (sym && vt && vt->is_array_type())
                     ctx.assigned.insert(sym);
             }
-            if (sym) ctx.declared.insert(sym);
+            if (sym) {
+                ctx.declared.insert(sym);
+                ctx.locals.insert(sym);
+            }
         }
         return;
     }
 }
 
-// 返回变量的"至少赋值一次"扫描：不走流敏感的 assigned 合并
-bool FlowChecker::body_assigns_return(Stmt* s, Symbol* target) {
-    if (!s) return false;
-    if (auto* b = s->get_block()) {
-        for (Stmt* x : b->stmts) if (body_assigns_return(x, target)) return true;
-        return false;
-    }
-    if (auto* e = s->get_expr()) return expr_assigns_return(e->expr, target);
-    if (auto* i = s->get_if()) {
-        return expr_assigns_return(i->condition, target)
-            || body_assigns_return(i->then_branch, target)
-            || body_assigns_return(i->else_branch, target);
-    }
-    if (auto* w = s->get_while()) {
-        return expr_assigns_return(w->condition, target)
-            || body_assigns_return(w->body, target);
-    }
-    if (auto* f = s->get_for()) {
-        return body_assigns_return(f->init, target)
-            || expr_assigns_return(f->condition, target)
-            || body_assigns_return(f->next, target)
-            || body_assigns_return(f->body, target);
-    }
-    if (s->is_return()) return false;
-    if (auto* v = s->get_var_decl()) {
-        VarList* vl = v->vars;
-        if (!vl) return false;
-        for (VarItem* vi : vl->vars) {
-            Symbol* sym = sym_of(vi);
-            if (sym == target && vi->init) return true;
-            if (vi->init && expr_assigns_return(vi->init, target)) return true;
+// 绑定源逐层剥到最终指着的变量：剥成员、下标、一元解引用，
+// 落在本帧存储上时返回该变量，否则 nullptr。
+// 本帧存储有两处：局部量，以及按值传入的标量/指针形参——形参的槽同样在
+// 栈帧上，绑它自己返回即悬垂（引用形参与类形参的槽里存的是调用方的地址
+// 与实例指针，不算）。全局量与字段的存储不在本帧。
+// 引用变量的值就是绑定源的地址，故要沿绑定链剥到底：声明处有初值的剥初值，
+// 延迟绑用的剥流检查记下的那次绑定（自引用成环时按剥不动处理）。
+// 剥过 -* 时地址落在被指向的对象上，形参指的地方不可能是本帧
+// （值由调用方给出，那时本帧还不存在），因此放过；局部量指的地方无从判断，
+// 按本帧存储处理
+VarItem* FlowChecker::ref_bind_root(Expr* e, const InitCtx& ctx) const {
+    bool derefed = false;
+    for (int hop = 0; e && hop < 64; ++hop) {
+        Symbol* sym = e->sym;
+        if (sym && sym->kind == SymbolKind::Variable) {
+            auto* vi = dynamic_cast<VarItem*>(sym->node);
+            if (!vi) return nullptr;
+            Type* vt = vi->type;
+            bool is_ref = vt && vt->is_reference();
+            bool local = ctx.locals.count(sym) != 0;
+            // 形参与返回变量之外的都是全局量与类字段：存储不在本帧
+            if (!local && !ctx.bound_before.count(sym)) return nullptr;
+            if (!local) {
+                if (is_ref || as_class(vt)) return nullptr;   // 引用/类形参
+                if (derefed) return nullptr;                 // 剥过解引用
+            }
+            if (!is_ref) return vi;      // 局部量或按值形参的栈槽
+            auto it = ref_src_.find(sym);
+            if (it != ref_src_.end() && it->second && it->second != e) {
+                e = it->second;
+                derefed = false;
+                continue;
+            }
+            if (vi->init && vi->init != e) {
+                e = vi->init;
+                derefed = false;
+                continue;
+            }
+            return vi;
         }
-        return false;
+        if (auto* m = e->get_member()) { e = m->target; continue; }
+        if (auto* ix = e->get_index()) { e = ix->target; continue; }
+        if (auto* u = e->get_unary()) {
+            derefed = u->op == OpKind::Mul;
+            e = u->operand;
+            continue;
+        }
+        return nullptr;   // 字面量、调用等：没有变量根
     }
-    return false;
+    return nullptr;
 }
 
-bool FlowChecker::expr_assigns_return(Expr* e, Symbol* target) {
-    if (!e) return false;
-    if (auto* a = e->get_assign()) {
-        if (a->target && a->target->sym == target) return true;
-        return expr_assigns_return(a->value, target);
+// 赋值：目标符号的 const 与绑定规则，以及绑定点上的来源检查。
+// const 的第一次赋值是初始化，之后再赋值报错；延迟绑定的局部引用同理，
+// 本方法体里第一次赋值绑定被引用对象，之后的赋值是写穿。
+// 登记在 declared 里的是本方法体的存储（局部量、形参、返回变量、本类的
+// 受管字段），未登记的量（全局量、static 字段、他类的字段）都已带着值，
+// 不是初始化点；声明处带值的量（形参、字段初值、构造期）同理。
+// 判断"已经赋过值"不看路径：赋值写在分支里、循环里，它也是这方法体里
+// const 的那一次初始化，之后再写就是二次写入
+void FlowChecker::check_assign(InitCtx& ctx, Expr::Assign* a) {
+    Expr* target = a ? a->target : nullptr;
+    if (!target || !target->sym) return;
+    Symbol* sym = target->sym;
+    bool tracked = ctx.declared.count(sym) != 0;
+    Type* dt = sym->get_type();
+    // 延迟绑定的局部引用：声明处没有初值，第一次赋值才绑定。形参入口即绑定、
+    // 返回变量由 return 带出、引用字段只在 INIT 里绑定，都不是这里的绑定点
+    VarItem* vi = dynamic_cast<VarItem*>(sym->node);
+    bool late_ref = tracked && dt && dt->is_reference() && vi && !vi->init &&
+                    !ctx.bound_before.count(sym) && !ctx.ref_fields.count(sym);
+    bool ref_binding = false;
+    if (sym->is_const()) {
+        if (!tracked) {
+            error_(target->loc,
+                   "cannot assign to const '" + sym_display_name(sym) + "'");
+        } else if (ctx.assigned.count(sym) || bound_once_.count(sym)) {
+            error_(target->loc, "cannot assign to const '" + sym_display_name(sym) +
+                  "': it is already initialized");
+        } else {
+            bound_once_.insert(sym);
+        }
+    } else if (late_ref) {
+        if (bound_once_.count(sym)) {
+            // 绑定之后这次赋值是写穿：写穿得先有绑定可写，
+            // 绑定点写在分支里时不保证已经执行
+            if (!ctx.assigned.count(sym))
+                error_(target->loc, "use of reference '" + sym_display_name(sym) +
+                      "' before it is bound");
+        } else {
+            bound_once_.insert(sym);
+            ref_binding = true;
+        }
+    } else if (dt && dt->is_reference()) {
+        // 引用字段在 INIT 里的赋值、引用返回变量的赋值，存的都是地址
+        ref_binding = (ctx.in_init && ctx.ref_fields.count(sym)) ||
+                      sym == ctx.ret_sym;
     }
-    if (auto* b = e->get_binary()) {
-        return expr_assigns_return(b->left, target)
-            || expr_assigns_return(b->right, target);
-    }
-    if (auto* u = e->get_unary()) return expr_assigns_return(u->operand, target);
-    if (auto* c = e->get_call()) {
-        if (expr_assigns_return(c->callee, target)) return true;
-        for (Expr* arg : c->args) if (expr_assigns_return(arg, target)) return true;
-        return false;
-    }
-    if (auto* t = e->get_ternary()) {
-        return expr_assigns_return(t->cond, target)
-            || expr_assigns_return(t->then_expr, target)
-            || expr_assigns_return(t->else_expr, target);
-    }
-    if (auto* ix = e->get_index()) {
-        return expr_assigns_return(ix->target, target)
-            || expr_assigns_return(ix->index, target);
-    }
-    if (auto* m = e->get_member()) return expr_assigns_return(m->target, target);
-    if (auto* ca = e->get_cast()) return expr_assigns_return(ca->operand, target);
-    if (auto* ar = e->get_array()) {
-        for (Expr* m : ar->members) if (expr_assigns_return(m, target)) return true;
-        return expr_assigns_return(ar->fill_value, target);
-    }
-    if (auto* sp = e->get_spawn()) return expr_assigns_return(sp->call, target);
-    return false;
+    if (tracked) ctx.assigned.insert(sym);
+    if (sym == ctx.ret_sym) ++ret_assigns_;
+    if (!ref_binding) return;
+    if (late_ref) ref_src_[sym] = a->value;
+    check_bind_source(ctx, sym, a->value);
 }
 
-void FlowChecker::init_assign_target(InitCtx& ctx, Expr* e) {
-    if (!e) return;
-    if (e->sym && ctx.declared.count(e->sym)) {
-        ctx.assigned.insert(e->sym);
+// 绑定点的来源检查：存进引用槽的是被引用对象的地址，源得指着一个对象。
+// 引用表达式沿用它已有的绑定，类值本身就是一个对象；
+// 字面量（含 null）与当场算出来的值没有可绑定的存储。
+// 引用返回还要再判一层：返回出去的地址得比本函数帧活得久
+void FlowChecker::check_bind_source(InitCtx& ctx, Symbol* target, Expr* src) {
+    if (!src) return;   // 解析器已报错
+    Type* st = src->type;
+    bool obj = src->is_lvalue ||
+               (st && (st->is_reference() || as_class(st) != nullptr));
+    if (!obj) {
+        error_(src->loc,
+               "cannot bind a reference to a value that does not denote an object");
+        return;
     }
+    if (target != ctx.ret_sym) return;
+    VarItem* frame = ref_bind_root(src, ctx);
+    if (!frame) return;
+    bool local = ctx.locals.count(sym_of(frame)) != 0;
+    error_(src->loc, std::string("cannot return a reference to ") +
+          (local ? "local variable '" : "parameter '") +
+          std::string(frame->name) + "': its storage is gone once the "
+          "function returns");
 }
 
 void FlowChecker::init_expr(InitCtx& ctx, Expr* e) {
     if (!e) return;
-    if (auto* id = e->get_identifier()) {
-        (void)id;
-        if (e->sym && ctx.declared.count(e->sym) && !ctx.assigned.count(e->sym)) {
+    // 读取检查：局部量、形参、返回变量与类的受管字段都登记在 declared 里，
+    // 其中 const 字段在 INIT 内尚未赋值、引用字段尚未绑定时同样不得读取
+    auto check_read = [&](Symbol* sym) {
+        if (!sym || !ctx.declared.count(sym) || ctx.assigned.count(sym)) return;
+        Type* dt = sym->get_type();
+        if (dt && dt->is_reference())
+            error_(e->loc, "use of reference '" + sym_display_name(sym) +
+                  "' before it is bound");
+        else
             error_(e->loc, "use of uninitialized variable '" +
-                  sym_display_name(e->sym) + "'");
-        }
+                  sym_display_name(sym) + "'");
+    };
+    if (e->get_identifier()) {
+        check_read(e->sym);
         return;
     }
     if (auto* a = e->get_assign()) {
         init_expr(ctx, a->value);
         // INIT 内对引用字段的赋值是绑定：形参与局部变量在构造返回后即失效
-        if (a->target && a->target->sym) {
-            Type* tt = a->target->sym->get_type();
-            if (tt && tt->is_reference() && ctx.in_init &&
-                !ctx.declared.count(a->target->sym) && a->value &&
-                a->value->sym && ctx.declared.count(a->value->sym))
-                error_(a->value->loc,
-                       "cannot bind a reference field to a local or parameter "
-                       "of INIT: it is dead once INIT returns");
-        }
-        init_assign_target(ctx, a->target);
+        if (a->target && a->target->sym && ctx.in_init &&
+            ctx.ref_fields.count(a->target->sym) && a->value &&
+            a->value->sym && ctx.declared.count(a->value->sym))
+            error_(a->value->loc,
+                   "cannot bind a reference field to a local or parameter "
+                   "of INIT: it is dead once INIT returns");
+        check_assign(ctx, a);
         return;
     }
     if (auto* b = e->get_binary()) { init_expr(ctx, b->left); init_expr(ctx, b->right); return; }
@@ -322,7 +445,7 @@ void FlowChecker::init_expr(InitCtx& ctx, Expr* e) {
         return;
     }
     if (auto* ix = e->get_index()) { init_expr(ctx, ix->target); init_expr(ctx, ix->index); return; }
-    if (auto* m = e->get_member()) { init_expr(ctx, m->target); return; }
+    if (auto* m = e->get_member()) { init_expr(ctx, m->target); check_read(e->sym); return; }
     if (auto* ca = e->get_cast()) { init_expr(ctx, ca->operand); return; }
     if (auto* ar = e->get_array()) {
         for (Expr* m : ar->members) init_expr(ctx, m);
@@ -354,7 +477,7 @@ bool FlowChecker::can_use_register_ret(Func& f) {
     if (!sym) return false;
     // 返回值声明处带初始化表达式：初始化即唯一一次写入，函数体不再改写
     if (ret_var->init) {
-        return !body_assigns_return(f.body, sym);
+        return ret_written_.empty();
     }
     std::vector<Stmt*> one = { f.body };
     return seq_tail_assign(one, sym);
@@ -382,6 +505,8 @@ bool FlowChecker::stmt_tail_assign(Stmt* s, Symbol* ret) {
 
 // 语句序列：末尾必须 tail 赋值（或末尾 return 前恰好一次赋值），
 // 且更早位置不得出现对 ret 的赋值
+// 语句序列末尾恰好一次 r = X：末尾语句自身是这次赋值，
+// 其余语句都不能改写过 r（流检查遍历时记在 ret_written_ 里）
 bool FlowChecker::seq_tail_assign(const std::vector<Stmt*>& stmts, Symbol* ret) {
     if (stmts.empty()) return false;
     size_t tail = stmts.size() - 1;
@@ -392,7 +517,7 @@ bool FlowChecker::seq_tail_assign(const std::vector<Stmt*>& stmts, Symbol* ret) 
     }
     if (!stmt_tail_assign(stmts[tail], ret)) return false;
     for (size_t i = 0; i < tail; ++i) {
-        if (body_assigns_return(stmts[i], ret)) return false;
+        if (ret_written_.count(stmts[i])) return false;
     }
     return true;
 }

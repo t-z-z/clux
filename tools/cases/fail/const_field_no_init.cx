@@ -1,0 +1,5 @@
+C {
+    pub:
+    const int x
+}
+main() int r { C c = C()  r = c.x  return }

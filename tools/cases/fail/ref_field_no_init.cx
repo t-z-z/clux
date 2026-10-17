@@ -1,0 +1,9 @@
+// 引用字段的绑定点是 INIT 里的赋值，连 INIT 都没有就没有绑定点
+A {
+    pub int v = 0
+    pub int-& r
+}
+main() int r {
+    r = 0
+    return
+}

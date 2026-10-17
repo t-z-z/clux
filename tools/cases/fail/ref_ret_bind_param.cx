@@ -1,0 +1,6 @@
+// 按值传入的形参占着本帧的一个栈槽，绑定源不能是它自己
+pick(int v) int-& r { r = v  return }
+main() int x {
+    x = 0
+    return
+}

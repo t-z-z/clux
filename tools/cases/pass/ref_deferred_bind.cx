@@ -1,0 +1,51 @@
+import cstdio
+int probe = 0
+// 引用字段的绑定点可以写在 INIT 的分支里，但每条路径都得绑定
+Box {
+    pub int value = 0
+    pub int-& slot
+
+    pub INIT(int v) {
+        self.value = v
+        if v > 0 { self.slot = self.value }
+        else { self.slot = value_of(v) }
+    }
+}
+// 函数返回引用值可以绑到左值上
+value_of(int v) int-& r {
+    probe = v
+    r = probe
+    return
+}
+main() int r {
+    r = 0
+    int i = 1
+    int-& s
+    s = i
+    s = 5
+    if i != 5 { r = r + 1 }
+    if s != 5 { r = r + 2 }
+    // 绑定之后的赋值是写穿，源不必是对象
+    int j = 2
+    s = j
+    if i != 2 { r = r + 4 }
+    // 引用表达式可以当绑定源：沿用它自己的绑定
+    int-& t = s
+    t = 7
+    if i != 7 { r = r + 8 }
+    Box b = Box(3)
+    if b.slot != 3 { r = r + 16 }
+    if b.value != 3 { r = r + 32 }
+    // 绑定点写在循环里：每轮都重新绑定，读到的都是当前值
+    int k = 0
+    int sum = 0
+    int-& cur
+    while k < 3 {
+        cur = k
+        k = k + 1
+        sum = sum + cur
+    }
+    if sum != 6 { r = r + 64 }
+    printf("%d\n", i)
+    return
+}

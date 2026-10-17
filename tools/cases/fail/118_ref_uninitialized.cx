@@ -1,6 +1,10 @@
-// 引用必须创建时绑定，不允许先声明后绑定
-main() {
+// 引用的绑定可以推迟到第一次赋值，但绑定前不得读取
+main() int r {
     int a = 1
+    int b = 2
     int-& s
+    int c = s
     s = a
+    r = c
+    return
 }
