@@ -1334,9 +1334,8 @@ void SemanticAnalyzer::check_write_access(Symbol* sym, const Location& loc) {
     Access acc = sym->access_level();
     if (acc == Access::Public) return;
     if (is_scope_on_path(sym->decl_scope)) return;
-    if (acc == Access::Private) {
-        error(loc, "cannot assign to private member '" + sym_display_name(sym) + "'");
-    } else if (acc == Access::Readonly) {
+    // priv 在取值时就报错了，这里不必重复
+    if (acc == Access::Readonly) {
         error(loc, "cannot assign to readonly member '" + sym_display_name(sym) + "'");
     }
 }
