@@ -2646,6 +2646,9 @@ std::string Translator::eval_index(Expr* e, Expr::Index*) {
 }
 
 std::string Translator::eval_member(Expr* e, Expr::Member* m) {
+    // 限定名函数作为值：与裸名一样 decay 为函数指针，取其地址
+    if (e->type && e->type->is_func_ref())
+        return "@" + IRWriter::quote(mangler_.of(e->type->get_func_ref()->func));
     // 枚举值：编译期常量，直接内联为整数
     if (e->sym && e->sym->kind == SymbolKind::EnumVar) {
         if (auto* ev = e->sym->get<EnumVariant>())

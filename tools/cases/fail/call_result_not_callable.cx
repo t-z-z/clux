@@ -1,0 +1,11 @@
+// 调用结果作被调用者：类值只认 operator ()，没有就是调用不了，
+// 也不能被当成拿空实参再调一次内层函数
+Box-<T> {
+    pub T v
+    pub INIT(T a) { self.v = a }
+}
+pick-<T>(Box-<T> b) Box-<T> r { r = b }
+main() {
+    Box-<int> a = Box-<int>(1)
+    pick(a)()
+}

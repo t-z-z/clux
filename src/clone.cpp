@@ -222,7 +222,18 @@ Decl* CompUnit::clone_decl(Decl* d) {
             std::vector<Decl*> members;
             members.reserve(c->members.size());
             for (auto* m : c->members) members.push_back(clone_decl(m));
-            return add_node<Class>(c->loc, c->name, c->specs, std::move(members));
+            // 注入来源与泛型形参要一起带过去：模板实例化后各自重新展开注入
+            std::vector<Type*> injs;
+            injs.reserve(c->injects.size());
+            for (auto* t : c->injects) injs.push_back(clone_type(t));
+            std::vector<Type*> tinjs;
+            tinjs.reserve(c->trailing_injects.size());
+            for (auto* t : c->trailing_injects) tinjs.push_back(clone_type(t));
+            auto* cloned = add_node<Class>(c->loc, c->name, c->specs,
+                std::move(members), std::move(injs), std::move(tinjs));
+            cloned->type_params = clone_type_params(c->type_params);
+            cloned->base_source = c->base_source;
+            return cloned;
         }
         case DeclKind::Enum: {
             auto* e = static_cast<Enum*>(d);

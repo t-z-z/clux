@@ -64,13 +64,17 @@ void SemanticAnalyzer::expand() {
     if (expanded_) return;
     expanded_ = true;
     process_using_namespaces();
+    in_expansion_ = true;
     injector_->expand_all();
+    in_expansion_ = false;
 }
 
 void SemanticAnalyzer::analyze_rest() {
     expand();
     // 泛型模板本体不进语义遍历与 IR：摘除后按使用点实例化
     collect_generics();
+    // 多模块下前端已统一补分析过，这里兜住单模块直接调用 analyze() 的路径
+    analyze_expand_instances();
     for (Decl* d : cu_.top_decls) collect_global_order(d);
     collect_extern_vars();
     walk(cu_);
@@ -452,6 +456,19 @@ std::string SemanticAnalyzer::type_to_key(Type& t) {
             params += f->params[i] ? type_to_key(*f->params[i]) : "i8";
         }
         return ret + "(" + params + ")";
+    }
+    // 泛型类应用：还没有实例类型，按源码写法记，推导失败时诊断要看得懂
+    if (t.is_generic_type()) {
+        auto* g = t.get_generic_type();
+        std::string args;
+        for (size_t i = 0; i < g->args.size(); ++i) {
+            Type* a = g->args[i];
+            if (i > 0) args += ",";
+            // 泛型形参在模板本体里是没解析的裸名，按原样写出
+            if (a && a->is_named()) args += type_name_string(a);
+            else args += a ? type_to_key(*a) : "?";
+        }
+        return type_name_string(g->base) + "-<" + args + ">";
     }
     if (t.is_named()) {
         return "%" + type_name_string(&t);
@@ -1674,6 +1691,15 @@ void SemanticAnalyzer::visit_expr_member(Expr::Member& m) {
                         Type::FuncRef{static_cast<Func*>(d)}
                     );
             }
+            // 目标是一个类，取到的就是它的实例方法：实际签名多一个接收者，
+            // decay 成声明的函数指针类型后调用会走错。作为被调用者不受影响，
+            // static 方法没有接收者，可以取地址
+            if (!in_callee_ && as_class(m.target->type) &&
+                !(member->specs && member->specs->has(SpecKind::Static))) {
+                error(current_expr->loc,
+                      "cannot take the address of method '" + field +
+                      "': a method has no standalone value without its receiver");
+            }
             current_expr->is_lvalue = false;
             return;
         }
@@ -2080,7 +2106,9 @@ void SemanticAnalyzer::visit_type_generic(Type::GenericType& g) {
           "' is not a generic class");
 }
 
-// 值位置的泛型应用：泛型类的实例类型，泛型函数的实例化留给 resolve_call
+// 值位置的泛型应用：泛型类的实例类型；泛型函数按显式类型实参实例化后
+// 就能作值（函数指针、赋值等）。没有类型实参就无从推导，
+// 裸用模板的误用由 check_generic_ref_use 报出
 void SemanticAnalyzer::visit_expr_generic(Expr::GenericType& g) {
     Expr* base = g.base;
     Decl* tmpl = base ? (base->sym ? base->sym->get_decl() : nullptr) : nullptr;
@@ -2091,6 +2119,29 @@ void SemanticAnalyzer::visit_expr_generic(Expr::GenericType& g) {
             Expr* ref = instance_ref_node(base, inst);
             current_expr->loc = ref->loc;
             current_expr->data = std::move(ref->data);
+            current_expr->type = ref->type;
+            current_expr->sym = ref->sym;
+            return;
+        }
+        // instantiate 已报出具体原因
+        current_expr->type = nullptr;
+        current_expr->is_lvalue = false;
+        return;
+    }
+    // 值位置的泛型函数：按显式类型实参实例化后就能作值（函数指针、赋值等）。
+    // 作为被调用者时留给 resolve_call：那里还拿得到实参类型，
+    // 推导与成员方法的 self 都要靠它。方法实例不带接收者，visit_expr_member
+    // 已经拦下取地址，不走这条路
+    if (!in_callee_ && base && (base->is_identifier() || base->is_member()) &&
+        tmpl && tmpl->kind == DeclKind::Func && is_generic_decl(tmpl) &&
+        !g.args.empty()) {
+        if (Func* inst = instantiate_func(*static_cast<Func*>(tmpl), g.args, {},
+                                          current_expr->loc)) {
+            // 函数实例作值：类型是函数引用，decay 成函数指针靠它
+            Expr* ref = instance_ref_node(base, inst);
+            current_expr->loc = ref->loc;
+            current_expr->data = std::move(ref->data);
+            current_expr->type = ref->type;
             current_expr->sym = ref->sym;
             return;
         }

@@ -152,6 +152,9 @@ FrontendResult run_frontend(StringPool& pool, const std::string& source,
     // 类成员表在这一步写入 Cont::scope，必须所有模块都展开完再开始遍历，
     // 否则先遍历的模块会看到尚未展开的空类作用域
     for (auto& m : modules) m->sem->expand();
+    // 展开期实例化出的泛型类（注入来源）在此补分析：它归创建它的模块管，
+    // 别的模块可能已经拿到同一个实例，因此必须排在所有模块的遍历之前
+    for (auto& m : modules) m->sem->analyze_expand_instances();
     bool ok = true;
     // 逆 BFS 序遍历：modules 是 BFS 装入的，被导入的模块总排在导入方之后，
     // 逆过来就是"依赖在前"。typedef/exprdef 在主遍历里按序展开使用点，

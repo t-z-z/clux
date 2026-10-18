@@ -10,6 +10,17 @@
 namespace cx {
 
 namespace {
+
+// 模板深度：进入模板或模板体内的容器时 +1，返回路径不必各自维护
+struct TemplateDepth {
+    int& d;
+    bool entered;
+    TemplateDepth(int& depth, bool enter) : d(depth), entered(enter) {
+        if (entered) ++d;
+    }
+    ~TemplateDepth() { if (entered) --d; }
+};
+
 std::vector<std::string> decl_key_names(const Decl* d) {
     std::vector<std::string> names;
     if (!d) return names;
@@ -190,6 +201,10 @@ void InjectionExpander::expand_class(Class* cls, Scope* parent_scope) {
         return;
     }
 
+    // 模板体内的注入（模板自身与嵌在模板里的类）等实例化后各展开一次：
+    // 实参可能引用本类的泛型形参，此刻还没有对应类型
+    TemplateDepth depth(template_depth_, is_generic_decl(cls));
+
     // 类内部的类未在 P0 注册，这里补注册类名与 scope
     if (!cls->scope && parent_scope) {
         std::string name(cls->name);
@@ -212,19 +227,15 @@ void InjectionExpander::expand_class(Class* cls, Scope* parent_scope) {
     // 来源解析不进入类自身 scope，从所在 scope 的父链查找
     Scope* search_scope = cls->scope ? cls->scope->parent : nullptr;
 
-    auto resolve = [&](Type* mod) -> Class* {
-        if (!mod) return nullptr;
-        if (auto* p = mod->get_primitive())
-            return make_base_source(p->kind, mod->loc);
-        // `#foo-<int>` 解析成泛型应用；泛型注入尚未实现，宁可报错也不静默丢弃
-        if (mod->is_generic_type()) {
-            error_(mod->loc, "cannot inject from generic '" +
-                  type_name_string(mod->get_generic_type()->base) +
-                  "': generics are not supported yet");
+    // 按名字取注入来源的类，非类来源报错
+    auto lookup_class = [&](Type* mod, Symbol** sym_out) -> Class* {
+        if (sym_out) *sym_out = nullptr;
+        auto* id = mod ? mod->get_identifier() : nullptr;
+        if (!id) {
+            if (mod) error_(mod->loc, "cannot inject from '" +
+                             type_name_string(mod) + "': not a class");
             return nullptr;
         }
-        auto* id = mod->get_identifier();
-        if (!id) return nullptr;
         Symbol* sym = SymbolTable::lookup_member_up(search_scope, std::string(id->name));
         Decl* d = sym ? sym->get_decl() : nullptr;
         if (!d || d->kind != DeclKind::Class) {
@@ -232,7 +243,36 @@ void InjectionExpander::expand_class(Class* cls, Scope* parent_scope) {
                   "': not a class");
             return nullptr;
         }
+        if (sym_out) *sym_out = sym;
         return static_cast<Class*>(d);
+    };
+
+    auto resolve = [&](Type* mod) -> Class* {
+        if (!mod) return nullptr;
+        if (auto* p = mod->get_primitive())
+            return make_base_source(p->kind, mod->loc);
+        if (auto* g = mod->get_generic_type()) {
+            // 模板体内的实参还是形参名，此处解析不出类型，交给实例化时结算
+            if (template_depth_ > 0) return nullptr;
+            Symbol* sym = nullptr;
+            Class* tmpl = lookup_class(g->base, &sym);
+            if (!tmpl) return nullptr;
+            if (!is_generic_decl(tmpl)) {
+                error_(mod->loc, "cannot inject from '" + std::string(tmpl->name) +
+                      "': it is not generic, drop '-<...>'");
+                return nullptr;
+            }
+            if (!generic_source_) return nullptr;
+            return generic_source_(*tmpl, g->args, sym, search_scope, mod->loc);
+        }
+        Class* c = lookup_class(mod, nullptr);
+        // 泛型类必须给类型实参，否则来源无从确定
+        if (c && is_generic_decl(c)) {
+            error_(mod->loc, "cannot inject from generic '" + std::string(c->name) +
+                  "': write '" + std::string(c->name) + "-<...>'");
+            return nullptr;
+        }
+        return c;
     };
 
     // 来源按优先级从高到低：前置注入（左→右）、基类自身、尾随注入（左→右）

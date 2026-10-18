@@ -1,0 +1,8 @@
+// 泛型类在值位置必须写类型实参：裸调用无从确定实例
+Box-<T> {
+    pub T v
+    pub INIT(T a) { self.v = a }
+}
+main() {
+    int x = Box(1)
+}

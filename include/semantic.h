@@ -283,6 +283,14 @@ struct GenericState {
     std::map<std::pair<const Decl*, std::string>, Decl*> cache;
     // 实例符号所在的模板作用域：跨模块复用同一实例时也要能取回它的符号
     std::unordered_map<const Decl*, Scope*> instance_scope;
+    // 类实例的来源：实例是由哪个模板、以哪组实参建出来的。
+    // 泛型类的实参类型在 IR 与语义里都只剩实例名，推导形参类型时
+    // 靠它把实参还原成"同一模板 + 实参表"再与形参逐个比对
+    struct Origin {
+        const Decl* tmpl = nullptr;
+        std::vector<Type*> args;
+    };
+    std::unordered_map<const Decl*, Origin> origins;
 };
 
 // 语义分析器
@@ -325,6 +333,9 @@ class SemanticAnalyzer : public ASTVisitor {
     // 泛型（实现见 src/semantic_generic.cpp）
     // 已实例化声明：语义主遍历之后挂到 top_decls，translator 只看得到它们
     std::vector<Decl*> generic_instances_;
+    // expand 阶段标志：期间的实例化只展开成员表，函数体分析推迟到主遍历之前
+    bool in_expansion_ = false;
+    std::vector<std::pair<Decl*, Scope*>> expand_instances_;
     // 生成的实例名存储（deque 保证元素地址稳定，须活过 AST）
     std::deque<std::string> instance_names_;
 
@@ -344,7 +355,11 @@ public:
         injector_ = std::make_unique<InjectionExpander>(cu_, symbols_,
             [this](const Location& loc, const std::string& msg) { error(loc, msg); },
             [this](const Location& loc, const std::string& msg) { warning(loc, msg); },
-            [this](Decl* d, bool dp) { collect_decl(d, dp); });
+            [this](Decl* d, bool dp) { collect_decl(d, dp); },
+            [this](Class& tmpl, std::vector<Type*>& args, Symbol* sym,
+                   Scope* scope, const Location& loc) {
+                return instantiate_generic_source(tmpl, args, sym, scope, loc);
+            });
         const_sink_.warn  = [this](const Location& loc, const std::string& msg) { warning(loc, msg); };
         const_sink_.error = [this](const Location& loc, const std::string& msg) { error(loc, msg); };
         #define X(name,str) type##name = make_type(Location(), Type::Primitive{PrimitiveTypeKind::name});
@@ -454,14 +469,25 @@ public:
     void extract_generic_templates(std::vector<Decl*>& members, Scope* scope,
                                    bool default_public);
     Class* instantiate_class(Class& tmpl, const std::vector<Type*>& args,
-                             const Location& loc);
+                             const Location& loc, Symbol* decl_sym = nullptr);
     Func* instantiate_func(Func& tmpl, const std::vector<Type*>& args,
                            const std::vector<Type*>& arg_types,
                            const Location& loc);
+    // 泛型注入来源：实参类型按 search_scope 解析后实例化，返回展开好的实例类
+    Class* instantiate_generic_source(Class& tmpl, std::vector<Type*>& args,
+                                      Symbol* tmpl_sym, Scope* search_scope,
+                                      const Location& loc);
+    // 展开期实例的函数体在此补分析：注入方立刻就要用它的成员表，
+    // 那时别的类还没展开完，不能让它的方法体去查未就位的成员
+    void analyze_expand_instances();
     // 从实参类型推导形参类型的实例化：形参位置是泛型形参则绑定或校验一致性，
-    // 否则退化为 can_convert_to 判定（含 is_same_type）
-    bool deduce_type(Type* param, Type* arg, TypeSubst& subst,
-                     const std::vector<TypeParam*>& tparams);
+    // 形参是泛型类应用则与实参实例的模板和实参表逐个比对，
+    // 其余退化为 can_convert_to 判定（含 is_same_type）
+    bool deduce_type(Type* param, Type* arg, TypeSubst& subst, const Func& tmpl);
+    // 泛型类应用 `Bar-<T>` 的基名解析：模板本体的类型节点不参与遍历，
+    // 形参位置上还是没解析的裸名，按模板声明作用域解析一次，
+    // 结果留在节点上，实例克隆件直接可用
+    Decl* resolve_generic_base(Type* t, const Func& tmpl);
     // 模板的登记信息；模板已从 AST 摘除，仍可按声明指针取回
     bool generic_template_of(const Decl* d, GenericState::Template& out) const;
     // 克隆树中类型位置的泛型形参名替换为实参类型

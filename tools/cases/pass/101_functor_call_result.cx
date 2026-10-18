@@ -1,0 +1,18 @@
+// 被调用者是调用结果：按结果值的类型解析（这里是 functor），
+// 不能拿内层被调函数的符号当成再调一次
+Box-<T> {
+    pub T v
+    pub INIT(T a) { self.v = a }
+}
+Adder-<T> {
+    pub T base
+    pub INIT(T b) { self.base = b }
+    pub operator () (T x) T r { r = base + x }
+}
+make-<T>(Box-<T> b) Adder-<T> r { r = Adder-<T>(b.v) }
+main() int r {
+    r = 0
+    Box-<int> a = Box-<int>(10)
+    if make(a)(5) != 15 { r = r + 1 }
+    return
+}

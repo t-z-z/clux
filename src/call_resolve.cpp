@@ -229,14 +229,19 @@ void SemanticAnalyzer::resolve_named_call(Expr* call_expr, Expr::Call& c,
     c.resolved = func;
 }
 
-// 泛型函数调用：显式 `-<T>` 实参或按实参类型推导，实例化后把被调用者
+// 泛型调用：显式 `-<T>` 实参或按实参类型推导，实例化后把被调用者
 // 改写为实例，后续按普通命名调用解析。泛型类在类型位置已实例化，
-// 此处只剩构造调用。
+// 值位置的裸调用无从确定实例，在此拦下。
 // 返回 false 表示实例化失败：错误已报出，调用到此结束
 bool SemanticAnalyzer::resolve_generic_call(Expr* call_expr, Expr::Call& c,
                                             Symbol*& callee_sym) {
     Decl* tmpl = callee_sym ? callee_sym->get_decl() : nullptr;
-    if (!is_generic_decl(tmpl) || tmpl->kind == DeclKind::Class) return true;
+    if (!is_generic_decl(tmpl)) return true;
+    if (tmpl->kind == DeclKind::Class) {
+        call_fail(call_expr, "'" + std::string(tmpl->name) + "' is generic: write '" +
+                             std::string(tmpl->name) + "-<...>' to use it");
+        return false;
+    }
 
     std::vector<Type*> deduced_only;   // 无显式实参：全靠实参类型推导
     const std::vector<Type*>& args = c.callee->is_generic_type()
@@ -269,25 +274,23 @@ void SemanticAnalyzer::resolve_call(Expr* call_expr, Expr::Call& c) {
     if (resolve_funcptr_call(call_expr, c)) return;
     if (resolve_functor_call(call_expr, c)) return;
 
-    // 命名调用 → 解析被调用者名字，构造 callkey 后查表
+    // 命名调用 → 解析被调用者名字，构造 callkey 后查表。
+    // 被调用者得是名字引用（裸名、限定名，或泛型应用的基名）：其他表达式
+    // 取它的 sym 会拿到表达式内部函数的符号，`(foo(a))()` 就会被当成
+    // 拿 0 个实参再调一次 foo。函数指针与 functor 已按类型在上面处理，
+    // 到不了这里的才是真调用不了
+    Expr* name_expr = c.callee;
+    if (auto* g = c.callee->get_generic_type()) name_expr = g->base;
     std::string name;
-    Symbol* callee_sym = c.callee->sym;
-    if (callee_sym) {
-        if (Decl* d = callee_sym->get_decl()) {
-            name = std::string(d->name);
-        }
-    }
-    if (name.empty()) {
-        if (auto* id = c.callee->get_identifier()) {
-            name = std::string(id->name);
-        } else if (auto* m = c.callee->get_member()) {
-            name = std::string(m->member);
-        }
-    }
-    if (name.empty()) {
+    if (auto* id = name_expr ? name_expr->get_identifier() : nullptr) {
+        name = std::string(id->name);
+    } else if (auto* m = name_expr ? name_expr->get_member() : nullptr) {
+        name = std::string(m->member);
+    } else {
         call_fail(call_expr, "invalid callee expression");
         return;
     }
+    Symbol* callee_sym = c.callee->sym;
 
     if (!resolve_generic_call(call_expr, c, callee_sym)) return;
 

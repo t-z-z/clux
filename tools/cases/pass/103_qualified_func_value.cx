@@ -1,0 +1,24 @@
+// 限定名函数作为值：decay 成函数指针，与裸名同一套调用约定
+namespace ns {
+    plus1(int x) int r { r = x + 1 }
+    wrap-<T>(T x) T r { r = x }
+}
+apply($(int)int f, int x) int r { r = f(x) }
+C {
+    pub INIT() { }
+    spec static:
+    pub f(int a) int r { r = a + 1 }
+}
+main() int r {
+    r = 0
+    $(int)int a = ns::plus1
+    if a(1) != 2 { r = r + 1 }
+    $(int)int b = ns::wrap-<int>
+    if b(3) != 3 { r = r + 2 }
+    if apply(ns::plus1, 4) != 5 { r = r + 4 }
+    if ns::plus1(5) != 6 { r = r + 8 }
+    // static 方法没有接收者，可以取地址
+    $(int)int c = C::f
+    if c(6) != 7 { r = r + 16 }
+    return
+}

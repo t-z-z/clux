@@ -1,0 +1,8 @@
+// 注入来源的实参在声明点结算：类型名解析不了就没有实例可言
+Box-<T> {
+    pub T v
+    pub INIT(T a) { self.v = a }
+}
+#Box-<Missing> Derived {}
+main() {
+}

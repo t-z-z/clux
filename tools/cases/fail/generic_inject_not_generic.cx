@@ -1,0 +1,8 @@
+// 非泛型类不带类型实参：`#Plain-<int>` 的来源上没有形参表
+Plain {
+    pub int v = 0
+    pub INIT() {}
+}
+#Plain-<int> Derived {}
+main() {
+}

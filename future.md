@@ -1,41 +1,5 @@
 # clux 未来特性规划
 
-## 泛型
-
-函数与类已实现：`foo-<int>(x)` 显式实参，`foo(x)` 按实参类型推导，
-类不按实参推导（实参必须写全）。模板本体不进语义遍历与 IR，语义阶段按实参
-生成实例（`Array<i32>`、`foo$i32`），translator 不感知泛型。
-
-未实现：泛型注入（`#Base-<int> bar` 报 `generics are not supported yet`）；
-泛型方法不能用 `self`；泛型形参不能当值用（如 `T data[T]` 的长度）。
-
-函数泛型
-
-```cx
-foo-<T>(T bar) T r=bar {}
-main(){
-    foo-<int>(1)
-}
-```
-
-类泛型
-
-```cx
-Array-<T> {
-    T[100] data
-    int len = 0
-    op [](int index) T-& r {
-        r = data[index]-&
-    }
-}
-```
-
-修饰泛型
-
-```cx
-#foo-<int> bar {}
-```
-
 ## 闭包与代码块
 
 `\() {}` 函数字面量、`{ }` 块表达式、尾随代码块 `f()--{ }` 三者同源，都是

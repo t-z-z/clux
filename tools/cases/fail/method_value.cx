@@ -1,0 +1,11 @@
+// 实例方法不能取地址：实际签名多一个接收者，
+// decay 成声明的函数指针类型后调用会走错
+Holder {
+    pub INIT() { }
+    pub twice(int v) int r { r = v }
+    pub twice-<T>(T v) T r { r = v }
+}
+main() {
+    Holder h = Holder()
+    $(int)int f = h.twice
+}

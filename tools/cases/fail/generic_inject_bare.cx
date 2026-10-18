@@ -1,0 +1,8 @@
+// 泛型类不能裸用作注入来源：来源的类型实参无从确定
+Box-<T> {
+    pub T v
+    pub INIT(T a) { self.v = a }
+}
+#Box Derived {}
+main() {
+}

@@ -1,0 +1,9 @@
+// 泛型类形参的推导：实参不是该模板的实例，推导失败
+Box-<T> {
+    pub T v
+    pub INIT(T a) { self.v = a }
+}
+unwrap-<T>(Box-<T> b) T r { r = b.v }
+main() {
+    unwrap(3)
+}

@@ -62,7 +62,60 @@ struct SubstCollector : ASTVisitor {
         if (subst->find(id.name) == subst->end()) return;
         value_hits.emplace_back(current_expr, id.name);
     }
+    // 注入实参单独收集：AST 遍历不覆盖 injects，base 是模板名本身不参与替换
+    void collect_args(Type::GenericType& g) {
+        for (Type* a : g.args) {
+            if (a) walk(*a);
+        }
+    }
 };
+
+// 注入类型不在 AST 遍历范围内，模板实例化前要先在克隆树里逐层找出替换点，
+// 否则 `#bar-<T>` 的实参会停在形参名上
+void collect_inject_hits(Class* c, SubstCollector& col) {
+    if (!c) return;
+    for (std::vector<Type*>* list : {&c->injects, &c->trailing_injects}) {
+        for (Type* t : *list) {
+            if (t && t->is_generic_type()) col.collect_args(*t->get_generic_type());
+        }
+    }
+    for (Decl* m : c->members) {
+        if (!m) continue;
+        if (m->kind == DeclKind::Class) {
+            collect_inject_hits(static_cast<Class*>(m), col);
+        } else if (m->kind == DeclKind::Namespace) {
+            for (Decl* n : static_cast<Namespace*>(m)->members) {
+                if (n && n->kind == DeclKind::Class) {
+                    collect_inject_hits(static_cast<Class*>(n), col);
+                }
+            }
+        }
+    }
+}
+
+// 具名类型没带解析结果就得再解析一次：源码写的类型名要查作用域，
+// 而泛型实例名等替换产物已带 resolved_decl，重复解析只会查不到
+bool unresolved_name(const Type* t) {
+    if (!t) return false;
+    if (t->is_named()) return !t->resolved_decl || is_generic_decl(t->resolved_decl);
+    if (auto* p = t->get_pointer()) return unresolved_name(p->pointee);
+    if (auto* r = t->get_reference()) return unresolved_name(r->target);
+    if (auto* a = t->get_array_type()) return unresolved_name(a->element);
+    if (auto* g = t->get_generic_type()) {
+        if (unresolved_name(g->base)) return true;
+        for (Type* arg : g->args) {
+            if (unresolved_name(arg)) return true;
+        }
+        return false;
+    }
+    if (auto* f = t->get_func_ptr()) {
+        for (Type* p : f->params) {
+            if (unresolved_name(p)) return true;
+        }
+        return unresolved_name(f->return_type);
+    }
+    return false;
+}
 
 } // namespace
 
@@ -195,11 +248,34 @@ Expr* SemanticAnalyzer::instance_ref_node(Expr* base, Decl* inst) {
     return t;
 }
 
+// 泛型类应用的基名：模板本体不参与遍历，形参位置上的裸名要在这里解析。
+// 解析结果留在节点上：推导与替换都用它判断实参是不是同一模板的实例，
+// 实例克隆件也因此不必再查一次
+Decl* SemanticAnalyzer::resolve_generic_base(Type* t, const Func& tmpl) {
+    auto* g = t ? t->get_generic_type() : nullptr;
+    if (!g || !g->base) return nullptr;
+    if (Decl* d = g->base->resolved_decl) return d;
+    if (g->base->sym) return g->base->sym->get_decl();
+    GenericState::Template tinfo;
+    Scope* scope = generic_template_of(&tmpl, tinfo) ? tinfo.scope : symbols_.root();
+    Scope* saved = symbols_.current_scope();
+    if (scope) symbols_.reset_scope(scope);
+    // 基名正是泛型类的裸名，报错按裸用拦，解析走的是普通类型路径
+    bool saved_base = in_generic_base_;
+    in_generic_base_ = true;
+    walk(*g->base);
+    in_generic_base_ = saved_base;
+    symbols_.reset_scope(saved);
+    return g->base->resolved_decl;
+}
+
 // 从实参类型推导一个泛型形参的实例化：命中泛型形参则绑定或校验一致性；
+// 形参是泛型类应用时，实参须是同一模板的实例，按实参表逐个推导；
 // 否则退化为转换判定，转换不通即推导失败
 bool SemanticAnalyzer::deduce_type(Type* param, Type* arg, TypeSubst& subst,
-                                   const std::vector<TypeParam*>& tparams) {
+                                   const Func& tmpl) {
     if (!param || !arg) return false;
+    const std::vector<TypeParam*>& tparams = tmpl.type_params;
     if (param->is_identifier()) {
         std::string_view name = param->get_identifier()->name;
         bool is_tparam = false;
@@ -218,30 +294,49 @@ bool SemanticAnalyzer::deduce_type(Type* param, Type* arg, TypeSubst& subst,
             return can_convert_to(arg, it->second);
         }
     }
+    // 泛型类形参：实参类型是实例类，其来源模板与本形参相同才谈得上推导
+    if (param->is_generic_type()) {
+        Decl* base = resolve_generic_base(param, tmpl);
+        if (!base || !arg->resolved_decl) return false;
+        auto it = generics_->origins.find(arg->resolved_decl);
+        if (it == generics_->origins.end() || it->second.tmpl != base) return false;
+        auto* g = param->get_generic_type();
+        const std::vector<Type*>& targs = it->second.args;
+        if (targs.size() != g->args.size()) return false;
+        for (size_t i = 0; i < targs.size(); ++i)
+            if (!deduce_type(g->args[i], targs[i], subst, tmpl)) return false;
+        return true;
+    }
     if (param->is_pointer() && arg->is_pointer()) {
         return deduce_type(param->get_pointer()->pointee,
-                           arg->get_pointer()->pointee, subst, tparams);
+                           arg->get_pointer()->pointee, subst, tmpl);
     }
     if (param->is_reference() && arg->is_reference()) {
         return deduce_type(param->get_reference()->target,
-                           arg->get_reference()->target, subst, tparams);
+                           arg->get_reference()->target, subst, tmpl);
     }
     // 数组长度不参与推导，长度不符由 check_param_array_len 报出
     if (param->is_array_type() && arg->is_array_type()) {
         return deduce_type(param->get_array_type()->element,
-                           arg->get_array_type()->element, subst, tparams);
+                           arg->get_array_type()->element, subst, tmpl);
     }
     return can_convert_to(arg, param);
 }
 
 Class* SemanticAnalyzer::instantiate_class(Class& tmpl,
                                           const std::vector<Type*>& args,
-                                          const Location& loc) {
+                                          const Location& loc,
+                                          Symbol* decl_sym) {
     if (args.size() != tmpl.type_params.size()) {
         error(loc, "generic class '" + std::string(tmpl.name) + "' expects " +
               std::to_string(tmpl.type_params.size()) +
               " type argument(s), got " + std::to_string(args.size()));
         return nullptr;
+    }
+    // 实参是泛型模板的裸名：走的是类型位置的裸用检查，已经报过。
+    // 此处不再实例化，否则这个类型会跟着克隆件里的字段再报一遍
+    for (Type* a : args) {
+        if (a && a->is_named() && is_generic_decl(a->resolved_decl)) return nullptr;
     }
     TypeSubst subst;
     for (size_t i = 0; i < args.size(); ++i) {
@@ -259,7 +354,14 @@ Class* SemanticAnalyzer::instantiate_class(Class& tmpl,
     bool pub = true;
     {
         GenericState::Template t;
-        if (generic_template_of(&tmpl, t)) { scope = t.scope; pub = t.default_public; }
+        if (generic_template_of(&tmpl, t)) {
+            scope = t.scope;
+            pub = t.default_public;
+        } else if (decl_sym) {
+            // 展开期的注入实例化发生在模板登记之前：退到注入点查到的符号作用域
+            scope = decl_sym->decl_scope;
+            pub = decl_sym->default_public;
+        }
     }
     std::string name = scope_path(scope) + std::string(tmpl.name) + key;
     if (scope && scope->lookup_member(name)) {
@@ -272,6 +374,10 @@ Class* SemanticAnalyzer::instantiate_class(Class& tmpl,
     inst->name = intern_name(std::move(name));
     inst->type_params.clear();
     inst->scope = nullptr;
+    generics_->origins[inst] = {&tmpl, args};
+    // 缓存先登记：注入来源互相引用时，展开途中再取同一组实参拿回同一个实例，
+    // 由注入展开的环检测收尾，否则会一路递归下去
+    generics_->cache[{&tmpl, key}] = inst;
     // 成员登记与嵌套类展开沿用注入展开的路径：实例类对注入器就是普通类
     Scope* saved = symbols_.current_scope();
     if (scope) symbols_.reset_scope(scope);
@@ -286,10 +392,42 @@ Class* SemanticAnalyzer::instantiate_class(Class& tmpl,
         // 实例内部的泛型模板（嵌套泛型类、泛型方法）改指实例内作用域
         collect_generic_in(inst->members, inst->scope, false);
     }
-    generics_->cache[{&tmpl, key}] = inst;
     generic_instances_.push_back(inst);
-    analyze_instance(inst, scope);
+    if (in_expansion_) {
+        // 展开期实例：注入方马上要合并它的成员表，函数体分析推迟到主遍历之前
+        expand_instances_.emplace_back(inst, scope);
+    } else {
+        analyze_instance(inst, scope);
+    }
     return inst;
+}
+
+// 泛型注入的来源类：实参类型先在注入点的作用域下解析，再按实参实例化模板
+Class* SemanticAnalyzer::instantiate_generic_source(Class& tmpl,
+                                                   std::vector<Type*>& args,
+                                                   Symbol* tmpl_sym,
+                                                   Scope* search_scope,
+                                                   const Location& loc) {
+    Scope* saved = symbols_.current_scope();
+    if (search_scope) symbols_.reset_scope(search_scope);
+    for (Type* a : args) {
+        if (a && unresolved_name(a)) walk(*a);
+    }
+    symbols_.reset_scope(saved);
+    // 解析失败或裸用模板的实参不可用，具体原因已由 walk 报出
+    for (Type* a : args) {
+        if (!a || unresolved_name(a)) return nullptr;
+    }
+    return instantiate_class(tmpl, args, loc, tmpl_sym);
+}
+
+// 展开期实例的函数体在这里补分析：此时所有类的成员表都已就位，
+// 主遍历用到这些实例时签名与类型必须已经解析完
+void SemanticAnalyzer::analyze_expand_instances() {
+    for (size_t i = 0; i < expand_instances_.size(); ++i) {
+        analyze_instance(expand_instances_[i].first, expand_instances_[i].second);
+    }
+    expand_instances_.clear();
 }
 
 Func* SemanticAnalyzer::instantiate_func(Func& tmpl,
@@ -322,7 +460,7 @@ Func* SemanticAnalyzer::instantiate_func(Func& tmpl,
         }
     } else {
         for (size_t i = 0; i < params.size(); ++i) {
-            if (!deduce_type(params[i], arg_types[i], subst, tmpl.type_params)) {
+            if (!deduce_type(params[i], arg_types[i], subst, tmpl)) {
                 error(loc, "cannot deduce type arguments for '" + name +
                       "': argument " + std::to_string(i + 1) +
                       " does not match parameter type '" +
@@ -387,6 +525,7 @@ void SemanticAnalyzer::substitute_types(Decl* d, const TypeSubst& subst) {
     SubstCollector c;
     c.subst = &subst;
     c.walk(*d);
+    if (d->kind == DeclKind::Class) collect_inject_hits(static_cast<Class*>(d), c);
     for (auto& [node, repl] : c.hits) {
         if (!repl) continue;
         if (Type* t = cu_.clone_type(repl)) *node = std::move(*t);

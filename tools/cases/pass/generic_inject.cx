@@ -1,0 +1,42 @@
+// 修饰泛型：`#foo-<int>` 按实参实例化来源类，再把实例的成员并进目标类。
+// 类泛型与修饰泛型可以同名传递：`outer-<T> #inner-<T>` 的 T 是同一个类型
+Inner-<T> {
+    pub T v
+    pub INIT(T x) { self.v = x }
+    pub get() T r { r = self.v }
+}
+Outer-<T> #Inner-<T> {
+    pub twice() T r { r = self.get() }
+}
+Pair-<A, B> {
+    pub A fst
+    pub B snd
+    pub INIT(A a B b) { self.fst = a self.snd = b }
+    pub swap() Pair-<B, A> r { r = Pair-<B, A>(self.snd, self.fst) }
+}
+#Inner-<int> Plain {}
+// 泛型来源的结果再注入给别的类
+#Outer-<long> Twice {}
+#Pair-<int, long> mixed {}
+main() int r {
+    r = 0
+    Plain p = Plain(3)
+    if p.get() != 3 { r = r + 1 }
+    if p.v != 3 { r = r + 2 }
+    Outer-<int> o = Outer-<int>(4)
+    if o.get() != 4 { r = r + 4 }
+    if o.twice() != 4 { r = r + 8 }
+    // 不同实参得到互不相同的来源实例
+    Outer-<char> c = Outer-<char>(65)
+    if c.twice() != 65 { r = r + 16 }
+    Twice t = Twice(5L)
+    if t.twice() != 5L { r = r + 32 }
+    // 多实参来源：实参原样传给模板形参
+    mixed m = mixed(7, 8L)
+    if m.fst != 7 { r = r + 64 }
+    if m.snd != 8L { r = r + 128 }
+    Pair-<long, int> q = m.swap()
+    if q.fst != 8L { r = r + 256 }
+    if q.snd != 7 { r = r + 512 }
+    return
+}

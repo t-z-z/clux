@@ -23,7 +23,7 @@
 | 语义分析 | [`src/semantic.cpp`](src/semantic.cpp), [`include/semantic.h`](include/semantic.h) | 符号收集、作用域管理、表达式类型推导 |
 | 别名展开 | [`src/semantic_def.cpp`](src/semantic_def.cpp), [`include/semantic_def.h`](include/semantic_def.h) | `typedef` / `exprdef` 使用点展开成目标节点的克隆件 |
 | 常数求值 | [`src/const_eval.cpp`](src/const_eval.cpp), [`include/const_eval.h`](include/const_eval.h) | 编译期常量表达式求值 |
-| 修饰注入 | [`src/inject.cpp`](src/inject.cpp), [`include/inject.h`](include/inject.h) | 类 `#修饰` 展开与成员合并 |
+| 修饰注入 | [`src/inject.cpp`](src/inject.cpp), [`include/inject.h`](include/inject.h) | 类 `#修饰` 展开与成员合并，`#foo-<T>` 泛型来源按实参实例化 |
 | 类型转换 | [`src/convert.cpp`](src/convert.cpp) | 隐式/显式转换判定与检查 |
 | 调用解析 | [`src/call_resolve.cpp`](src/call_resolve.cpp) | 调用路径解析、实参匹配 |
 | 流检查 | [`src/flow_check.cpp`](src/flow_check.cpp), [`include/flow_check.h`](include/flow_check.h) | 跳转 label、变量初始化、返回变量赋值、const 的一次性初始化、引用的一次性绑定（延迟绑定，字段须在 INIT 每条路径绑定）、引用返回的绑定源不得落在本帧存储 |
@@ -39,6 +39,10 @@
 - [`include/string_view_map.h`](include/string_view_map.h)：透明查找 map
 
 语义分析的多文件划分共用 `SemanticAnalyzer` 类，方法定义分散在各自的 `.cpp`。AST 语义字段（`type` / `sym` / `conv` 等）的写入与读取契约见 `include/ast.h` 顶部注释。
+
+展开期（`expand()`）产生的泛型实例——注入来源 `Derived #Box-<int>` 要立刻合并
+`Box<int>` 的成员表——其函数体分析推迟到所有模块展开完之后、`analyze_rest()` 之前，
+由前端统一调 `analyze_expand_instances()` 触发。
 
 ## 项目结构
 

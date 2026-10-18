@@ -1,0 +1,28 @@
+// 泛型类的形参位置：形参写成泛型类应用时，实参实例反推出泛型实参，
+// 指针与嵌套实参同样按实例的模板与实参表逐个比对
+Box-<T> {
+    pub T v
+    pub INIT(T a) { self.v = a }
+}
+Pair-<A, B> {
+    pub A fst
+    pub B snd
+    pub INIT(A a B b) { self.fst = a  self.snd = b }
+}
+unwrap-<T>(Box-<T> b) T r { r = b.v }
+head-<T>(Pair-<T, long> p) T r { r = p.fst }
+elem-<T>(Box-<T>-* b) T r {
+    Box-<T> q = b-*
+    r = q.v
+}
+main() int r {
+    r = 0
+    Box-<int> a = Box-<int>(1)
+    if unwrap(a) != 1 { r = r + 1 }
+    if unwrap(Box-<long>(2L)) != 2L { r = r + 2 }
+    if elem(a-&) != 1 { r = r + 4 }
+    Pair-<int, long> p = Pair-<int, long>(3 4L)
+    if head(p) != 3 { r = r + 8 }
+    if head-<int>(p) != 3 { r = r + 16 }
+    return
+}

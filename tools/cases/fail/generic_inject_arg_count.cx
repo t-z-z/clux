@@ -1,0 +1,9 @@
+// 注入来源的实参个数必须与模板形参个数一致
+Box-<T, U> {
+    pub T a
+    pub U b
+    pub INIT(T x U y) { self.a = x self.b = y }
+}
+#Box-<int> Derived {}
+main() {
+}
