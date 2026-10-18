@@ -393,6 +393,8 @@ VarItem* FlowChecker::ref_bind_root(Expr* e, const InitCtx& ctx) const {
 // 引用返回还要再判一层：返回出去的地址得比本函数帧活得久
 void FlowChecker::check_bind_source(InitCtx& ctx, Symbol* target, Expr* src) {
     if (!src) return;   // 解析器已报错
+    // 绑定源写成 &lvalue 时等价于绑定该 lvalue
+    src = src->bind_source();
     Type* st = src->type;
     bool obj = src->is_lvalue ||
                (st && (st->is_reference() || as_class(st) != nullptr));

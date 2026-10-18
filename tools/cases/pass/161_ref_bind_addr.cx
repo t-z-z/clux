@@ -1,0 +1,17 @@
+// 引用绑定源写成 &lvalue：与直接绑定该 lvalue 等价
+import cstdio
+
+Holder {
+    pub int v = 3
+    pub int-& r = v-&      // 字段默认值即绑定点
+}
+
+main() int r {
+    int a = 1
+    int b = 2
+    int-& ref = a-&       // 绑定的是 a 本身
+    ref = b
+    Holder h = Holder()
+    printf("%d %d %d %d\n", a, ref, h.v, h.r)
+    r = 0
+}

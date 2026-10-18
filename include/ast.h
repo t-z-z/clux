@@ -405,6 +405,13 @@ struct Expr : ASTNode {
     BBB(generic_type, GenericType, Expr)
     BBB(inferred, Inferred, Expr)
     BBB(null, Null, Expr)
+    // 引用绑定的源：写成 &lvalue 时与直接绑定该 lvalue 等价
+    Expr* bind_source() {
+        auto* u = get_unary();
+        if (u && u->op == OpKind::BitAnd && u->operand && u->operand->is_lvalue)
+            return u->operand;
+        return this;
+    }
 };
 
 // 类型节点。类型即表达式：命名类型（Identifier / Member 链）本身也走 ASTVisitor，

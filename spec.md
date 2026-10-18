@@ -70,7 +70,7 @@ true
 
 ### 标识符与路径
 
-标识符引用一个名字。路径用 `::` 连接多个名字，逐级进入容器。
+标识符引用一个名字。路径用 `::` 或 `.` 连接多个名字，逐级进入容器。
 
 ```cx
 a
@@ -98,16 +98,16 @@ int-* d = null
 ### 二元运算
 
 ```cx
-a + b
-a == b
-a && b
+a + b       // 相加
+a == b      // 相等
+a && b      // 逻辑且
 ```
 
 ### 调用与索引
 
 ```cx
-foo(1, 2)
-arr[0]
+foo(1 2)    // 调用foo函数，参数为1 2
+arr[0]      // arr的第0项
 ```
 
 调用需要一个函数作为被调用者，函数在第六章介绍。
@@ -195,6 +195,15 @@ long b = long(a)
 ```
 
 类可以定义 `conversion` 特殊方法，不支持自动链式转换。
+
+### 断言
+
+使用tp和ep关键字来断言之后是类型或表达式，以便于括号嵌套
+
+```
+tp ($void)-* funcptr_ptr
+ep call::defined_expr
+```
 
 ## 五、语句
 
@@ -671,12 +680,12 @@ declare i32 @tm_sec(ptr %p) {
 
 工具链命令：
 
-```
-clux -t main.cx    // 翻译
-clux -b main.cx    // 构建
-clux -r main.cx    // 运行
-clux -c main.cx    // 检查
-clux -o file       // 输出位置
+```bash
+clux -t main.cx    # 翻译
+clux -b main.cx    # 构建
+clux -r main.cx    # 运行
+clux -c main.cx    # 检查
+clux -t main.cx -o file       # 输出位置
 ```
 
 主函数main是程序执行的入口，有四种合法签名：

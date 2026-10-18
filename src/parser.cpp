@@ -184,10 +184,11 @@ Import* Parser::parse_import() {
 }
 
 // 声明的起始 token：词（关键字/标识符）、'$' 函数指针类型、
-// '[' 前缀数组类型、'#' 修饰注入
+// '[' 前缀数组类型、'(' 括号类型、'#' 修饰注入
 static bool is_decl_start(const Token &tok) {
     return tok.is_word()
         || tok.kind == TokenKind::Dollar
+        || tok.kind == TokenKind::ParenL
         || tok.kind == TokenKind::Hash;
 }
 // 变量名之后仍属该变量声明的 token；其余（'{'、'('、'-<'、'.' 等）
@@ -447,8 +448,10 @@ bool Parser::is_slice_brace() {
         restore(m);
         return false;
     }
+    // '(' 虽是声明起始，但 'Foo{} (x)' 更像类声明后跟一个语句，不算切片
     bool slice = curr().kind == TokenKind::BraceR && peek().is_ident()
-        && (is_var_tail(peek(2)) || is_decl_start(peek(2)));
+        && (is_var_tail(peek(2))
+            || (peek(2).kind != TokenKind::ParenL && is_decl_start(peek(2))));
     trial_ = saved;
     restore(m);
     return slice;
@@ -1386,14 +1389,24 @@ Expr* Parser::parse_expr(int min_prec) {
 // 前缀解析
 Expr* Parser::parse_prefix() {
     Location loc = get_loc();
-    
+
+    // ep E：断言后面一定是表达式，即使它长得像类型（类名 / typedef 名）
+    if (curr().kind == TokenKind::ExprPrefix) {
+        advance();
+        Expr* operand = parse_prefix();
+        if (!operand) {
+            add_error("expected expression after 'ep'");
+        }
+        return operand;
+    }
+
     // 字面量
     if (curr().is_literal()) {
         return parse_literal();
     }
 
-    // 内置类型转换函数：typename(值)
-    if (curr().is_type()) {
+    // 内置类型转换函数：typename(值)，转换目标也可以写成 tp 类型
+    if (curr().is_type() || curr().kind == TokenKind::TypePrefix) {
         Location c_loc = get_loc();
         Type* target = parse_type();
         if (curr().kind != TokenKind::ParenL) {
@@ -1897,7 +1910,28 @@ Expr* Parser::parse_array_length() {
 
 Type* Parser::parse_type_atom() {
     Type* t = nullptr;
-    if (curr().is_type()) {
+    if (curr().kind == TokenKind::TypePrefix) {
+        // tp T：断言后面一定是类型，后面不是类型就报错
+        walk();
+        t = parse_type();
+        if (!t) {
+            add_error("expected type after 'tp'");
+            return nullptr;
+        }
+    } else if (curr().kind == TokenKind::ParenL) {
+        // 括号类型：(T)、($(int)int)-*，括号后继续接类型后缀
+        walk();
+        t = parse_type();
+        if (!t) {
+            add_error("expected type in '('");
+            return nullptr;
+        }
+        if (curr().kind != TokenKind::ParenR) {
+            add_error("expected ')' to close type");
+            return nullptr;
+        }
+        walk();
+    } else if (curr().is_type()) {
         t = parse_primitive_type();
     } else if (curr().kind == TokenKind::Dollar) {
         t = parse_func_type();

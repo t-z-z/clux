@@ -898,24 +898,26 @@ void SemanticAnalyzer::visit_var_list(VarList& vl) {
 // 声明处初值的绑定检查：初值即绑定点，绑定源必须是同目标类型的对象，
 // 绑定不走常规值转换
 void SemanticAnalyzer::check_ref_init_source(const VarItem& var, const Type& dt) {
-    Expr* src = var.init;
-    if (!src->type) return;
-    if (src->type->is_reference()) {
+    Expr* init = var.init;
+    if (!init->type) return;
+    if (init->type->is_reference()) {
         // 初值本身已是引用（如引用返回值的接收）：沿用它的绑定即可，
         // 调用结果不是 lvalue，但绑定对象确已存在
-        Type* it = src->type->get_reference()->target;
+        Type* it = init->type->get_reference()->target;
         Type* tgt = dt.get_reference()->target;
         if (tgt && it && !is_same_type(it, tgt))
-            error(src->loc, "reference target type mismatch");
+            error(init->loc, "reference target type mismatch");
         return;
     }
+    // 绑定源写成 &lvalue 时等价于绑定该 lvalue
+    Expr* src = init->bind_source();
     if (!src->is_lvalue) {
-        error(src->loc, "reference must be initialized with an lvalue");
+        error(init->loc, "reference must be initialized with an lvalue");
         return;
     }
     Type* tgt = dt.get_reference()->target;
     if (tgt && !tgt->is_reference() && !is_same_type(src->type, tgt))
-        error(src->loc, "reference target type mismatch");
+        error(init->loc, "reference target type mismatch");
 }
 
 // 类里是否声明了 INIT：没有 INIT 的类只能走零参默认构造，没有字段赋值点

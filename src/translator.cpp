@@ -1317,7 +1317,8 @@ void Translator::emit_var_decl(VarList* vl) {
             if (vi->init) {
                 // 引用一律存被引用对象的地址：类实例变量要取出槽里的实例
                 // 指针，直接用 eval_lvalue 会存成槽地址，读时多绕一层错位
-                std::string addr = eval_ref_addr(vi->init);
+                // 绑定源写成 &lvalue 时取其 lvalue，与语义检查绑定的对象一致
+                std::string addr = eval_ref_addr(vi->init->bind_source());
                 if (addr.empty()) addr = eval(vi->init);
                 emit_instr("store ptr " + addr + ", ptr " + slot);
                 ctx_.ref_bound.insert(vi);
@@ -1645,9 +1646,10 @@ void Translator::emit_field_default(const std::string& dst_addr,
         }
         // 绑定源是本类的另一个字段时，初值求值处没有接收者表达式可依，
         // 按字段下标从实例存储算它的地址
-        std::string raddr = field_addr_in(cls, inst_addr, f.var->init);
-        if (raddr.empty()) raddr = eval_ref_addr(f.var->init);
-        if (raddr.empty()) raddr = eval(f.var->init);
+        Expr* src = f.var->init->bind_source();
+        std::string raddr = field_addr_in(cls, inst_addr, src);
+        if (raddr.empty()) raddr = eval_ref_addr(src);
+        if (raddr.empty()) raddr = eval(src);
         emit_instr("store ptr " + raddr + ", ptr " + dst_addr);
         return;
     }
@@ -1706,7 +1708,7 @@ void Translator::emit_global_inits() {
     for (auto& g : globals_) {
         if (!g.var || !g.var->init) continue;
         if (g.var->type && g.var->type->is_reference()) {
-            std::string addr = eval_ref_addr(g.var->init);
+            std::string addr = eval_ref_addr(g.var->init->bind_source());
             if (addr.empty()) addr = "null";
             emit_instr("store ptr " + addr + ", ptr @" + g.sym);
             continue;
