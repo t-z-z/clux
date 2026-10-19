@@ -1,0 +1,11 @@
+// 模块级类变量没有初值时全局槽里是空指针，必须显式构造
+Box {
+    pub int v = 1
+}
+
+Box b
+
+main() int r {
+    r = b.v
+    return
+}

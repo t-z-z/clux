@@ -403,6 +403,15 @@ void FlowChecker::check_bind_source(InitCtx& ctx, Symbol* target, Expr* src) {
                "cannot bind a reference to a value that does not denote an object");
         return;
     }
+    // 绑定不走常规值转换：引用目标类型与绑定源类型必须一致。
+    // 绑定源本身是引用时沿用它已有的绑定，比较的是两边被引用的目标类型
+    Type* tgt = target->get_type();
+    if (tgt && tgt->is_reference()) tgt = tgt->get_reference()->target;
+    if (st && st->is_reference()) st = st->get_reference()->target;
+    if (tgt && st && !is_same_type(st, tgt)) {
+        error_(src->loc, "reference target type mismatch");
+        return;
+    }
     if (target != ctx.ret_sym) return;
     VarItem* frame = ref_bind_root(src, ctx);
     if (!frame) return;

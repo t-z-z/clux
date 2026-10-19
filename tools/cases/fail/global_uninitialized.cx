@@ -1,0 +1,7 @@
+// 模块级标量也必须显式初始化
+int g
+
+main() int r {
+    r = g
+    return
+}

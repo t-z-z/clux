@@ -1,0 +1,19 @@
+// 模块级引用：槽存被引用对象地址，读取与赋值都作用在被引用对象上
+import cstdio
+
+int g = 5
+int-& gr = g-&
+
+Box {
+    pub int v = 7
+}
+Box b = Box()
+Box-& gb = b
+
+main() int r {
+    printf("%d %d\n", gr, gb.v)
+    gr = 42
+    gb.v = 9
+    printf("%d %d %d\n", g, b.v, gb.v)
+    r = 0
+}

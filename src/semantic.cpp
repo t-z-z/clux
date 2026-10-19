@@ -773,6 +773,16 @@ void SemanticAnalyzer::visit_var_list(VarList& vl) {
         check_extern_var_list(vl, ext->second);
     }
     if (module_level) {
+        // 模块级变量必须显式初始化：没有初值时槽里只剩零值，类值更是空指针，
+        // 读取就会得到无效对象。数组的存储本身是完整的零初始化对象，
+        // 不在此列
+        for (VarItem* var : vl.vars) {
+            if (!var || var->init) continue;
+            Type* dt = var->type ? var->type : vl.type;
+            if (dt && dt->is_array_type()) continue;
+            error(var->loc, "module-level variable '" + std::string(var->name) +
+                  "' must be initialized");
+        }
         // 初值在 main 入口按声明顺序求值，引用后方声明的变量只会读到零值
         for (VarItem* var : vl.vars) {
             if (!var || !var->init) continue;

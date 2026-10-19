@@ -1706,7 +1706,17 @@ void Translator::emit_static_inits() {
 // 调用函数；代价是 main 之前这些全局量都是零值
 void Translator::emit_global_inits() {
     for (auto& g : globals_) {
-        if (!g.var || !g.var->init) continue;
+        if (!g.var || g.is_extern || g.skip_emit) continue;
+        if (!g.var->init) {
+            // 标量、指针与定长数组的零初始化存储已是完整初值；类值的全局槽
+            // 里存的是实例指针，零值即 null，须在运行期建出对象再写入
+            if (Class* cls = as_class(g.var->type)) {
+                std::string slot = emit_default_object(cls);
+                if (slot != "0")
+                    emit_instr("store ptr " + slot + ", ptr @" + g.sym);
+            }
+            continue;
+        }
         if (g.var->type && g.var->type->is_reference()) {
             std::string addr = eval_ref_addr(g.var->init->bind_source());
             if (addr.empty()) addr = "null";
@@ -2003,7 +2013,15 @@ std::string Translator::eval_lvalue(Expr* e) {
                 }
                 // 模块级变量：其存储本身就是全局量，地址即该符号
                 auto git = global_names_.find(vi);
-                if (git != global_names_.end()) return "@" + git->second;
+                if (git != global_names_.end()) {
+                    // 模块级引用的 lvalue 是被引用对象：槽存其地址
+                    if (is_ref_item(vi, nullptr)) {
+                        std::string addr = ir_.reg();
+                        emit_instr(addr + " = load ptr, ptr @" + git->second);
+                        return addr;
+                    }
+                    return "@" + git->second;
+                }
                 // static 字段：模块级全局符号
                 std::string sg = mangler_.field_of(vi);
                 if (!sg.empty()) return field_lvalue(e, "@" + sg);
@@ -2242,6 +2260,17 @@ std::string Translator::eval_identifier(Expr* e, Expr::Identifier* id) {
             auto git = global_names_.find(vi);
             if (git != global_names_.end()) {
                 if (is_fixed_array(e->type)) return "@" + git->second;
+                // 模块级引用的槽存被引用对象地址，与局部引用已绑定时同一路径
+                if (is_ref_item(vi, nullptr)) {
+                    std::string addr = ir_.reg();
+                    emit_instr(addr + " = load ptr, ptr @" + git->second);
+                    // 类值即对象地址本身，定长数组的存储在被引用对象处
+                    if (as_class(e->type) || is_fixed_array(e->type)) return addr;
+                    std::string rt = e->type ? map_type(e->type) : "i32";
+                    std::string rr = ir_.reg();
+                    emit_instr(rr + " = load " + rt + ", ptr " + addr);
+                    return rr;
+                }
                 std::string t = e->type ? map_type(e->type) : "i32";
                 std::string r = ir_.reg();
                 emit_instr(r + " = load " + t + ", ptr @" + git->second);
@@ -3148,7 +3177,12 @@ std::string Translator::eval_free_builtin(Expr* e, Expr::Call* c) {
 std::string Translator::eval_default_ctor(Expr* e, Expr::Call* c) {
     if (c->resolved || !c->callee || !c->callee->sym ||
         c->callee->sym->kind != SymbolKind::Class) return "";
-    Class* cls = as_class(e->type);
+    return emit_default_object(as_class(e->type));
+}
+
+// 分配类实例存储并写入声明处字段默认值。不执行 INIT：INIT 是手动调用的
+// 构造方法，模块级变量与 static 字段的默认初始化都只落字段初值
+std::string Translator::emit_default_object(Class* cls) {
     if (!cls) return "0";
     auto it = classes_.find(cls);
     if (it == classes_.end()) return "0";

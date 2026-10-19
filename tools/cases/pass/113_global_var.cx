@@ -1,7 +1,7 @@
 // 模块级变量：读写、跨函数可见、初值按声明顺序求值
 int g = 7
 const int k = 3
-int counter
+int counter = 0
 bump(int d) int r {
     counter = counter + d
     r = counter

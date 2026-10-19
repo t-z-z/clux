@@ -6,12 +6,15 @@ Holder {
     pub int-& r = v-&      // 字段默认值即绑定点
 }
 
+bump(int-& r) { r = r + 1 }
+
 main() int r {
     int a = 1
     int b = 2
     int-& ref = a-&       // 绑定的是 a 本身
     ref = b
+    bump(a-&)             // 引用形参的实参同理
     Holder h = Holder()
-    printf("%d %d %d %d\n", a, ref, h.v, h.r)
+    printf("%d %d %d %d %d\n", a, b, ref, h.v, h.r)
     r = 0
 }

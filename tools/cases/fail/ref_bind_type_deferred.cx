@@ -1,0 +1,8 @@
+// 延迟绑定的引用同样要求目标类型一致，绑定不走值转换
+main() int r {
+    long a = 1
+    int-& s
+    s = a
+    r = s
+    return
+}

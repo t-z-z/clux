@@ -1,0 +1,12 @@
+// 引用返回变量绑定来源时同样要求目标类型一致
+long g = 1
+
+f() int-& r {
+    r = g
+    return
+}
+
+main() int r {
+    r = 0
+    return
+}

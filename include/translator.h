@@ -244,6 +244,8 @@ private:
     std::string eval_call(Expr* e, Expr::Call* c);
     std::string eval_free_builtin(Expr* e, Expr::Call* c);
     std::string eval_default_ctor(Expr* e, Expr::Call* c);
+    // 分配类实例存储并写入字段默认值，返回实例地址
+    std::string emit_default_object(Class* cls);
     std::string eval_ctor_call(Expr* e, Expr::Call* c, SpecialMethod* sm);
     std::string eval_plain_call(Expr* e, Expr::Call* c, Func* fn);
     std::string eval_index(Expr* e, Expr::Index* ix);

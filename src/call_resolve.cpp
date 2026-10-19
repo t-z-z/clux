@@ -317,9 +317,11 @@ std::vector<Type*> SemanticAnalyzer::param_types(
 bool SemanticAnalyzer::check_ref_param(Expr* arg, Type* param) {
     if (!arg || !param || !param->is_reference()) return false;
     Type* tgt = param->get_reference()->target;
-    if (!arg->is_lvalue)
+    // 绑定源写成 &lvalue 时与直接绑定该 lvalue 等价
+    Expr* src = arg->bind_source();
+    if (!src->is_lvalue)
         error(arg->loc, "reference parameter requires an lvalue argument");
-    else if (tgt && arg->type && !is_same_type(arg->type, tgt))
+    else if (tgt && src->type && !is_same_type(src->type, tgt))
         error(arg->loc, "reference parameter target type mismatch");
     return true;
 }

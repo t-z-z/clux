@@ -1,0 +1,14 @@
+// INIT 里绑定引用字段时，绑定源的目标类型必须一致
+long g = 1
+
+A {
+    pub int-& r
+
+    pub INIT() { self.r = g }
+}
+
+main() int r {
+    A a = A()
+    r = a.r
+    return
+}
