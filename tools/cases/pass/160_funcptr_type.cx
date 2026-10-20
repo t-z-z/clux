@@ -1,0 +1,23 @@
+// 函数指针类型：$返回类型(参数类型表)；后缀接在返回类型之后，无需断言或外层括号
+import cstdio
+
+add(int a, int b) int r { r = a + b }
+zero() int r { r = 7 }
+get(int x) int-* r { r = null }
+
+Node {
+    pub $int(int, int) f
+    pub $int(int, int)-* fp
+}
+
+main() int r {
+    int[3] arr = [1 2 3]
+    int x = 2
+    $int(int, int) f = add
+    $int(int, int)-* fp = f-&
+    $int zf = zero
+    $int-*(int) gp = get
+    printf("%d %d %d\n", f(x, 3), zf(), arr[2])
+    if gp(x) != null { r = 1 }
+    r = 0
+}

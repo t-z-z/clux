@@ -29,8 +29,8 @@ extern "C" {
     aligned_alloc(size_t alignment size_t size) void-* r{}
 
     // 进程与环境
-    atexit($(void)void func) int r{}
-    at_quick_exit($(void)void func) int r{}
+    atexit($void(void) func) int r{}
+    at_quick_exit($void(void) func) int r{}
     exit(int status) {}
     _Exit(int status) {}
     quick_exit(int status) {}
@@ -39,8 +39,8 @@ extern "C" {
     system(const char-* string) int r{}
 
     // 搜索与排序
-    bsearch(const void-* key const void-* base size_t nmemb size_t size $(void-* void-*)int compar) void-* r{}
-    qsort(void-* base size_t nmemb size_t size $(void-* void-*)int compar) {}
+    bsearch(const void-* key const void-* base size_t nmemb size_t size $int(void-* void-*) compar) void-* r{}
+    qsort(void-* base size_t nmemb size_t size $int(void-* void-*) compar) {}
 
     // 整数运算
     abs(int j) int r{}

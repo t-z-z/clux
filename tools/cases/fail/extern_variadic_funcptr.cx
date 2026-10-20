@@ -4,6 +4,6 @@ extern "c" {
     v(int a ...) {}
 }
 main() int r {
-    $(int)void f = v
+    $void(int) f = v
     r = 0
 }

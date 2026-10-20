@@ -9,5 +9,5 @@ extern "C" {
 }
 
 main() {
-    $(Pair)Pair f = takes_pair
+    $Pair(Pair) f = takes_pair
 }

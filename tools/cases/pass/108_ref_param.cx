@@ -29,7 +29,7 @@ main() int r {
     reset(p)
     Node n = Node(3)
     clear(n)
-    $(int-&, int)int f = add
+    $int(int-&, int) f = add
     f(a, 4)
     r = 0
     if b != 7 { r = 1 }

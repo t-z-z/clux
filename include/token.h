@@ -65,8 +65,6 @@ namespace cx{
     X(Define, "define") \
     X(TypeDef, "typedef") \
     X(ExprDef, "exprdef") \
-    X(TypePrefix, "tp") \
-    X(ExprPrefix, "ep") \
     X(Conversion, "conversion") \
     X(Init, "INIT") \
     X(Null, "null") \

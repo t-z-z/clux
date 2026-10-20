@@ -10,7 +10,7 @@ extern "LLVMIR" {
     legacy(int tag char[4] s) {}
     variadic(int a ...) {}
     Pair boxed
-    apply($(int) int f, int x) int r {}
+    apply($int(int) f, int x) int r {}
 }
 
 main() int r { r = 0 }

@@ -1,10 +1,10 @@
 // 泛型函数实例作值：显式类型实参在值位置就实例化，
 // 函数引用 decay 成函数指针后照常调用
 identity-<T>(T x) T r = x {}
-apply($(int)int f, int x) int r { r = f(x) }
+apply($int(int) f, int x) int r { r = f(x) }
 main() int r {
     r = 0
-    $(int)int f = identity-<int>
+    $int(int) f = identity-<int>
     if f(3) != 3 { r = r + 1 }
     if apply(identity-<int>, 4) != 4 { r = r + 2 }
     // 同一实例既作值又被调用，是同一个函数

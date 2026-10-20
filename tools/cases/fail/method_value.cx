@@ -7,5 +7,5 @@ Holder {
 }
 main() {
     Holder h = Holder()
-    $(int)int f = h.twice
+    $int(int) f = h.twice
 }

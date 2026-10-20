@@ -181,7 +181,7 @@ b[9][19]    // 正确
 ### 函数指针类型
 
 ```cx
-$(int)int f        // 参数为 int，返回 int
+$int(int) f        // 参数为 int，返回 int
 $int g             // 无参数，返回 int
 ```
 
@@ -195,15 +195,6 @@ long b = long(a)
 ```
 
 类可以定义 `conversion` 特殊方法，不支持自动链式转换。
-
-### 断言
-
-使用tp和ep关键字来断言之后是类型或表达式，以便于括号嵌套
-
-```
-tp ($void)-* funcptr_ptr
-ep call::defined_expr
-```
 
 ## 五、语句
 
@@ -653,7 +644,7 @@ extern "C" 仅支持的类型：
 
 - 标量：int、short、long、float、double、char、bool 
 - 指针：T-*、void-*
-- 函数指针：$(...)....
+- 函数指针：$...(...)
 - 变参：...
 
 clux不承诺内存布局。

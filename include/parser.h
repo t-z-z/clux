@@ -247,7 +247,7 @@ private:
     Type* parse_type_atom();
     Expr* parse_array_length();
     Type* parse_primitive_type();
-    Type* parse_func_type();     // $(int)int
+    Type* parse_func_type();     // $int(int)
     Type* parse_named_type();    // List
 
     // 泛型：形参表 `foo-<T, U>` 与实参表 `List-<int>`

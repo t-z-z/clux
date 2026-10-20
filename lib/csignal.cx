@@ -3,7 +3,7 @@
 // 本文件针对 Linux/glibc。
 
 extern "C" {
-    signal(int sig $(int)void handler) $(int)void r{}
+    signal(int sig $void(int) handler) $void(int) r{}
     raise(int sig) int r{}
 }
 

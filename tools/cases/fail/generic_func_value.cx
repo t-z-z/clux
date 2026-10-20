@@ -1,5 +1,5 @@
 // 泛型函数以值引用没有可确定的签名（作为被调用者除外）
 identity-<T>(T x) T r = x {}
 main() {
-    $(int)int f = identity
+    $int(int) f = identity
 }

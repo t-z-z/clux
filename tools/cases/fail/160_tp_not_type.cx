@@ -1,3 +1,0 @@
-// tp 后面必须紧跟一个类型
-typedef bad = tp 1
-main() { }

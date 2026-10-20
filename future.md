@@ -9,7 +9,7 @@
 
 ```cx
 triple(int a) int r { r = a * 3 }
-apply($(int)int g, int v) int r { r = g(v) }
+apply($int(int) g, int v) int r { r = g(v) }
 main() {
     int x = apply(triple, 3)   // 普通函数名当函数指针值，可传可调
 }
