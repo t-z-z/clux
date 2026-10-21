@@ -1179,6 +1179,18 @@ void Translator::emit_fixed_array_init(const std::string& slot, Type* el,
                                                    lit->value.size() + 1)));
             return;
         }
+        // 元素本身是定长数组：按目标元素长度就地构造/拷贝，不能把
+        // 数组值（元素地址）当成内联聚合直接 store
+        if (is_fixed_array(el)) {
+            if (mem->get_array()) {
+                emit_fixed_array_init(dst, el->get_array_type()->element,
+                                      array_length_of(el), mem);
+            } else {
+                copy_init_into(dst, el->get_array_type()->element,
+                               std::to_string(array_length_of(el)), mem);
+            }
+            return;
+        }
         std::string v = eval(mem);
         std::string mt = mem->type ? map_type(mem->type) : et;
         if (mt != et)
@@ -1192,16 +1204,23 @@ void Translator::emit_fixed_array_init(const std::string& slot, Type* el,
                    std::to_string(k));
         return p;
     };
-    // 数组字面量：逐元素写入
+    // 数组字面量：逐元素写入，尾部按最后一个元素补齐，保证没有未初始化元素
     if (auto* arr = init->get_array()) {
+        if (arr->members.empty() && !arr->fill_value) {
+            emit_instr("store [" + std::to_string(n) + " x " + et +
+                       "] zeroinitializer, ptr " + slot);
+            return;
+        }
         int i = 0;
         for (Expr* mem : arr->members) {
             if (i >= n) break;
             if (mem) write_elem(elem_at(i), mem);
             ++i;
         }
-        if (arr->fill_value)
-            for (int k = i; k < n; ++k) write_elem(elem_at(k), arr->fill_value);
+        Expr* fill = arr->fill_value;
+        if (!fill && !arr->members.empty()) fill = arr->members.back();
+        if (fill)
+            for (int k = i; k < n; ++k) write_elem(elem_at(k), fill);
         return;
     }
     // 字符串字面量：连 NUL 一起拷贝，放得下几个拷几个
@@ -1841,12 +1860,20 @@ long Translator::type_bytes_of(const std::string& t) {
     if (t == "i64" || t == "double" || t == "ptr") return 8;
     if (t == "i128") return 16;
     if (t == "{ ptr, i32 }") return 16;
-    // 定长数组 [N x T]：字节数按元素累加
+    // 定长数组 [N x T]：字节数按元素累加，乘积累加前判界
     if (t.size() > 5 && t.front() == '[' && t.back() == ']') {
         size_t x = t.find(" x ");
         if (x != std::string::npos) {
-            long n = std::stol(t.substr(1, x - 1));
-            return n * type_bytes_of(t.substr(x + 3, t.size() - x - 4));
+            long long n = 0;
+            if (!const_count(t.substr(1, x - 1), n) || n < 0) return 0;
+            long elem = type_bytes_of(t.substr(x + 3, t.size() - x - 4));
+            if (elem <= 0) return 0;
+            unsigned long long bytes =
+                (unsigned long long)n * (unsigned long long)elem;
+            if (bytes / (unsigned long long)elem != (unsigned long long)n ||
+                bytes > (unsigned long long)std::numeric_limits<long>::max())
+                return std::numeric_limits<long>::max();
+            return (long)bytes;
         }
     }
     return 8;
@@ -2541,7 +2568,15 @@ std::string Translator::eval_assign(Expr* e, Expr::Assign* a) {
         emit_instr(sn + " = extractvalue { ptr, i32 } " + sv + ", 1");
         std::string sn64 = ir_.reg();
         emit_instr(sn64 + " = zext i32 " + sn + " to i64");
-        copy_init_into(sp, el, sn64, a->value);
+        // 长度是编译期常量的切片：字面量赋值同样按最后一个元素补齐
+        Expr* tlen = a->target->type->get_array_type()->length;
+        long long nconst = 0;
+        if (tlen && tlen->get_literal() &&
+            const_count(std::string(tlen->get_literal()->value), nconst) &&
+            nconst > 0 && nconst <= std::numeric_limits<int>::max())
+            emit_fixed_array_init(sp, el, (int)nconst, a->value);
+        else
+            copy_init_into(sp, el, sn64, a->value);
         return ptr;
     }
     // 类赋值是值拷贝：字段就地搬进内联存储，变量另分配副本，与声明式
@@ -3712,10 +3747,20 @@ std::string Translator::eval_spawn(Expr*, Expr::Spawn* s) {
 
 int Translator::array_length_of(Type* arrtype) {
     if (!arrtype || !arrtype->is_array_type()) return 0;
+    // 切片的长度在运行期，由 {ptr,len} 的第二个字段给出，不是类型常量
+    if (is_slice_type(arrtype)) return 0;
     Expr* len = arrtype->get_array_type()->length;
-    if (!len || !len->get_literal()) return 0;
-    try { return std::stoi(std::string(len->get_literal()->value)); }
-    catch (...) { return 0; }
+    long long n = 0;
+    if (!len || !len->get_literal() ||
+        !const_count(std::string(len->get_literal()->value), n) ||
+        n < 0 || n > std::numeric_limits<int>::max()) {
+        // 语义阶段已拒绝非正的声明长度；走到这里说明数组类型未完成定长，
+        // 不能像以前那样把求值失败静默回退成 0。空数组字面量自身的
+        // [0 x T] 内部类型是合法的，允许 n == 0
+        error(arrtype->loc, "array length is not a compile-time integer constant");
+        return 0;
+    }
+    return (int)n;
 }
 
 } // namespace cx

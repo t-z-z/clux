@@ -26,7 +26,7 @@
 | 修饰注入 | [`src/inject.cpp`](src/inject.cpp), [`include/inject.h`](include/inject.h) | 类 `#修饰` 展开与成员合并，`#foo-<T>` 泛型来源按实参实例化 |
 | 类型转换 | [`src/convert.cpp`](src/convert.cpp) | 隐式/显式转换判定与检查 |
 | 调用解析 | [`src/call_resolve.cpp`](src/call_resolve.cpp) | 调用路径解析、实参匹配 |
-| 流检查 | [`src/flow_check.cpp`](src/flow_check.cpp), [`include/flow_check.h`](include/flow_check.h) | 跳转 label、变量初始化、返回变量赋值、const 的一次性初始化、引用的一次性绑定（延迟绑定，字段须在 INIT 每条路径绑定）、引用返回的绑定源不得落在本帧存储 |
+| 流检查 | [`src/flow_check.cpp`](src/flow_check.cpp), [`include/flow_check.h`](include/flow_check.h) | 跳转 label（含前向跳过声明）、变量初始化（数组无初值时不得读取）、字段初始化（默认值或 INIT 每条路径，`uninit` 字段除外）、返回变量赋值、const 的一次性初始化、引用的一次性绑定（延迟绑定，字段须在 INIT 每条路径绑定）、引用返回的绑定源不得落在本帧存储 |
 | 诊断系统 | [`src/diagnostic.cpp`](src/diagnostic.cpp), [`include/diagnostic.h`](include/diagnostic.h) | 错误/警告/信息的统一格式输出 |
 | 前端入口 | [`src/compiler.cpp`](src/compiler.cpp), [`include/compiler.h`](include/compiler.h) | `check` / `translate` 接口、import 解析与路由 |
 | IR 生成 | [`src/translator.cpp`](src/translator.cpp), [`src/ir_writer.cpp`](src/ir_writer.cpp), [`include/translator.h`](include/translator.h), [`include/ir_writer.h`](include/ir_writer.h) | AST → LLVM IR 文本 |

@@ -2,8 +2,8 @@
 // 外部变量不能是类……）来自 C 的调用约定。extern "LLVMIR" 的调用约定写在
 // keep`` 的手写 IR 里，clux 无从施加，故一律放行。
 Pair {
-    pub long a
-    pub long b
+    pub uninit long a
+    pub uninit long b
 }
 
 extern "LLVMIR" {

@@ -2,6 +2,7 @@
 #include "../include/semantic.h"
 #include "../include/sem_types.h"
 
+#include <algorithm>
 #include <cstdio>
 #include <cstdlib>
 #include <functional>
@@ -19,7 +20,24 @@ struct JumpPoint {
     int loop_depth = 0;
     bool is_label = false;
     Location loc;
+    size_t order = 0;
 };
+
+struct DeclPoint {
+    std::string name;
+    std::vector<int> scope_path;
+    size_t order = 0;
+    Location loc;
+};
+
+// path 是否为 target 的祖先作用域路径（含相同）
+static bool scope_prefix(const std::vector<int>& path,
+                         const std::vector<int>& target) {
+    if (path.size() > target.size()) return false;
+    for (size_t i = 0; i < path.size(); ++i)
+        if (path[i] != target[i]) return false;
+    return true;
+}
 
 }
 
@@ -28,18 +46,32 @@ void FlowChecker::check_jumps(Stmt* body) {
     if (!body) return;
     std::vector<JumpPoint> labels;
     std::vector<JumpPoint> gotos;
+    std::vector<DeclPoint> decls;
     int scope_counter = 0;
+    size_t order = 0;
 
-    // 收集本体内所有 label / goto 及其作用域路径
+    // 收集本体内所有 label / goto / 局部声明及其作用域路径与出现顺序
     std::function<void(Stmt*, std::vector<int>, int)> scan =
         [&](Stmt* st, std::vector<int> path, int loops) {
         if (!st) return;
         if (auto* f = st->get_label()) {
-            labels.push_back({std::string(f->label), path, loops, true, st->loc});
+            labels.push_back({std::string(f->label), path, loops, true, st->loc,
+                              order++});
             return;
         }
         if (auto* g = st->get_goto()) {
-            gotos.push_back({std::string(g->label), path, loops, false, st->loc});
+            gotos.push_back({std::string(g->label), path, loops, false, st->loc,
+                             order++});
+            return;
+        }
+        if (auto* v = st->get_var_decl()) {
+            if (v->vars) {
+                for (VarItem* vi : v->vars->vars) {
+                    if (!vi) continue;
+                    decls.push_back({std::string(vi->name), path, order, vi->loc});
+                }
+            }
+            ++order;
             return;
         }
         if (auto* b = st->get_block()) {
@@ -87,6 +119,15 @@ void FlowChecker::check_jumps(Stmt* body) {
             if (f.loop_depth > g.loop_depth) {
                 error_(g.loc, "jump into a loop at label '" + g.label + "'");
             }
+            // 前向跳转越过同一作用域里的局部声明：声明处的存储/初值没有执行，
+            // 标签之后不能再把这个名字当作已声明量使用
+            if (f.order > g.order) {
+                for (const DeclPoint& d : decls) {
+                    if (d.order <= g.order || d.order >= f.order) continue;
+                    if (!scope_prefix(d.scope_path, f.scope_path)) continue;
+                    error_(g.loc, "jump over the declaration of '" + d.name + "'");
+                }
+            }
         }
         if (!found) {
             error_(g.loc, "jump to undefined label '" + g.label + "'");
@@ -103,6 +144,7 @@ void FlowChecker::check_initialization(
     ref_src_.clear();
     ret_written_.clear();
     ret_assigns_ = 0;
+    goto_states_.clear();
     if (!body) return;
     InitCtx ctx;
     ctx.in_init = in_init;
@@ -134,19 +176,19 @@ void FlowChecker::check_initialization(
                 check_bind_source(ctx, sym, vi->init);
         }
     }
-    // 受管字段：const 字段要赋值一次，引用字段要绑定一次。
-    // 字段初值在 INIT body 之前写入，static 字段的存储是模块级的，
-    // 二者都不必在构造期赋值；其余字段在 INIT 内每条路径都必须赋值一次，
-    // 非 INIT 的方法则由构造期保证已赋值
+    // 字段：每个非 uninit 字段都要有声明处初值，或在 INIT 内每条路径上赋值。
+    // static 字段的存储是模块级的（零初始化），其余字段在 INIT 内必须初始化，
+    // 非 INIT 的方法则由构造期保证已初始化
     if (cls) {
         for (Decl* m : cls->members) {
             if (!m || m->kind != DeclKind::VarList) continue;
             VarList* vl = static_cast<VarList*>(m);
             bool is_static = vl->specs.has(SpecKind::Static);
-            bool is_const = vl->specs.has(SpecKind::Const);
+            bool is_uninit = vl->specs.has(SpecKind::Uninit);
             for (VarItem* vi : vl->vars) {
+                if (is_uninit) continue;
                 Type* ft = vi->type ? vi->type : vl->type;
-                if (!ft || (!ft->is_reference() && !is_const)) continue;
+                if (!ft) continue;
                 Symbol* sym = sym_of(vi);
                 if (!sym) continue;
                 ctx.declared.insert(sym);
@@ -175,9 +217,13 @@ void FlowChecker::check_initialization(
             if (ft && ft->is_reference())
                 error_(loc, "reference field '" + sym_display_name(sym) +
                       "' is never bound: bind it in INIT on every path");
-            else
+            else if (sym->is_const())
                 error_(loc, "const field '" + sym_display_name(sym) +
                       "' is never assigned: assign it in INIT on every path "
+                      "or give it an initializer");
+            else
+                error_(loc, "field '" + sym_display_name(sym) +
+                      "' is never initialized: assign it in INIT on every path "
                       "or give it an initializer");
         }
     }
@@ -195,9 +241,30 @@ void FlowChecker::init_stmt(InitCtx& ctx, Stmt* s) {
 void FlowChecker::init_stmt_body(InitCtx& ctx, Stmt* s) {
     if (auto* b = s->get_block()) {
         for (Stmt* x : b->stmts) {
-            if (ctx.terminated) break;
+            // 跳转/返回之后的语句在当前路径不可达，但 label 可能是别的
+            // goto 的目标，仍要按合并后的入口状态继续检查
+            if (ctx.terminated && !x->is_label()) continue;
             init_stmt(ctx, x);
         }
+        return;
+    }
+    if (auto* l = s->get_label()) {
+        auto it = goto_states_.find(std::string(l->label));
+        if (it == goto_states_.end() || it->second.empty()) return;
+        // 标签可能由顺序落入和若干 goto 同时到达：只有每条路径都已赋值
+        // 的变量才算在标签之后已初始化
+        InitCtx merged = it->second.front();
+        for (size_t i = 1; i < it->second.size(); ++i)
+            merge_label_state(merged, it->second[i]);
+        if (!ctx.terminated) merge_label_state(merged, ctx);
+        ctx = std::move(merged);
+        ctx.terminated = false;
+        return;
+    }
+    if (auto* g = s->get_goto()) {
+        // 先记下跳转点上的状态，目标 label 处再做交集合并
+        goto_states_[std::string(g->label)].push_back(ctx);
+        ctx.terminated = true;
         return;
     }
     if (auto* e = s->get_expr()) { init_expr(ctx, e->expr); return; }
@@ -266,13 +333,9 @@ void FlowChecker::init_stmt_body(InitCtx& ctx, Stmt* s) {
             if (vi->init) {
                 init_expr(ctx, vi->init);
                 if (sym) ctx.assigned.insert(sym);
-            } else {
-                // 数组声明即分配存储：定长数组内联，切片按长度另行分配，
-                // 长度与首元素地址都已在声明处定下，视为已初始化
-                Type* vt = vi->type ? vi->type : vl->type;
-                if (sym && vt && vt->is_array_type())
-                    ctx.assigned.insert(sym);
             }
+            // 数组没有初值时只分配了存储，元素仍未初始化：与标量一样，
+            // 声明之后必须赋值才能读取
             if (sym) {
                 ctx.declared.insert(sym);
                 ctx.locals.insert(sym);
@@ -280,6 +343,23 @@ void FlowChecker::init_stmt_body(InitCtx& ctx, Stmt* s) {
         }
         return;
     }
+}
+
+void FlowChecker::merge_label_state(InitCtx& dst, const InitCtx& src) {
+    for (auto it = dst.assigned.begin(); it != dst.assigned.end();) {
+        if (!src.assigned.count(*it)) it = dst.assigned.erase(it);
+        else ++it;
+    }
+    // 一次性机会取并集：任一路径消耗过，合并之后都不许再用
+    dst.bound.insert(src.bound.begin(), src.bound.end());
+    dst.declared.insert(src.declared.begin(), src.declared.end());
+    dst.locals.insert(src.locals.begin(), src.locals.end());
+    dst.ref_fields.insert(src.ref_fields.begin(), src.ref_fields.end());
+    dst.bound_before.insert(src.bound_before.begin(), src.bound_before.end());
+    for (Symbol* sym : src.must_init)
+        if (std::find(dst.must_init.begin(), dst.must_init.end(), sym) ==
+            dst.must_init.end())
+            dst.must_init.push_back(sym);
 }
 
 // 绑定源逐层剥到最终指着的变量：剥成员、下标、一元解引用，
@@ -445,7 +525,9 @@ void FlowChecker::init_expr(InitCtx& ctx, Expr* e) {
         // INIT 内对引用字段的赋值是绑定：形参与局部变量在构造返回后即失效
         if (a->target && a->target->sym && ctx.in_init &&
             ctx.ref_fields.count(a->target->sym) && a->value &&
-            a->value->sym && ctx.declared.count(a->value->sym))
+            a->value->sym &&
+            (ctx.locals.count(a->value->sym) ||
+             ctx.bound_before.count(a->value->sym)))
             error_(a->value->loc,
                    "cannot bind a reference field to a local or parameter "
                    "of INIT: it is dead once INIT returns");

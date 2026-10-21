@@ -521,8 +521,6 @@ private:
     Type* make_named_type(const Location& loc, std::string_view name,
                           Decl* decl = nullptr, Scope* scope = nullptr);
     Expr* make_int_literal(const Location& loc, size_t value);
-    // 数组长度的编译期常量形式；非编译期常量返回 nullptr
-    Expr* const_length_literal(Expr* len, int depth = 0);
     // T[]：按初值推导长度并就地改为定长数组，推导不出来时保持 Infer 待报错
     void resolve_infer_array_len(Type& type, Type* init_type, Expr* init_expr);
     void report_infer_arrays();

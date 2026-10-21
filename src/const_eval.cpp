@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <climits>
+#include <cmath>
 
 namespace cx {
 
@@ -29,11 +30,6 @@ static PrimitiveTypeKind prim_of_int(bool is_signed, int bits) {
     if (bits <= 32) return is_signed ? PrimitiveTypeKind::Int   : PrimitiveTypeKind::UInt;
     if (bits <= 64) return is_signed ? PrimitiveTypeKind::Long  : PrimitiveTypeKind::ULong;
     return is_signed ? PrimitiveTypeKind::Int128 : PrimitiveTypeKind::UInt128;
-}
-
-static unsigned long long int_max_of(bool is_signed, int bits) {
-    if (bits >= 64) return is_signed ? 0x7FFFFFFFFFFFFFFFull : 0xFFFFFFFFFFFFFFFFull;
-    return is_signed ? ((1ull << (bits - 1)) - 1) : ((1ull << bits) - 1);
 }
 
 static ConstValue make_int(unsigned long long v, bool is_signed, int bits) {
@@ -164,7 +160,6 @@ static std::optional<ConstValue> eval_cast(const ConstValue& v,
                                            Type* target_type,
                                            ConstEvalSink& sink,
                                            const Location& loc) {
-    (void)sink; (void)loc;
     if (!target_type || !target_type->is_primitive()) return std::nullopt;
     PrimitiveTypeKind k = target_type->get_primitive()->kind;
 
@@ -177,14 +172,33 @@ static std::optional<ConstValue> eval_cast(const ConstValue& v,
                                : (double)v.u;
         return make_float(d, k);
     }
-    if (k == PrimitiveTypeKind::Char) {
-        unsigned long long val = v.is_float() ? (unsigned long long)(long long)v.f : v.u;
-        return make_int(val & 0xFFull, true, 8);
-    }
 
-    bool is_signed = true; int bits = 0;
-    if (!primitive_int_range(k, is_signed, bits)) return std::nullopt;
-    unsigned long long val = v.is_float() ? (unsigned long long)(long long)v.f : v.u;
+    bool is_signed = true; int bits = 8;
+    if (k != PrimitiveTypeKind::Char &&
+        !primitive_int_range(k, is_signed, bits)) return std::nullopt;
+
+    unsigned long long val = v.u;
+    if (v.is_float()) {
+        double d = v.f;
+        // 常量折叠按目标整数范围判界：越界或 NaN 转换在 C++ 里是未定义行为，
+        // 直接转换会把长度等常量悄悄吞成 0。
+        int range_bits = bits > 64 ? 64 : bits;
+        bool in_range;
+        if (is_signed) {
+            double hi = std::ldexp(1.0, range_bits - 1);
+            in_range = std::isfinite(d) && d >= -hi && d < hi;
+        } else {
+            double hi = std::ldexp(1.0, range_bits);
+            in_range = std::isfinite(d) && d >= 0.0 && d < hi;
+        }
+        if (!in_range) {
+            sink.error(loc, "constant floating-point value is out of range "
+                            "for integer conversion");
+            return std::nullopt;
+        }
+        val = is_signed ? (unsigned long long)(long long)d
+                        : (unsigned long long)d;
+    }
     if (bits < 64) val &= (1ull << bits) - 1;
     return make_int(val, is_signed, bits);
 }
@@ -280,10 +294,18 @@ static std::optional<ConstValue> eval_binary(const Expr::Binary& b,
         default: break;
     }
 
-    unsigned long long maxv = int_max_of(is_signed, bits);
-    long long smin = is_signed ? -(long long)(maxv >> 1) - 1 : 0;
-    long long smax = is_signed ? (long long)maxv : (long long)maxv;
-    unsigned long long umax = maxv;
+    unsigned long long mask = bits >= 64 ? ~0ull : ((1ull << bits) - 1);
+    unsigned long long umax = mask;
+    long long smin = 0, smax = 0;
+    if (is_signed) {
+        if (bits >= 64) {
+            smin = LLONG_MIN;
+            smax = LLONG_MAX;
+        } else {
+            smax = (long long)(umax >> 1);
+            smin = -smax - 1;
+        }
+    }
 
     auto overflow_warn = [&]() {
         sink.warn(loc, "constant expression overflows");
@@ -293,36 +315,66 @@ static std::optional<ConstValue> eval_binary(const Expr::Binary& b,
         case OpKind::Plus:
         case OpKind::Minus:
         case OpKind::Mul: {
-            unsigned long long res;
-            if (b.op == OpKind::Plus)  res = l->u + r->u;
-            else if (b.op == OpKind::Minus) res = l->u - r->u;
-            else res = l->u * r->u;
+            // 环绕是预期语义：一律用无符号运算得到低位，避免 C++ 有符号溢出
+            unsigned long long res = 0;
+            bool overflow = false;
             if (is_signed) {
                 long long sl = l->i64(), sr = r->i64();
-                long long rres = b.op == OpKind::Plus ? sl + sr
-                              : b.op == OpKind::Minus ? sl - sr
-                                                      : sl * sr;
-                if (rres < smin || rres > smax) overflow_warn();
-                res = (unsigned long long)rres;
+                long long rres = 0;
+                if (b.op == OpKind::Plus)
+                    overflow = __builtin_add_overflow(sl, sr, &rres);
+                else if (b.op == OpKind::Minus)
+                    overflow = __builtin_sub_overflow(sl, sr, &rres);
+                else
+                    overflow = __builtin_mul_overflow(sl, sr, &rres);
+                if (!overflow && bits < 64 &&
+                    (rres < smin || rres > smax)) overflow = true;
+                res = (unsigned long long)rres & mask;
             } else {
-                if (b.op == OpKind::Mul && r->u != 0 && (res / r->u) != l->u) overflow_warn();
-                if (b.op == OpKind::Plus && res < l->u) overflow_warn();
-                if (b.op == OpKind::Minus && l->u < r->u) overflow_warn();
+                unsigned long long ul = l->u & mask, ur = r->u & mask;
+                if (b.op == OpKind::Plus)
+                    overflow = __builtin_add_overflow(ul, ur, &res);
+                else if (b.op == OpKind::Minus)
+                    overflow = __builtin_sub_overflow(ul, ur, &res);
+                else
+                    overflow = __builtin_mul_overflow(ul, ur, &res);
+                if (!overflow && bits < 64 && res > umax) overflow = true;
+                res &= mask;
             }
+            if (overflow) overflow_warn();
             return make_int(res, is_signed, bits);
         }
         case OpKind::Div:
-            if (r->u == 0) { sink.error(loc, "constant division by zero"); return std::nullopt; }
-            if (is_signed) return make_int((unsigned long long)(l->i64() / r->i64()), true, bits);
-            return make_int(l->u / r->u, false, bits);
-        case OpKind::Mod:
-            if (r->u == 0) { sink.error(loc, "constant modulo by zero"); return std::nullopt; }
             if (is_signed) {
                 long long a = l->i64(), c = r->i64();
-                if (a == LLONG_MIN && c == -1) return make_int(0, true, bits);
-                return make_int((unsigned long long)(a % c), true, bits);
+                long long mn = bits >= 64 ? LLONG_MIN : -(1ll << (bits - 1));
+                if (c == 0) { sink.error(loc, "constant division by zero"); return std::nullopt; }
+                // INT_MIN / -1 在 C++ 里是未定义行为（x86 上直接 SIGFPE），
+                // 目标语义也不接受这个溢出结果。
+                if (a == mn && c == -1) {
+                    sink.error(loc, "constant division overflows");
+                    return std::nullopt;
+                }
+                return make_int((unsigned long long)(a / c) & mask, true, bits);
             }
-            return make_int(l->u % r->u, false, bits);
+            if ((r->u & mask) == 0) {
+                sink.error(loc, "constant division by zero");
+                return std::nullopt;
+            }
+            return make_int((l->u & mask) / (r->u & mask), false, bits);
+        case OpKind::Mod:
+            if (is_signed) {
+                long long a = l->i64(), c = r->i64();
+                if (c == 0) { sink.error(loc, "constant modulo by zero"); return std::nullopt; }
+                if (bits >= 64 && a == LLONG_MIN && c == -1)
+                    return make_int(0, true, bits);
+                return make_int((unsigned long long)(a % c) & mask, true, bits);
+            }
+            if ((r->u & mask) == 0) {
+                sink.error(loc, "constant modulo by zero");
+                return std::nullopt;
+            }
+            return make_int((l->u & mask) % (r->u & mask), false, bits);
         case OpKind::Shl: {
             long long sh = r->i64();
             if (sh < 0 || sh >= bits) { sink.warn(loc, "shift amount out of range in constant expression"); return make_int(0, is_signed, bits); }

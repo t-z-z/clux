@@ -66,6 +66,10 @@ private:
     void check_bind_source(InitCtx& ctx, Symbol* target, Expr* src);
     // 语句的实际遍历，供 init_stmt 记返回变量改写
     void init_stmt_body(InitCtx& ctx, Stmt* s);
+    // 跳转目标处的状态合并：assigned 取交集，其余一次性/声明信息取并集
+    void merge_label_state(InitCtx& dst, const InitCtx& src);
+    // 本方法体里各 label 收到的 goto 快照，供 label 处做控制流合并
+    std::unordered_map<std::string, std::vector<InitCtx>> goto_states_;
     bool stmt_tail_assign(Stmt* s, Symbol* ret);
     bool seq_tail_assign(const std::vector<Stmt*>& stmts, Symbol* ret);
 

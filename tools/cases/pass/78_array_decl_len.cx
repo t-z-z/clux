@@ -1,6 +1,6 @@
 main() int r {
     int[10] a = [1 2 3]
-    int[5] b
+    int[5] b = []
     int x = a[0]
     int y = b[4]
     r = a.len

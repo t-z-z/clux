@@ -1,5 +1,5 @@
 Cont{
-    pub:char[4] str
+    pub uninit char[4] str
     conversion()Cont r{
         r = Cont()
         r.str = str

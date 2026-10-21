@@ -1,0 +1,7 @@
+// 浮点取模没有合法 IR，语义阶段必须拒绝
+main() int r {
+    double a = 5.0
+    double b = 2.0
+    double c = a % b
+    r = int(c)
+}

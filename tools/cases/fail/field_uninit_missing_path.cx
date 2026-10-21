@@ -1,0 +1,8 @@
+// INIT 只在一条路径上赋值，字段并未在所有路径完成初始化
+C {
+    int x
+    INIT(bool b) {
+        if b { x = 1 }
+    }
+}
+main() int r { C c = C(true)  r = c.x }

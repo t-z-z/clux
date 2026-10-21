@@ -1,0 +1,5 @@
+// uninit 只允许用于容器成员
+main() int r {
+    uninit int x = 1
+    r = x
+}

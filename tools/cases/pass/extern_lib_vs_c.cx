@@ -4,8 +4,8 @@
 // 库名块的外部约定尚未识别，不能拿 C 的规矩去套。
 // 与外部 ABI 无关的约束（符号由外部定义、无初值、无默认实参等）两类都适用。
 Pair {
-    pub long a
-    pub long b
+    pub uninit long a
+    pub uninit long b
 }
 
 extern "m" {

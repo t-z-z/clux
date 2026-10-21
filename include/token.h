@@ -14,6 +14,7 @@ namespace cx{
     X(Readonly, "readonly") \
     X(Malloc, "malloc") \
     X(Alloca, "alloca") \
+    X(Uninit, "uninit") \
     X(Over, "over")
 
 #define TYPE \

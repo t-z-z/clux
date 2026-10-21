@@ -1,0 +1,7 @@
+// 前向跳过局部声明必须报错，不能留到译者的内部错误
+main() int r {
+    goto L
+    int x = 1
+    label L
+    r = 0
+}

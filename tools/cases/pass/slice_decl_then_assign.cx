@@ -7,7 +7,7 @@ main() int r {
     int{3} a
     a = [1 2 3]
     putchar(a.len + 48)
-    int[3] b
+    int[3] b = []
     putchar(b.len + 48)
     putchar(10)
     r = 0

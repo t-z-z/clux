@@ -666,6 +666,13 @@ void SemanticAnalyzer::resolve_infer_array_len(Type& type, Type* init_type,
     long long n = init_expr ? const_array_len_of(init_expr) : -1;
     if (n < 0) n = const_array_type_len(init_type);
     if (n < 0) return;
+    if (n == 0) {
+        error(type.loc, "array length must be non-zero");
+        // 标成定长零长，避免 report_infer_arrays 对同一处再报一次
+        arr->length = make_int_literal(type.loc, 0);
+        arr->kind = ArrayKind::Fixed;
+        return;
+    }
     arr->length = make_int_literal(type.loc, (size_t)n);
     arr->kind = ArrayKind::Fixed;
     Type* elem_type = init_type && init_type->is_array_type()
@@ -765,6 +772,15 @@ void SemanticAnalyzer::check_extern_var_list(VarList& vl, ExternLang lang) {
 }
 
 void SemanticAnalyzer::visit_var_list(VarList& vl) {
+    // uninit 是“允许不初始化”的容器成员修饰，局部量、形参和模块级变量
+    // 都仍然要走各自的初始化规则
+    if (vl.specs.has(SpecKind::Uninit)) {
+        bool is_field = false;
+        for (VarItem* vi : vl.vars)
+            if (is_field_item(vi)) { is_field = true; break; }
+        if (!is_field)
+            error(vl.loc, "uninit is only allowed on container members");
+    }
     // 模块级变量的存储是 LLVM 全局量，其类型必须是常量可表达的
     auto ext = extern_vars_.find(&vl);
     bool in_extern = ext != extern_vars_.end();
@@ -963,6 +979,7 @@ void SemanticAnalyzer::visit_class(Class& c) {
         if (!m || m->kind != DeclKind::VarList) continue;
         auto* vl = static_cast<VarList*>(m);
         bool is_static = vl->specs.has(SpecKind::Static);
+        bool is_uninit = vl->specs.has(SpecKind::Uninit);
         for (VarItem* vi : vl->vars) {
             if (!vi) continue;
             // 字段的存储大小要参与类布局，切片的长度运行期才知道
@@ -976,6 +993,15 @@ void SemanticAnalyzer::visit_class(Class& c) {
                 embed_[&c].emplace_back(fc, vi);
             }
             if (!vi->type || !vi->type->is_reference()) {
+                if (is_uninit) {
+                    if (is_static)
+                        error(vi->loc, "uninit field '" + std::string(vi->name) +
+                              "' cannot be static: static storage is zero-initialized");
+                    if (vl->specs.has(SpecKind::Const))
+                        error(vi->loc, "uninit field '" + std::string(vi->name) +
+                              "' cannot be const");
+                    continue;
+                }
                 // const 字段只在声明处的初值或 INIT 里赋值一次，二者都没有
                 // 就没有任何赋值点：类一旦建成就再也写不进去
                 if (vl->specs.has(SpecKind::Const) && !vi->init) {
@@ -988,10 +1014,20 @@ void SemanticAnalyzer::visit_class(Class& c) {
                         error(vi->loc, f + " must be assigned in INIT or by an "
                                "initializer, but the class has no INIT");
                     }
+                } else if (!vi->init && !is_static && !class_has_init(c)) {
+                    error(vi->loc, "field '" + std::string(vi->name) +
+                          "' must be initialized by an initializer or in INIT, "
+                          "but the class has no INIT; declare it uninit if an "
+                          "uninitialized field is intended");
                 }
                 continue;
             }
             std::string f = "reference field '" + std::string(vi->name) + "'";
+            if (is_uninit) {
+                error(vi->loc, f + " cannot be uninit: a reference field must "
+                      "be bound in INIT");
+                continue;
+            }
             if (is_static) {
                 error(vi->loc, f + " cannot be static: a reference field can "
                       "only be bound in INIT");
@@ -1065,7 +1101,9 @@ void SemanticAnalyzer::visit_enum(Enum& e) {
         }
         v->value = val;
         v->has_value = true;
-        next_value = val + 1;
+        // 下一项缺省值 = 当前值 + 1；值已越过 int 范围时不再对 int64 自增，
+        // 后续成员仍会各自报越界，且不会让下一项也溢出 C++ 整型
+        next_value = val < INT32_MAX ? val + 1 : (int64_t)INT32_MAX + 1;
     }
     if (e.variants.empty()) {
         warning(e.loc, "enum '" + std::string(e.name) + "' declares no variants");
@@ -1370,6 +1408,14 @@ void SemanticAnalyzer::visit_expr_binary(Expr::Binary& b) {
         case OpKind::Mul:
         case OpKind::Div:
         case OpKind::Mod: {
+            if (b.op == OpKind::Mod &&
+                (is_float_type(lt) || is_float_type(rt))) {
+                error(current_expr->loc,
+                      "operator % requires integer operands");
+                current_expr->type = lt;
+                current_expr->is_lvalue = false;
+                break;
+            }
             if (is_numeric_type(lt) && is_numeric_type(rt)) {
                 if (is_float_type(lt) || is_float_type(rt)) {
                     if (is_float_type(lt) && is_float_type(rt)) {
@@ -1938,15 +1984,6 @@ void SemanticAnalyzer::visit_type_pointer(Type::Pointer& p) {
     if (p.pointee && p.pointee->is_reference())
         error(current_type->loc, "cannot form a pointer to a reference");
 }
-// 编译期常量长度：经常量求值器折叠为整数字面量；
-// 返回 nullptr 表示不是编译期整数常量
-Expr* SemanticAnalyzer::const_length_literal(Expr* len, int depth) {
-    if (!len || depth > 16) return nullptr;
-    auto v = eval_const(len, const_sink_);
-    if (!v || !v->is_int()) return nullptr;
-    return make_int_literal(len->loc, (size_t)v->u);
-}
-
 void SemanticAnalyzer::visit_type_array(Type::ArrayType& a) {
     // 数组元素没有逐个绑定的语法，元素类型为引用则无法初始化
     if (a.element && a.element->is_reference())
@@ -1955,7 +1992,19 @@ void SemanticAnalyzer::visit_type_array(Type::ArrayType& a) {
     if (a.kind == ArrayKind::Slice) {
         // {n} 里的长度能折叠成常量就折叠，运行期的长度原样保留
         if (a.length) {
-            if (Expr* lit = const_length_literal(a.length)) a.length = lit;
+            auto v = eval_const(a.length, const_sink_);
+            if (v && v->is_int()) {
+                bool neg = v->is_signed && v->i64() < 0;
+                unsigned long long n = neg ? 0
+                    : (v->is_signed ? (unsigned long long)v->i64() : v->u);
+                if (neg) {
+                    error(a.length->loc, "slice length cannot be negative");
+                } else if (n > 0x7FFFFFFFull) {
+                    error(a.length->loc, "slice length is too large");
+                } else {
+                    a.length = make_int_literal(a.length->loc, (size_t)n);
+                }
+            }
         }
         return;
     }
@@ -1964,14 +2013,27 @@ void SemanticAnalyzer::visit_type_array(Type::ArrayType& a) {
         if (a.kind == ArrayKind::Infer) pending_infer_arrays_.push_back(current_type);
         return;
     }
-    Expr* len = const_length_literal(a.length);
-    if (!len) {
+    auto v = eval_const(a.length, const_sink_);
+    if (!v || !v->is_int()) {
         error(current_type->loc,
               "array length must be a compile-time integer constant; "
               "use T{n} for a slice whose length is only known at run time");
         return;
     }
-    a.length = len;
+    if (v->is_signed && v->i64() < 0) {
+        error(a.length->loc, "array length cannot be negative");
+        return;
+    }
+    unsigned long long n = v->is_signed ? (unsigned long long)v->i64() : v->u;
+    if (n == 0) {
+        error(a.length->loc, "array length must be non-zero");
+        return;
+    }
+    if (n > 0x7FFFFFFFull) {
+        error(a.length->loc, "array length is too large");
+        return;
+    }
+    a.length = make_int_literal(a.length->loc, (size_t)n);
 }
 void SemanticAnalyzer::visit_type_func_ptr(Type::FuncPtr& fp) {
     // 函数指针与函数签名同规则：所有权不外泄，形参与返回类型都不许切片

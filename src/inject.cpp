@@ -99,7 +99,10 @@ Class* InjectionExpander::make_base_source(PrimitiveTypeKind base,
     // 承载字段 __value：类布局首字段，不可直接访问
     Type* vt = mk_type();
     auto* vvi = cu_.add_node<VarItem>(loc, "__value", nullptr, vt);
-    synth->members.push_back(cu_.add_node<VarList>(loc, SpecList{}, vt,
+    // 承载字段由包装/解包路径直接写入，构造期不经过 INIT
+    SpecList carrier_specs;
+    carrier_specs.set(SpecKind::Uninit);
+    synth->members.push_back(cu_.add_node<VarList>(loc, carrier_specs, vt,
         std::vector<VarItem*>{vvi}));
 
     bool is_bool = (base == PrimitiveTypeKind::Bool);

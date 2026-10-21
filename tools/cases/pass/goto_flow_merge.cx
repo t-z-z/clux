@@ -1,0 +1,9 @@
+// goto 目标合并顺序落入与跳转两条路径：两条都赋值才算已初始化
+main() int r {
+    int x
+    bool b = true
+    if b { x = 0 goto L }
+    x = 2
+    label L
+    r = x
+}

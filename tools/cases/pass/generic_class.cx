@@ -7,12 +7,12 @@ Pair-<A, B> {
 }
 // 后缀数组维度的字段也按实参替换
 Grid-<T> {
-    pub T data[4]
+    pub uninit T data[4]
     pub INIT() {}
     pub at(int i) T r { r = data[i] }
 }
 Array-<T> {
-    T[8] data
+    pub uninit T[8] data
     pub int len = 0
     pub INIT() {}
     pub put(T v, int i) { data[i] = v }

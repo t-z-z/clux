@@ -2,7 +2,7 @@
 // 译者为它们既不发 declare 也不发 external global，也不生成 -l。
 // 类同理：块内的类只是 clux 侧的类型名，%Box 这个结构体由 keep`` 定义。
 extern "LLVMIR" {
-    Box { pub long v }
+    Box { pub uninit long v }
     Box box
     box_new(long v) Box r {}
     box_get(Box-* b) long r {}

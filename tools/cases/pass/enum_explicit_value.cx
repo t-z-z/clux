@@ -8,7 +8,7 @@ enum Errno {
 }
 
 main() {
-    int[Errno::NEXT] arr
+    int[Errno::NEXT] arr = []
     arr[0] = int(Errno::EPERM)
     arr[1] = int(Errno::ENOENT)
     arr[2] = int(Errno::ESRCH)

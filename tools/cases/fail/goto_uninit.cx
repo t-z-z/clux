@@ -1,0 +1,8 @@
+// goto 跳过了赋值：label 之后不能把 x 当作已赋值
+main() int r {
+    int x
+    goto L
+    x = 42
+    label L
+    r = x
+}
