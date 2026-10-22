@@ -1,0 +1,9 @@
+// 类名不能触达实例字段/方法：缺少接收者实例
+C {
+    pub int y = 1
+    pub f() int r { r = y }
+}
+main() {
+    C::y = 2
+    int x = C::f()
+}

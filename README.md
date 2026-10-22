@@ -27,7 +27,7 @@ clux 仍处于早期开发阶段，语言语法、编译器实现、IR 输出和
 
 - 编译器前端与 LLVM IR 生成已有实现。
 - 标准库尚未完成：`cxio`、`metatype` 已有文档，`concurrent`、`containers` 仍为规划中。
-- 泛型的函数与类已实现（泛型注入除外）；闭包、编译期反射、组合声明、`let` 推导等特性尚未实现，详见 [`future.md`](future.md)。
+- 泛型的函数与类已实现；闭包、编译期反射、组合声明、`let` 推导等特性尚未实现，详见 [`future.md`](future.md)。
 - 不建议用于生产环境。
 
 ## 设计特色
@@ -66,25 +66,13 @@ bin/clux
 
 ### 第一个程序
 
-创建 `main.cx`：
+创建 `HelloWorld.cx`：
 
 ```cx
-add(int a, int b) int r {
-    r = a + b
+import cstdio
+main(){
+    puts("HelloWorld!")
 }
-
-main() int r {
-    r = add(1, 2)
-}
-```
-
-检查、翻译、构建并运行：
-
-```bash
-bin/clux -c main.cx    # 前端检查
-bin/clux -t main.cx    # 生成 LLVM IR
-bin/clux -b main.cx    # 构建可执行文件
-bin/clux -r main.cx    # 构建并运行
 ```
 
 ### 命令行选项
@@ -94,7 +82,7 @@ clux -c main.cx    # 检查
 clux -t main.cx    # 翻译为 LLVM IR
 clux -b main.cx    # 构建
 clux -r main.cx    # 运行
-clux -o file       # 指定输出位置
+clux -t main.cx -o file # 指定输出位置
 ```
 
 ## 语言示例

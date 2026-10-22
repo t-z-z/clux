@@ -1,0 +1,26 @@
+// 注入来源的 INIT 不参与注入：主类只并入来源的字段与它的声明处默认值，
+// 构造走主类自己的 INIT（没有 INIT 时就是零参默认构造）
+src {
+    pub int a = 1
+    pub int b = 3
+    INIT() {
+        a = 5
+    }
+}
+own #src {
+    pub INIT() {
+        self.a = 9
+    }
+}
+plain #src {
+}
+main() int r {
+    r = 0
+    plain p = plain()
+    if p.a != 1 { r = r + 1 }
+    if p.b != 3 { r = r + 2 }
+    own o = own()
+    if o.a != 9 { r = r + 4 }
+    // 主类 INIT 没有碰的字段仍落来源类的声明处默认值
+    if o.b != 3 { r = r + 8 }
+}

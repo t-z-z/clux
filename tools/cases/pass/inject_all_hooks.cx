@@ -1,0 +1,26 @@
+// 注入来源与主类自己的 REF/DEREF/DROP 全部生效：malloc 实例构造时所有 REF
+// 都执行，free() 时所有来源的 DROP、DEREF 都执行（DROP/DEREF 逆序）
+int hits = 0
+h1 {
+    REF { hits += 1 }
+    DEREF { hits += 16 }
+    DROP { hits += 4 }
+}
+h2 {
+    REF { hits += 2 }
+    DEREF { hits += 32 }
+    DROP { hits += 8 }
+}
+malloc comb #h1 #h2 {
+    pub INIT() { }
+    REF { hits += 4 }
+    DEREF { hits += 64 }
+    DROP { hits += 128 }
+}
+main() int r {
+    comb c = comb()
+    bool refs = hits == 7
+    c.free()
+    if !refs || hits != 259 { r = 1 return }
+    r = 0
+}

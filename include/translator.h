@@ -100,7 +100,6 @@ private:
         enum Kind { Drop, Deref, Restore };
         Kind        kind = Drop;
         std::string slot;         // Drop: 实例指针槽；Deref: 指针变量槽
-        std::string drop_fn;      // Drop 用
         std::string ptr;          // Restore: llvm.stacksave 的返回值
         // Deref 用：从宿主实例逐级 getelementptr 到目标指针字段。
         // 空路径表示清理指针变量本身（槽里直接就是那个指针）
@@ -147,11 +146,19 @@ private:
     // 按内联字段依赖拓扑发射全部类结构体类型
     void emit_class_types();
 
-    SpecialMethod* find_special(Class* cls, SpecialMethod::Kind k) const;
+    // 类上的同类特殊方法：注入来源的 REF/DEREF/DROP 全部保留
+    std::vector<SpecialMethod*> find_specials(Class* cls,
+                                              SpecialMethod::Kind k) const;
+    // 生命周期钩子按注入合并顺序执行，DEREF/DROP 逆序（与构造相反）
+    std::vector<SpecialMethod*> lifecycle_specials(Class* cls,
+                                                   SpecialMethod::Kind k) const;
     Class*         pointee_class(Type* t);
     void           emit_guard_call(SpecialMethod* sm, const std::string& val);
     void           emit_bind_ref(Class* cls, const std::string& val,
                                  SpecialMethod::Kind k);
+    // 调用类上全部同类钩子；guard 为 false 时调用点保证指针非空
+    void           emit_lifecycle(Class* cls, SpecialMethod::Kind k,
+                                  const std::string& val, bool guard = true);
     void           register_deref(const std::string& slot, Class* cls, int depth = -1);
     // 对象销毁时清理其指针字段：字段指向的类有 DEREF 才登记。
     // 内联类字段逐级下钻，path 记录从宿主实例到目标指针字段的导航

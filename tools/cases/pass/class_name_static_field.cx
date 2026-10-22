@@ -1,0 +1,9 @@
+// 类名可以通过 :: 访问 static 字段
+C {
+    spec static:
+    pub int counter = 0
+}
+main() {
+    C::counter = C::counter + 1
+    if C::counter != 1 { }
+}

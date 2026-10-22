@@ -1,0 +1,13 @@
+// 注入来源的 conversion 不参与注入：只有主类自身声明的转换方法才起效
+src {
+    pub int a = 1
+    conversion() int r {
+        r = self.a
+    }
+}
+dst #src {
+}
+main() int r {
+    dst d = dst()
+    r = d
+}

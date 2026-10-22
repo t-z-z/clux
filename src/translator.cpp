@@ -102,6 +102,11 @@ bool is_terminator_mnemonic(std::string_view line) {
     }
     return false;
 }
+
+// 译者内部的失败占位值。语义阶段本应拦下这些形态，返回 0 会生成看似合法
+// 但行为错误的 IR；%cx.error 是未定义的 SSA 名，任何消费它的指令都无法
+// 通过 clang 校验，保证内部错误不会静默通过
+constexpr const char* kBadValue = "%cx.error";
 } // namespace
 
 
@@ -506,14 +511,25 @@ void Translator::copy_init_into(const std::string& backing, Type* el,
     copy_elements(backing, src, el, min_count(len64, slen));
 }
 
-SpecialMethod* Translator::find_special(Class* cls, SpecialMethod::Kind k) const {
-    if (!cls) return nullptr;
+std::vector<SpecialMethod*> Translator::find_specials(
+        Class* cls, SpecialMethod::Kind k) const {
+    std::vector<SpecialMethod*> out;
+    if (!cls) return out;
     for (Decl* m : cls->members) {
         if (!m || m->kind != DeclKind::SpecialMethod) continue;
         auto* sm = static_cast<SpecialMethod*>(m);
-        if (sm->kind == k) return sm;
+        if (sm->kind == k) out.push_back(sm);
     }
-    return nullptr;
+    return out;
+}
+
+// 生命周期钩子按注入合并顺序执行；DEREF/DROP 与构造顺序相反
+std::vector<SpecialMethod*> Translator::lifecycle_specials(
+        Class* cls, SpecialMethod::Kind k) const {
+    std::vector<SpecialMethod*> sms = find_specials(cls, k);
+    if (k == SpecialMethod::Kind::Deref || k == SpecialMethod::Kind::Drop)
+        std::reverse(sms.begin(), sms.end());
+    return sms;
 }
 
 Class* Translator::pointee_class(Type* t) {
@@ -538,15 +554,27 @@ void Translator::emit_guard_call(SpecialMethod* sm, const std::string& val) {
     open_block(cont_l);
 }
 
+void Translator::emit_lifecycle(Class* cls, SpecialMethod::Kind k,
+                                const std::string& val, bool guard) {
+    if (val == "null") return;
+    for (SpecialMethod* sm : lifecycle_specials(cls, k)) {
+        if (guard) {
+            emit_guard_call(sm, val);
+        } else {
+            emit_instr("call void @" + IRWriter::quote(mangler_.of(sm)) +
+                       "(ptr " + val + ")");
+        }
+    }
+}
+
 void Translator::emit_bind_ref(Class* cls, const std::string& val,
                                SpecialMethod::Kind k) {
-    if (!cls) return;
-    emit_guard_call(find_special(cls, k), val);
+    emit_lifecycle(cls, k, val);
 }
 
 void Translator::register_deref(const std::string& slot, Class* cls, int depth) {
     if (!cls) return;
-    if (!find_special(cls, SpecialMethod::Kind::Deref)) return;
+    if (find_specials(cls, SpecialMethod::Kind::Deref).empty()) return;
     CleanupEntry e;
     e.kind = CleanupEntry::Deref;
     e.slot = slot;
@@ -574,7 +602,7 @@ void Translator::register_field_derefs(
         }
         if (!f.type->is_pointer()) continue;
         Class* pc = pointee_class(f.type);
-        if (!find_special(pc, SpecialMethod::Kind::Deref)) continue;
+        if (find_specials(pc, SpecialMethod::Kind::Deref).empty()) continue;
         CleanupEntry e;
         e.kind = CleanupEntry::Deref;
         e.slot = slot;
@@ -651,11 +679,11 @@ void Translator::emit_drops_to(int depth) {
                         v = f;
                     }
                 }
-                emit_guard_call(find_special(d.cls, SpecialMethod::Kind::Deref), v);
+                emit_lifecycle(d.cls, SpecialMethod::Kind::Deref, v);
             } else {
                 std::string v = ir_.reg();
                 emit_instr(v + " = load ptr, ptr " + d.slot);
-                emit_guard_call(find_special(d.cls, SpecialMethod::Kind::Drop), v);
+                emit_lifecycle(d.cls, SpecialMethod::Kind::Drop, v);
             }
         }
         ctx_.drops.pop_back();
@@ -1139,20 +1167,13 @@ bool Translator::emit_class_var(VarList* vl, VarItem* vi, Class* cls) {
         // 释放由 free() 显式进行，作用域结束不解引用
         ctx_.malloc_vars.insert(vi);
     } else if (!vl->specs.has(SpecKind::Malloc)) {
-        for (Decl* m : cls->members) {
-            if (m && m->kind == DeclKind::SpecialMethod) {
-                auto* sm = static_cast<SpecialMethod*>(m);
-                if (sm->kind == SpecialMethod::Kind::Drop) {
-                    CleanupEntry e;
-                    e.kind = CleanupEntry::Drop;
-                    e.slot = slot;      // 槽地址：按当前指针清理，兼容赋值重定向
-                    e.drop_fn = mangler_.of(sm);
-                    e.cls = cls;
-                    e.scope_depth = ctx_.scope_depth;
-                    ctx_.drops.push_back(e);
-                    break;
-                }
-            }
+        if (!find_specials(cls, SpecialMethod::Kind::Drop).empty()) {
+            CleanupEntry e;
+            e.kind = CleanupEntry::Drop;
+            e.slot = slot;      // 槽地址：按当前指针清理，兼容赋值重定向
+            e.cls = cls;
+            e.scope_depth = ctx_.scope_depth;
+            ctx_.drops.push_back(e);
         }
     }
     // 字段清理后登记：清理是栈式的，后登记者先执行，
@@ -1553,7 +1574,7 @@ std::string Translator::eval_cond(Expr* e) {
 }
 
 std::string Translator::eval(Expr* e) {
-    if (!e) return "0";
+    if (!e) return kBadValue;
     if (e->is_null())                     return "null";
     if (auto* lit = e->get_literal())     return eval_literal(lit);
     if (auto* id  = e->get_identifier())  return eval_identifier(e, id);
@@ -1567,7 +1588,8 @@ std::string Translator::eval(Expr* e) {
     if (auto* ca  = e->get_cast())        return eval_cast(e, ca);
     if (auto* tr  = e->get_ternary())     return eval_ternary(e, tr);
     if (auto* sp  = e->get_spawn())       return eval_spawn(e, sp);
-    return "0";
+    error(e ? e->loc : Location(), "internal: unknown expression kind");
+    return kBadValue;
 }
 
 // 值位置求值：需要隐式 conversion 时派发到转换函数，否则常规求值
@@ -2321,15 +2343,15 @@ std::string Translator::eval_identifier(Expr* e, Expr::Identifier* id) {
             }
         }
     }
-    // 走到这里说明该变量没有已登记的存储：语义已通过，翻译器却无法定位它。
-    // 静默返回 0 会把变量引用变成空指针，必须报错而不是掩盖。
+    // 走到这里说明该标识符没有可求值的存储：语义已通过，翻译器却无法定位它。
+    // 不能静默返回 0 把变量引用变成空指针，也不能伪造成一个合法常量
+    std::string name = e->get_identifier()
+        ? std::string(e->get_identifier()->name) : "<unknown>";
     if (e->sym && e->sym->kind == SymbolKind::Variable)
-        error(e->loc, "internal: no storage found for variable '" +
-                      std::string(e->get_identifier()
-                                      ? e->get_identifier()->name
-                                      : std::string_view("<unknown>")) +
-                      "'");
-    return "0";
+        error(e->loc, "internal: no storage found for variable '" + name + "'");
+    else
+        error(e->loc, "internal: identifier '" + name + "' has no value");
+    return kBadValue;
 }
 
 std::string Translator::eval_binary(Expr* e, Expr::Binary* b) {
@@ -2347,7 +2369,7 @@ std::string Translator::eval_binary(Expr* e, Expr::Binary* b) {
         return x->type ? map_type(x->type) : "i32";
     };
     auto eval_operand = [this](Expr* x) -> std::string {
-        if (!x) return "0";
+        if (!x) return kBadValue;
         return needs_convert(x) ? eval_converted(x) : eval(x);
     };
     std::string ltt = operand_type(b->left);
@@ -2524,7 +2546,11 @@ std::string Translator::eval_assign(Expr* e, Expr::Assign* a) {
     if (std::string bound = bind_ref_field(a->target, a->value); !bound.empty())
         return bound;
     std::string ptr = eval_lvalue(a->target);
-    if (ptr.empty()) return "0";
+    if (ptr.empty()) {
+        error(a->target ? a->target->loc : e->loc,
+              "internal: assignment target has no storage");
+        return kBadValue;
+    }
     // 引用返回变量：赋值即绑定，存被引用对象的地址（与引用声明同一路径），
     // 否则存进去的是对象的值，返回出去就是一个被当作地址的数值。
     // 必须先于下面的类赋值：引用返回变量的表达式类型是目标类，
@@ -2631,7 +2657,7 @@ std::string Translator::eval_assign(Expr* e, Expr::Assign* a) {
     // 新旧指针相同时（自赋值）跳过释放，否则会 double free。
     if (a->op == OpKind::Assign && a->target) {
         if (Class* pc = as_class(a->target->type)) {
-            if (SpecialMethod* drop = find_special(pc, SpecialMethod::Kind::Drop)) {
+            if (!lifecycle_specials(pc, SpecialMethod::Kind::Drop).empty()) {
                 std::string old = ir_.reg();
                 emit_instr(old + " = load ptr, ptr " + ptr);
                 std::string same = ir_.reg();
@@ -2641,7 +2667,7 @@ std::string Translator::eval_assign(Expr* e, Expr::Assign* a) {
                 emit_term("br i1 " + same + ", label %" + cont_l +
                           ", label %" + drop_l);
                 open_block(drop_l);
-                emit_guard_call(drop, old);
+                emit_lifecycle(pc, SpecialMethod::Kind::Drop, old);
                 emit_term("br label %" + cont_l);
                 open_block(cont_l);
             }
@@ -2660,10 +2686,16 @@ std::string Translator::eval_assign(Expr* e, Expr::Assign* a) {
 // 变量是实例指针槽：另分配副本逐字段复制，源对象保持不变。
 std::string Translator::assign_class_value(Expr* target, Expr* value) {
     Class* pc = as_class(target->type);
-    if (!pc) return "0";
+    if (!pc) {
+        error(target->loc, "internal: class assignment without class type");
+        return kBadValue;
+    }
     std::string src = eval_converted(value);
     std::string ptr = eval_lvalue(target);
-    if (ptr.empty()) return "0";
+    if (ptr.empty()) {
+        error(target->loc, "internal: class assignment target has no storage");
+        return kBadValue;
+    }
     // 存储形态决定写法：引用左值与内联字段指向的就是对象本身，逐字段搬进去；
     // 类实例变量的槽存的是实例指针，须另分配副本后改写指针。
     // 引用左值是写穿而非重新绑定，与 int-& 一致（s = b 改的是 s 指向的对象）
@@ -2684,7 +2716,7 @@ std::string Translator::assign_class_value(Expr* target, Expr* value) {
     open_block(copy_l);
     // 先释放目标原有实例：副本存储在循环里可能就是这一块，
     // 拷贝会覆盖它，先拷贝后释放等于对刚被覆盖的对象调 DROP
-    emit_guard_call(find_special(pc, SpecialMethod::Kind::Drop), old);
+    emit_lifecycle(pc, SpecialMethod::Kind::Drop, old);
     // malloc 类（或 malloc 变量）被赋值时复制的是堆上的对象（spec.md），
     // 否则副本落在栈上，free() 会拿到栈指针
     bool heap = pc->specs.has(SpecKind::Malloc);
@@ -2702,7 +2734,10 @@ std::string Translator::assign_class_value(Expr* target, Expr* value) {
 
 std::string Translator::eval_index(Expr* e, Expr::Index*) {
     std::string addr = eval_lvalue(e);
-    if (addr.empty()) return "0";
+    if (addr.empty()) {
+        error(e->loc, "internal: indexed expression has no storage");
+        return kBadValue;
+    }
     // 元素本身是数组：值即其地址
     if (is_fixed_array(e->type)) return addr;
     std::string et = map_type(e->type);
@@ -2770,7 +2805,9 @@ std::string Translator::eval_member(Expr* e, Expr::Member* m) {
             }
         }
     }
-    return "0";
+    error(e->loc, "internal: cannot resolve member '" +
+                  std::string(m->member) + "'");
+    return kBadValue;
 }
 
 std::string Translator::eval_array(Expr* e, Expr::Array* arr) {
@@ -3034,7 +3071,7 @@ std::string Translator::emit_operator_call(Expr* e, Operator* op,
     // 语义通过的程序里操作符表达式必有类型，缺失即内部错误
     if (!e || !e->type) {
         error(Location(), "internal: operator call without result type");
-        return "0";
+        return kBadValue;
     }
     std::string ret_t = object_type(e->type);
 
@@ -3171,17 +3208,15 @@ void Translator::emit_declare(Func& f) {
 
 // 内置 free：释放 malloc 实例。类方法内的裸 free() 释放 self
 std::string Translator::eval_free_builtin(Expr* e, Expr::Call* c) {
-    (void)e;
     if (!c->free_builtin || !c->callee) return "";
     if (c->free_on_self) {
         std::string s = ctx_.self_ptr;
-        if (s.empty()) return "0";
-        Class* c2 = ctx_.current_class;
-        if (c2) {
-            if (SpecialMethod* drop = find_special(c2, SpecialMethod::Kind::Drop))
-                emit_instr("call void @" + IRWriter::quote(mangler_.of(drop)) +
-                           "(ptr " + s + ")");
+        if (s.empty()) {
+            error(e ? e->loc : Location(), "internal: free() without self");
+            return kBadValue;
         }
+        Class* c2 = ctx_.current_class;
+        if (c2) emit_lifecycle(c2, SpecialMethod::Kind::Drop, s, false);
         ir_.need_free();
         emit_instr("call void @free(ptr " + s + ")");
         if (c2) self_free_cls_.insert(c2);
@@ -3195,11 +3230,9 @@ std::string Translator::eval_free_builtin(Expr* e, Expr::Call* c) {
     if (!cls && m->target && m->target->type)
         cls = as_class(m->target->type);
     if (cls) {
-        if (SpecialMethod* drop = find_special(cls, SpecialMethod::Kind::Drop))
-            emit_instr("call void @" + IRWriter::quote(mangler_.of(drop)) +
-                       "(ptr " + self + ")");
+        emit_lifecycle(cls, SpecialMethod::Kind::Drop, self, false);
         // 释放即结束这一次持有，与分配时的 REF 配对
-        emit_guard_call(find_special(cls, SpecialMethod::Kind::Deref), self);
+        emit_lifecycle(cls, SpecialMethod::Kind::Deref, self);
     }
     // DEREF 内部自行 free 过就不再重复释放
     if (cls && self_free_cls_.count(cls)) return "0";
@@ -3212,15 +3245,26 @@ std::string Translator::eval_free_builtin(Expr* e, Expr::Call* c) {
 std::string Translator::eval_default_ctor(Expr* e, Expr::Call* c) {
     if (c->resolved || !c->callee || !c->callee->sym ||
         c->callee->sym->kind != SymbolKind::Class) return "";
-    return emit_default_object(as_class(e->type));
+    Class* cls = as_class(e->type);
+    if (!cls) {
+        error(e->loc, "internal: default construction without class type");
+        return kBadValue;
+    }
+    return emit_default_object(cls);
 }
 
 // 分配类实例存储并写入声明处字段默认值。不执行 INIT：INIT 是手动调用的
 // 构造方法，模块级变量与 static 字段的默认初始化都只落字段初值
 std::string Translator::emit_default_object(Class* cls) {
-    if (!cls) return "0";
+    if (!cls) {
+        error(Location(), "internal: default construction of unknown class");
+        return kBadValue;
+    }
     auto it = classes_.find(cls);
-    if (it == classes_.end()) return "0";
+    if (it == classes_.end()) {
+        error(cls->loc, "internal: class layout is not registered");
+        return kBadValue;
+    }
     std::string slot;
     if (cls->specs.has(SpecKind::Malloc)) {
         ir_.need_malloc();
@@ -3287,11 +3331,20 @@ void Translator::emit_ctor_into(Expr::Call* c, SpecialMethod* sm, Class* cls,
 
 // 类构造：C(...) — resolved 是 INIT 特殊方法
 std::string Translator::eval_ctor_call(Expr* e, Expr::Call* c, SpecialMethod* sm) {
-    if (sm->kind != SpecialMethod::Kind::Init) return "0";
+    if (sm->kind != SpecialMethod::Kind::Init) {
+        error(e->loc, "internal: non-INIT special method used as constructor");
+        return kBadValue;
+    }
     Class* cls = as_class(e->type);
-    if (!cls) return "0";
+    if (!cls) {
+        error(e->loc, "internal: constructor without class type");
+        return kBadValue;
+    }
     auto it = classes_.find(cls);
-    if (it == classes_.end()) return "0";
+    if (it == classes_.end()) {
+        error(cls->loc, "internal: class layout is not registered");
+        return kBadValue;
+    }
     std::string slot;
     bool is_malloc = cls->specs.has(SpecKind::Malloc);
     if (is_malloc) {
@@ -3533,7 +3586,10 @@ std::string Translator::eval_call(Expr* e, Expr::Call* c) {
         c->callee->sym->kind == SymbolKind::Class) {
         return eval_default_ctor(e, c);
     }
-    if (!c->resolved) return "0";
+    if (!c->resolved) {
+        error(e->loc, "internal: unresolved call");
+        return kBadValue;
+    }
 
     if (c->resolved->kind == DeclKind::SpecialMethod) {
         auto* sm = static_cast<SpecialMethod*>(c->resolved);
@@ -3541,7 +3597,10 @@ std::string Translator::eval_call(Expr* e, Expr::Call* c) {
     }
 
     if (c->resolved->kind != DeclKind::Func &&
-        c->resolved->kind != DeclKind::Operator) return "0";
+        c->resolved->kind != DeclKind::Operator) {
+        error(e->loc, "internal: call resolved to a non-callable declaration");
+        return kBadValue;
+    }
     return eval_plain_call(e, c, static_cast<Func*>(c->resolved));
 }
 
@@ -3551,7 +3610,7 @@ std::string Translator::call_func_ptr(Expr* e, Expr::Call* c, Type::FuncPtr* fp)
     // 函数指针类型的返回类型由 parser 保证非空，缺失即内部错误
     if (!fp->return_type) {
         error(Location(), "internal: func-ptr type without return type");
-        return "0";
+        return kBadValue;
     }
     std::string ret_t = map_type(fp->return_type);
     bool via_reg = (ret_t != "void");
@@ -3625,15 +3684,25 @@ std::string Translator::eval_ternary(Expr* e, Expr::Ternary* t) {
     return res;
 }
 
-std::string Translator::eval_spawn(Expr*, Expr::Spawn* s) {
+std::string Translator::eval_spawn(Expr* e, Expr::Spawn* s) {
     ir_.need_pthread();
     ir_.need_malloc();
     Expr* call_expr = s->call;
-    if (!call_expr) return "0";
+    Location loc = e ? e->loc : Location();
+    if (!call_expr) {
+        error(loc, "internal: spawn without call expression");
+        return kBadValue;
+    }
     auto* c = call_expr->get_call();
-    if (!c || !c->resolved) return "0";
+    if (!c || !c->resolved) {
+        error(loc, "internal: unresolved spawn call");
+        return kBadValue;
+    }
     if (c->resolved->kind != DeclKind::Func &&
-        c->resolved->kind != DeclKind::Operator) return "0";
+        c->resolved->kind != DeclKind::Operator) {
+        error(loc, "internal: spawn call resolved to a non-callable declaration");
+        return kBadValue;
+    }
     Func* fn = static_cast<Func*>(c->resolved);
 
     // 收集 self 与实参

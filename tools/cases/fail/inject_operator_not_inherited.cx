@@ -1,0 +1,13 @@
+// 注入来源的 operator 不参与注入：只有主类自身声明的作用符才起效
+src {
+    pub int a = 1
+    operator + (src other) src r {
+        r = self
+    }
+}
+dst #src {
+}
+main() {
+    dst d = dst()
+    dst e = d + d
+}

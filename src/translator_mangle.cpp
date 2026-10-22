@@ -44,11 +44,16 @@ void Mangler::walk(Decl* d, const std::string& prefix) {
             break;
         case DeclKind::Class: {
             mangled_[d] = here;
+            // 注入来源的同类钩子可以并存，按出现次序追加序号避免符号重名
+            std::unordered_map<std::string, int> seq;
             for (Decl* m : static_cast<Class*>(d)->members) {
                 if (!m) continue;
                 if (m->kind == DeclKind::SpecialMethod) {
-                    mangled_[m] = here + "_" +
+                    std::string base =
                         special_name(static_cast<SpecialMethod*>(m));
+                    int n = seq[base]++;
+                    mangled_[m] = here + "_" + base +
+                                  (n ? "_" + std::to_string(n) : "");
                 } else if (m->kind == DeclKind::Conversion) {
                     mangled_[m] = here + "_" +
                         conversion_name(static_cast<Conversion*>(m));

@@ -199,8 +199,10 @@ Decl* CompUnit::clone_decl(Decl* d) {
             std::vector<VarList*> params;
             params.reserve(sm->params.size());
             for (auto* p : sm->params) params.push_back(clone_varlist(p));
-            return add_node<SpecialMethod>(sm->loc, sm->kind, sm->specs,
+            auto* cloned = add_node<SpecialMethod>(sm->loc, sm->kind, sm->specs,
                 clone_stmt(sm->body), std::move(params));
+            cloned->origin = sm->origin;
+            return cloned;
         }
         case DeclKind::Conversion: {
             auto* cf = static_cast<Conversion*>(d);

@@ -1,11 +1,13 @@
 // 修饰泛型：`#foo-<int>` 按实参实例化来源类，再把实例的成员并进目标类。
-// 类泛型与修饰泛型可以同名传递：`outer-<T> #inner-<T>` 的 T 是同一个类型
+// 类泛型与修饰泛型可以同名传递：`outer-<T> #inner-<T>` 的 T 是同一个类型。
+// 来源类的 INIT 不参与注入，构造由主类自己声明
 Inner-<T> {
     pub T v
     pub INIT(T x) { self.v = x }
     pub get() T r { r = self.v }
 }
 Outer-<T> #Inner-<T> {
+    pub INIT(T x) { self.v = x }
     pub twice() T r { r = self.get() }
 }
 Pair-<A, B> {
@@ -14,10 +16,19 @@ Pair-<A, B> {
     pub INIT(A a B b) { self.fst = a self.snd = b }
     pub swap() Pair-<B, A> r { r = Pair-<B, A>(self.snd, self.fst) }
 }
-#Inner-<int> Plain {}
+#Inner-<int> Plain {
+    pub INIT(int x) { self.v = x }
+}
 // 泛型来源的结果再注入给别的类
-#Outer-<long> Twice {}
-#Pair-<int, long> mixed {}
+#Outer-<long> Twice {
+    pub INIT(long x) { self.v = x }
+}
+#Pair-<int, long> mixed {
+    pub INIT(int a long b) {
+        self.fst = a
+        self.snd = b
+    }
+}
 main() int r {
     r = 0
     Plain p = Plain(3)

@@ -18,6 +18,14 @@ semantic基础规则
 
 
 void SemanticAnalyzer::error(const Location& loc, const std::string& msg) {
+    // 注入来源的成员会按类克隆，同一个声明可能被多个类各查一遍；
+    // 位置与文本都相同的错误对使用者是重复信息，只保留第一条
+    for (const Diagnostic& d : diagnostics_) {
+        if (d.lvl == DiagLevel::Error && d.loc.lin == loc.lin &&
+            d.loc.col == loc.col && d.loc.filename == loc.filename &&
+            d.msg == msg)
+            return;
+    }
     diagnostics_.push_back(Diagnostic(DiagLevel::Error, msg, loc));
     has_error_ = true;
 }
@@ -392,10 +400,8 @@ void SemanticAnalyzer::register_special(SpecialMethod& sm, bool default_public) 
     }
 
     Scope* scope = symbols_.current_scope();
-    if (scope && scope->lookup_member(internal_name)) {
-        error(sm.loc, "duplicate special method '" + internal_name + "'");
-        return;
-    }
+    // REF/DEREF/DROP 可以来自多个注入来源，全部生效：符号表里留首个登记即可
+    if (scope && scope->lookup_member(internal_name)) return;
 
     Symbol sym(SymbolKind::Function, &sm);
     sym.specs = &sm.specs;
@@ -1732,6 +1738,23 @@ void SemanticAnalyzer::visit_expr_member(Expr::Member& m) {
     if (member) {
         current_expr->sym = member;
         check_access(member, current_expr->loc);
+
+        // 类名只能触达 static 成员。实例字段/方法需要一个实例作接收者，
+        // 放行会让译者在没有接收者时取到 0 或漏掉 self 实参，生成错误 IR
+        bool via_class_name = !m.target->type && m.target->sym &&
+                              m.target->sym->kind == SymbolKind::Class;
+        bool is_static = member->specs &&
+                         member->specs->has(SpecKind::Static);
+        if (via_class_name && !is_static &&
+            (member->kind == SymbolKind::Variable ||
+             member->kind == SymbolKind::Function)) {
+            error(current_expr->loc,
+                  std::string(member->kind == SymbolKind::Variable
+                                  ? "cannot access instance field '"
+                                  : "cannot access instance method '") +
+                      field + "' through class '" + target_scope->name +
+                      "' without an instance");
+        }
 
         if (member->kind == SymbolKind::Variable && member->get_type()) {
             // 读取引用字段即读取被绑定对象：隐式解引用为其目标类型

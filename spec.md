@@ -387,7 +387,7 @@ Counter {
 
 特殊方法是类容器中的声明，用于定义构造、销毁、引用、访问、类型转换行为。
 
-- `INIT`：构造方法，手动调用返回一个对应类型的值
+- `INIT`：显式初始化调用时触发
 - `DROP`：对象销毁前自动执行
 - `REF` / `DEREF`：被引用 / 结束引用时触发
 
@@ -410,8 +410,6 @@ CacheEntry {
     DROP { log("destroyed") }
 }
 ```
-
-INIT会根据字段声明的初始值自动构造
 
 #### 操作符重载
 
@@ -534,7 +532,7 @@ readonly 在类内部可修改，在类外部不可修改。
 #foo #bar baz #qux { }
 ```
 
-在以上修饰中，foo的成员覆盖了bar的，bar的覆盖了baz的，baz覆盖qux。
+在以上修饰中，foo的成员覆盖了bar的，bar的覆盖了baz的，baz覆盖qux。其中baz被称为主类。foo,baz,qux被称为注入类。
 
 也可以由一个基础类型修饰，会自动派发所有操作符和特殊方法
 
@@ -564,6 +562,8 @@ foo-<T>{
 bar #foo-<int>{
 }
 ```
+
+在注入类的特殊方法中，INIT,conversion,operator不参与注入，只有主类的才起效，REF,DEREF,DROP会不覆盖全部调用。
 
 ## 十、控制流
 

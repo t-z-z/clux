@@ -30,17 +30,29 @@ std::vector<std::string> decl_key_names(const Decl* d) {
         }
         return names;
     }
-    if (auto* sm = dynamic_cast<const SpecialMethod*>(d)) {
-        switch (sm->kind) {
-            case SpecialMethod::Kind::Drop:   names.push_back("DROP"); break;
-            case SpecialMethod::Kind::Ref:    names.push_back("REF"); break;
-            case SpecialMethod::Kind::Deref:  names.push_back("DEREF"); break;
-            default: break;
-        }
-        return names;
-    }
+    // 特殊方法没有名字：REF/DEREF/DROP 来自多个来源时全部保留，
+    // 由钩子身份去重（见 expand_class），不参与按名字的覆盖
+    if (d->kind == DeclKind::SpecialMethod) return names;
     if (!d->name.empty()) names.push_back(std::string(d->name));
     return names;
+}
+
+// 注入来源里哪些成员参与合并：INIT / conversion / operator 只有主类自身的
+// 才起效；REF/DEREF/DROP 是生命周期钩子，所有来源的都生效。
+// 基础类型来源派发的运算符（synthesized）必须合并，包装类靠它们参与运算
+bool merges_from_source(const Decl* d) {
+    if (!d) return false;
+    switch (d->kind) {
+        case DeclKind::SpecialMethod:
+            return static_cast<const SpecialMethod*>(d)->kind !=
+                   SpecialMethod::Kind::Init;
+        case DeclKind::Conversion:
+            return false;
+        case DeclKind::Operator:
+            return static_cast<const Operator*>(d)->synthesized;
+        default:
+            return true;
+    }
 }
 
 }
@@ -334,12 +346,16 @@ void InjectionExpander::expand_class(Class* cls, Scope* parent_scope) {
     }
 
     // 同一 Class 被不同模块的 expander 各展开一次是安全的：合并按名字去重，
-    // 第二遍的 sources 已含首遍的合并结果，index 占位后成员集合不再变化
+    // 第二遍的 sources 已含首遍的合并结果，index 占位后成员集合不再变化。
+    // 钩子没有名字，另按最初声明去重
     std::vector<Decl*> result;
     std::unordered_map<std::string, size_t> index;
+    std::unordered_map<const SpecialMethod*, size_t> hook_index;
     for (Class* src : sources) {
+        bool from_main = (src == cls);
         for (Decl* m : src->members) {
             if (!m) continue;
+            if (!from_main && !merges_from_source(m)) continue;
             bool claimed = false;
             for (const std::string& n : decl_key_names(m)) {
                 if (is_malloc && n == "free") { claimed = true; break; }
@@ -347,7 +363,20 @@ void InjectionExpander::expand_class(Class* cls, Scope* parent_scope) {
             }
             if (claimed) continue;
             // 基类自身成员保持原指针，注入来源的成员克隆，避免共享 AST 节点
-            Decl* placed = (src == cls) ? m : cu_.clone_decl(m);
+            Decl* placed = from_main ? m : cu_.clone_decl(m);
+            if (placed && placed->kind == DeclKind::SpecialMethod) {
+                auto* hook = static_cast<SpecialMethod*>(placed);
+                if (hook->kind != SpecialMethod::Kind::Init) {
+                    if (!hook->origin) hook->origin = hook;
+                    auto [it, inserted] =
+                        hook_index.emplace(hook->origin, result.size());
+                    if (!inserted) {
+                        // 重复展开：用主类成员表里的克隆件顶替来源类的原件
+                        result[it->second] = hook;
+                        continue;
+                    }
+                }
+            }
             for (const std::string& n : decl_key_names(placed)) {
                 index[n] = result.size();
             }
