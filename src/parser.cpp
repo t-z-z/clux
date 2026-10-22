@@ -65,13 +65,122 @@ void Parser::scan_define_decl() {
 }
 // 申明解析部分
 
+// 诊断部分
+
+// 主错误只讲"在等什么"与"遇到什么"；已经看懂的结构单独作为 note，两者不混在一句里
+void Parser::fail_expected(const std::string& expected, const std::string& understood) {
+    if (probe_ > 0) return;
+    add_error("expected " + expected + ", found " + curr().quote());
+    if (!understood.empty()) {
+        errors_.back().children.push_back(
+            Diagnostic(DiagLevel::Note, "parser understood: " + understood, get_loc()));
+    }
+}
+
+// 无法归类的 token：若前一个结构已提交，说明错误发生在它之后
+void Parser::fail_unexpected(const std::string& previous) {
+    if (probe_ > 0) return;
+    std::string msg = "unexpected token " + std::string(curr().quote());
+    if (!previous.empty()) msg += " after " + previous;
+    add_error(msg);
+}
+
+// 只需短描述：字面量取原文，其余不展开表达式
+std::string Parser::describe_expr_short(const Expr* e) const {
+    if (!e) return "";
+    if (const auto* l = e->get_literal()) return std::string(l->value);
+    if (const auto* i = e->get_identifier()) return std::string(i->name);
+    return "N";
+}
+
+std::string Parser::describe_type(const Type* t) const {
+    if (!t) return "<unknown>";
+    if (const auto* p = t->get_primitive()) {
+        return token_kind_to_string(static_cast<TokenKind>(
+            static_cast<int>(TokenKind::Int8) + static_cast<int>(p->kind)));
+    }
+    if (t->is_void()) return "void";
+    if (t->is_null()) return "null";
+    if (t->is_inferred()) return "<inferred>";
+    if (t->is_string_literal_type()) return "<string literal>";
+    if (const auto* p = t->get_pointer()) return describe_type(p->pointee) + "-*";
+    if (const auto* r = t->get_reference()) return describe_type(r->target) + "-&";
+    if (const auto* a = t->get_array_type()) {
+        std::string len = describe_expr_short(a->length);
+        switch (a->kind) {
+            case ArrayKind::Fixed: return describe_type(a->element) + "[" + len + "]";
+            case ArrayKind::Infer: return describe_type(a->element) + "[]";
+            case ArrayKind::Slice: return describe_type(a->element) + "{" + len + "}";
+        }
+    }
+    if (const auto* i = t->get_identifier()) return std::string(i->name);
+    if (const auto* m = t->get_member())
+        return describe_type(m->target) + "." + std::string(m->member);
+    if (const auto* g = t->get_generic_type()) {
+        std::string s = describe_type(g->base) + "-<";
+        for (size_t k = 0; k < g->args.size(); ++k) {
+            if (k) s += ", ";
+            s += describe_type(g->args[k]);
+        }
+        return s + ">";
+    }
+    if (const auto* f = t->get_func_ptr()) {
+        std::string s = "$" + describe_type(f->return_type) + "(";
+        for (size_t k = 0; k < f->params.size(); ++k) {
+            if (k) s += ", ";
+            s += describe_type(f->params[k]);
+        }
+        return s + ")";
+    }
+    return "<type>";
+}
+
+std::string Parser::describe_decl(const Decl* d) const {
+    if (!d) return "declaration";
+    switch (d->kind) {
+        case DeclKind::VarList: {
+            const auto* vl = static_cast<const VarList*>(d);
+            std::string s = "a variable declaration";
+            if (!vl->vars.empty()) {
+                s += " \"";
+                for (size_t k = 0; k < vl->vars.size(); ++k) {
+                    if (k) s += ", ";
+                    s += std::string(vl->vars[k]->name);
+                }
+                s += "\"";
+            }
+            const Type* t = vl->type;
+            const auto* a = t ? t->get_array_type() : nullptr;
+            if (a && a->kind == ArrayKind::Slice)
+                s += " of slice type " + describe_type(t);
+            else if (t && !t->is_inferred())
+                s += " of type " + describe_type(t);
+            return s;
+        }
+        case DeclKind::Func: return "a function \"" + std::string(d->name) + "\"";
+        case DeclKind::Operator: return "an operator overload";
+        case DeclKind::Conversion: return "a conversion method";
+        case DeclKind::SpecialMethod: return "a special method";
+        case DeclKind::Class: return "a class \"" + std::string(d->name) + "\"";
+        case DeclKind::Namespace: return "a namespace \"" + std::string(d->name) + "\"";
+        case DeclKind::Extern: return "an extern block \"" + std::string(d->name) + "\"";
+        case DeclKind::Enum: return "an enum \"" + std::string(d->name) + "\"";
+        case DeclKind::TypeDef: return "a typedef \"" + std::string(d->name) + "\"";
+        case DeclKind::ExprDef: return "an exprdef \"" + std::string(d->name) + "\"";
+        case DeclKind::Keep: return "a keep block";
+    }
+    return "declaration";
+}
+
 // 顶层函数不负责退回
 CompUnit* Parser::parse() {
     bool ltu = false; // 记录上一个token是否是unexpected，如果是则不连续报token unexpected
+    std::string prev; // 上一个已提交的结构，用于"在某结构之后"的报错
     while(!is_eof()){
+        size_t before = errors_.size();
         bool u = parse_using_namespace(); // 避免namespace decl识别报错，必须在前
         if (u){
-            admit();
+            prev = "a using directive";
             ltu = false;
             continue;
         }
@@ -79,14 +188,13 @@ CompUnit* Parser::parse() {
         (curr().kind == TokenKind::No && peek().kind == TokenKind::Import)){
             Import* i = parse_import();
             if (i){
-                admit();
+                prev = "an import";
                 ltu = false;
                 continue;
             }
         } else {
             Decl* d = parse_decl();
             if (d){
-                admit();
                 cu_.top_decls.push_back(d);
                 if (d->kind == DeclKind::Class) {
                     if (cu_.is_type_name(d->name)) {
@@ -95,12 +203,17 @@ CompUnit* Parser::parse() {
                         cu_.register_type(d->name, d);
                     }
                 }
+                prev = describe_decl(d);
                 ltu = false;
                 continue;
             }
         }
-        if (!ltu) {
-            add_error("unexpected token " + curr().quote());
+        // 已经给出更具体的语法错误时不再兜底；紧随其后的残留 token 也一并静默，
+        // 直到重新对上一个声明起点
+        if (errors_.size() > before) {
+            ltu = true;
+        } else if (!ltu) {
+            fail_unexpected(prev);
             ltu = true;
         }
         advance();
@@ -201,35 +314,94 @@ static bool is_var_tail(const Token &tok) {
 Decl* Parser::parse_decl() {
     if (!is_decl_start(curr())) return nullptr;
     SpecList ml = parse_specs();
-    auto sp = point();
     Location loc = get_loc();
-    // '#mods Class {}' 修饰注入：可逆探测，非类声明时退回交给类型解析
-    if (curr().kind == TokenKind::Hash) {
-        std::vector<Type*> injs;
-        while (curr().kind == TokenKind::Hash) {
-            Type* mod = parse_modification();
-            if (!mod) break;
-            injs.push_back(mod);
-        }
-        if (Class* c = parse_class_decl(ml, loc, std::move(injs))) return c;
-        restore(sp);
+
+    // 关键字已经唯一确定形态，不再试探
+    switch (curr().kind) {
+        case TokenKind::TypeDef: return parse_typedef_decl();
+        case TokenKind::ExprDef: return parse_exprdef_decl();
+        case TokenKind::Enum: return parse_enum_decl(ml, loc);
+        case TokenKind::Keep: return parse_keep_decl(ml, loc);
+        case TokenKind::Operator: return parse_operator_overload(ml, loc);
+        case TokenKind::Conversion: return parse_conversion_decl(ml, loc);
+        case TokenKind::Extern: return parse_extern_decl(ml, loc);
+        case TokenKind::Namespace: return parse_namespace_decl(ml, loc);
+        case TokenKind::Init:
+        case TokenKind::Drop:
+        case TokenKind::Ref:
+        case TokenKind::Deref:
+            return parse_special_method_decl(ml, loc);
+        default: break;
     }
-    // 类声明以 `名称 [` 起始，与切片类型变量声明同形，由 parse_class_decl 自行判别
-    if (Class* c = parse_class_decl(ml, loc)) return c;
-    restore(sp);
-    // 易于确定的优先级更高
-    if (curr().kind == TokenKind::TypeDef) return parse_typedef_decl();
-    if (curr().kind == TokenKind::ExprDef) return parse_exprdef_decl();
-    if (curr().kind == TokenKind::Enum) return parse_enum_decl(ml, loc);
-    if (curr().kind == TokenKind::Keep) return parse_keep_decl(ml, loc);
-    if (curr().kind == TokenKind::Operator) return parse_operator_overload(ml, loc);
-    if (curr().kind == TokenKind::Conversion) return parse_conversion_decl(ml, loc);
-    if (curr().kind == TokenKind::Extern) return parse_extern_decl(ml, loc);
-    if (Decl* d = parse_namespace_decl(ml, loc)) return d; restore(sp);
-    if (Decl* d = parse_func_decl(ml, loc)) return d; restore(sp);
-    if (Decl* d = parse_var_decl(ml, loc)) { return d; } restore(sp);
-    if (Decl* d = parse_special_method_decl(ml, loc)) return d; restore(sp);
-    return nullptr;
+
+    // 名字/类型开头：先看头部形态，再进入对应实现
+    switch (scan_decl_head()) {
+        case HeadShape::Func: return parse_func_decl(ml, loc);
+        case HeadShape::Class: {
+            Class* c = parse_class_decl(ml, loc);
+            if (!c) fail_expected("'{' to open the class body");
+            return c;
+        }
+        case HeadShape::Var: return parse_var_decl(ml, loc, true);
+        default: return nullptr;
+    }
+}
+
+// 跳过配平的 `-<...>`（含嵌套）。只读 token，不建节点。
+void Parser::skip_generic_args() {
+    if (curr().kind != TokenKind::GenericStart) return;
+    int depth = 0;
+    for (;;) {
+        TokenKind k = curr().kind;
+        if (k == TokenKind::GenericStart) ++depth;
+        else if (k == TokenKind::Greater) --depth;
+        else if (k == TokenKind::Eof) return;
+        walk();
+        if (depth <= 0) return;
+    }
+}
+
+// 跳过一或多个 `#修饰`。返回是否至少跳过一个。
+bool Parser::skip_modifier_chain() {
+    bool any = false;
+    while (curr().kind == TokenKind::Hash) {
+        walk();
+        if (curr().is_type()) walk();
+        else if (curr().is_ident()) walk();
+        else return any;
+        if (curr().kind == TokenKind::GenericStart) skip_generic_args();
+        any = true;
+    }
+    return any;
+}
+
+// 判定声明头部形态。只读 token，用于消解"类体 / 切片类型 / 函数 / 变量"的歧义。
+// 关键字开头的声明已在 parse_decl 里定型，这里只处理名字与类型开头。
+Parser::HeadShape Parser::scan_decl_head() {
+    // 前置注入 `#a #b Name {`：注入链之后必须是类名，否则不是类声明
+    if (curr().kind == TokenKind::Hash) {
+        Probe probe(*this);
+        if (!skip_modifier_chain()) return HeadShape::Unknown;
+        return curr().is_ident() ? HeadShape::Class : HeadShape::Unknown;
+    }
+    if (curr().is_ident()) {
+        Probe probe(*this);
+        walk();
+        if (curr().kind == TokenKind::GenericStart) skip_generic_args();
+        // 类名之后允许修饰符与尾随注入（`Name #mod {`）
+        while (curr().is_spec()) walk();
+        if (curr().kind == TokenKind::Hash) skip_modifier_chain();
+        if (curr().kind == TokenKind::ParenL) return HeadShape::Func;
+        if (curr().kind == TokenKind::BraceL)
+            return is_slice_brace() ? HeadShape::Var : HeadShape::Class;
+        return HeadShape::Var;
+    }
+    // 类型开头只能是变量声明；缺名字的形态由变量分支报错。
+    // `let` 也走变量分支，由它统一报“未实现”
+    if (curr().is_type() || curr().kind == TokenKind::Dollar
+        || curr().kind == TokenKind::Let)
+        return HeadShape::Var;
+    return HeadShape::Unknown;
 }
 
 // 第三层函数负责读取、确认和报错
@@ -276,19 +448,12 @@ Type* Parser::parse_modification() {
 // 函数的识别：名称后接泛型形参表（可选）与参数括号
 Func* Parser::parse_func_decl(SpecList &ml, Location &loc) {
     if (!curr().is_ident()) return nullptr;
-    // 泛型函数的形参表前有 `-<T>`，须一并纳入识别，否则退回给类型解析
-    bool generic = peek().kind == TokenKind::GenericStart;
-    if (!generic && peek().kind != TokenKind::ParenL
-        && peek().kind != TokenKind::BraceL) return nullptr;
     std::string_view name = curr().get_val();
     walk();
-    // 泛型形参表与「以泛型类型为类型的变量声明」同形，读到 '(' 才确认是函数声明
-    std::vector<TypeParam*> type_params;
-    if (generic) parse_type_params(type_params);
+    std::vector<TypeParam*> type_params = parse_type_params();
     if (curr().kind != TokenKind::ParenL) return nullptr;
     bool variadic = false;
     std::vector<VarList*> params = parse_value_params(&variadic);
-    admit();
     std::vector<VarList*> returns;
     for (;;) {
         if (curr().kind == TokenKind::BraceL) break;
@@ -315,11 +480,12 @@ Func* Parser::parse_func_decl(SpecList &ml, Location &loc) {
     return f;
 }
 
-// 变量的识别：类型或推导符加标识符
-VarList* Parser::parse_var_decl(SpecList &ml, Location &loc) {
-    Type* type;
-    auto sp = point();
-    if (curr().kind == TokenKind::Let) {
+// 变量的识别：类型或推导符加标识符。
+// 失败时游标停在出错处，不自行回退——回退由调用方按需负责。
+VarList* Parser::parse_var_decl(SpecList &ml, Location &loc, bool expect_name) {
+    bool is_let = curr().kind == TokenKind::Let;
+    Type* type = nullptr;
+    if (is_let) {
         add_error("'let' is not implemented yet");
         type = cu_.add_node<Type>(get_loc(), Type::Inferred{});
         advance();
@@ -327,6 +493,16 @@ VarList* Parser::parse_var_decl(SpecList &ml, Location &loc) {
         type = parse_type();
         if (!type) return nullptr;
     }
+    VarList* vl = parse_var_decl_body(ml, loc, type);
+    // 形态已确定为变量声明时，失败点就是缺名字
+    if (!vl && expect_name && !is_let)
+        fail_expected("an identifier after the type \"" + describe_type(type) + "\"",
+                      "a variable declaration");
+    return vl;
+}
+
+// 类型已解析：读取变量名（可多个）、后缀维度与初值
+VarList* Parser::parse_var_decl_body(SpecList &ml, Location &loc, Type* type) {
     std::vector<VarItem*> vars;
     for (;;) {
         if (curr().is_ident()) {
@@ -372,7 +548,6 @@ VarList* Parser::parse_var_decl(SpecList &ml, Location &loc) {
             }
             vars.push_back(cu_.add_node<VarItem>(get_loc(), name, init, vtype));
         } else if (vars.empty()) {
-            restore(sp);
             return nullptr;
         } else {
             break;
@@ -438,35 +613,28 @@ bool Parser::is_slice_brace() {
     // 与 parse_postfix_type 的判据一致：只有 {} 与 {长度} 才可能是切片
     if (peek().kind != TokenKind::BraceR && !peek().is_ident()
         && !peek().is_literal()) return false;
-    Mark m = point();
-    bool saved = trial_;
-    trial_ = true;
+    Probe probe(*this);
     walk();
-    if (curr().kind != TokenKind::BraceR && !parse_array_length()) {
-        trial_ = saved;
-        restore(m);
-        return false;
-    }
-    bool slice = curr().kind == TokenKind::BraceR && peek().is_ident()
+    if (curr().kind != TokenKind::BraceR && !parse_array_length()) return false;
+    return curr().kind == TokenKind::BraceR && peek().is_ident()
         && (is_var_tail(peek(2)) || is_decl_start(peek(2)));
-    trial_ = saved;
-    restore(m);
-    return slice;
 }
 
-// 类声明：`[@] 名称 [泛型形参表] [修饰符] ['#' 修饰注入...] '{' 成员 '}'
-// '@' 已非必需，出现与否等价。头部全程可逆：形态不符时返回空指针，由调用方 restore 回退
-Class* Parser::parse_class_decl(SpecList &ml, Location &loc, std::vector<Type*> injs) {
+// 类声明：`['#' 修饰注入...] 名称 [泛型形参表] ['#' 修饰注入...] '{' 成员 '}'
+// 调用前由 scan_decl_head 判定形态；头部再核对一次以免落到错误分支
+Class* Parser::parse_class_decl(SpecList &ml, Location &loc) {
+    std::vector<Type*> injs;
+    while (curr().kind == TokenKind::Hash) {
+        Type* mod = parse_modification();
+        if (!mod) return nullptr;
+        injs.push_back(mod);
+    }
     if (!curr().is_ident()) {
         return nullptr;
     }
-    std::string_view name;
-    if (curr().is_ident()) {
-        name = curr().get_val();
-        walk();
-    }
-    std::vector<TypeParam*> type_params;
-    parse_type_params(type_params);
+    std::string_view name = curr().get_val();
+    walk();
+    std::vector<TypeParam*> type_params = parse_type_params();
     SpecList nml = parse_specs();
     // 尾随注入：#mod 出现在类名之后、成员之前（如 `b #qux { }`）
     std::vector<Type*> trailing;
@@ -506,20 +674,29 @@ Namespace* Parser::parse_namespace_decl(SpecList &ml, Location &loc) {
 std::vector<Decl*> Parser::parse_members() {
     std::vector<Decl*> members;
     SpecList default_specs;    // 修饰符指令（pub: / spec ...: / spec no:）作用于后续成员
+    std::string prev;          // 上一个已提交的结构，用于"在某结构之后"的报错
+    bool suppress = false;     // 刚报过具体错误，静默紧随的残留 token
     if (curr().kind == TokenKind::BraceL) {
         advance();
     }
     while (curr().kind != TokenKind::BraceR && !is_eof()) {
+        size_t before = errors_.size();
         if (parse_modifier_directive(default_specs)) {
-            admit();
+            prev = "a modifier directive";
+            suppress = false;
             continue;
         }
         if (Decl* d = parse_decl()) {
             d->specs.merge(default_specs);
             members.push_back(d);
-            admit();
+            prev = describe_decl(d);
+            suppress = false;
         } else {
-            add_error("unexpected token: " + curr().quote());
+            if (errors_.size() > before) suppress = true;
+            else if (!suppress) {
+                fail_unexpected(prev);
+                suppress = true;
+            }
             advance();
         }
         if (is_eof()) break;   // 未闭合，交由循环后统一报错
@@ -593,7 +770,6 @@ Operator* Parser::parse_operator_overload(SpecList &ml, Location &loc) {
     }
     if (curr().kind != TokenKind::ParenL) return cu_.add_node<Operator>();
     std::vector<VarList*> params = parse_value_params();
-    admit();
     std::vector<VarList*> returns;
     for (;;) {
         SpecList ml = parse_specs();
@@ -640,7 +816,6 @@ SpecialMethod* Parser::parse_special_method_decl(SpecList &ml, Location &loc) {
     if (tok_kind == TokenKind::Init){
         advance();
         std::vector<VarList*> params = parse_value_params();
-        admit();
         Stmt* b = parse_block_stmt();
         if (!b) {
             add_error("expected INIT body");
@@ -674,7 +849,6 @@ Conversion* Parser::parse_conversion_decl(SpecList &ml, Location &loc) {
         return cu_.add_node<Conversion>();
     }
     std::vector<VarList*> params = parse_value_params();
-    admit();
     std::vector<VarList*> returns;
     for (;;) {
         SpecList rml = parse_specs();
@@ -918,76 +1092,76 @@ void Parser::skip_to_next_statement() {
 }
 
 Stmt* Parser::parse_stmt() {
-    Stmt* result = nullptr;
+    Location loc = get_loc();
     if (curr().kind == TokenKind::Semicolon) {
         // 空块
-        result = cu_.add_node<Stmt>(
-            get_loc(),
-            Stmt::Block{{}}
-        );
         advance();
-        return result;
+        return cu_.add_node<Stmt>(loc, Stmt::Block{{}});
     }
-    if (curr().kind == TokenKind::BraceL) {
-        result = parse_block_stmt();
-    }else if (curr().kind == TokenKind::If) {
-        result = parse_if_stmt();
-    }else if (curr().kind == TokenKind::While) {
-        result = parse_while_stmt();
-    }else if (curr().kind == TokenKind::For) {
-        result = parse_for_stmt();
-    }else if (curr().kind == TokenKind::Return) {
-        result = parse_return_stmt();
-    }else if (curr().kind == TokenKind::Break) {
-        result = parse_break_stmt();
-    }else if (curr().kind == TokenKind::Continue) {
-        result = parse_continue_stmt();
-    }else if (curr().kind == TokenKind::Label) {
-        result = parse_label_stmt();
-    }else if (curr().kind == TokenKind::Goto) {
-        result = parse_goto_stmt();
-    }else if (curr().kind == TokenKind::Asm) {
-        result = parse_asm_stmt();
-    }else if (curr().kind == TokenKind::Keep){
-        result = parse_keep_stmt();
-    }else if (curr().kind == TokenKind::TypeDef ||
-              curr().kind == TokenKind::ExprDef) {
-        // 函数体内的 typedef / exprdef：作用域限于所在块，向下生效
-        Location loc = get_loc();
-        Decl* d = curr().kind == TokenKind::TypeDef
-            ? parse_typedef_decl() : parse_exprdef_decl();
-        result = d ? cu_.add_node<Stmt>(loc, Stmt::Def{d}) : nullptr;
-    }else {
-    {
-        auto sp = point();
-        // 变量申明语句（含元类型别名 `type T = <meta-expr>` → T 为 MetaType 值变量）
-        Location loc = get_loc();
+    if (curr().kind == TokenKind::BraceL) return parse_block_stmt();
+
+    // 关键字已经唯一确定形态
+    switch (curr().kind) {
+        case TokenKind::If:       return parse_if_stmt();
+        case TokenKind::While:    return parse_while_stmt();
+        case TokenKind::For:      return parse_for_stmt();
+        case TokenKind::Return:   return parse_return_stmt();
+        case TokenKind::Break:    return parse_break_stmt();
+        case TokenKind::Continue: return parse_continue_stmt();
+        case TokenKind::Label:    return parse_label_stmt();
+        case TokenKind::Goto:     return parse_goto_stmt();
+        case TokenKind::Asm:      return parse_asm_stmt();
+        case TokenKind::Keep:     return parse_keep_stmt();
+        case TokenKind::TypeDef:
+        case TokenKind::ExprDef: {
+            // 函数体内的 typedef / exprdef：作用域限于所在块，向下生效
+            Decl* d = curr().kind == TokenKind::TypeDef
+                ? parse_typedef_decl() : parse_exprdef_decl();
+            return d ? cu_.add_node<Stmt>(loc, Stmt::Def{d}) : nullptr;
+        }
+        default: break;
+    }
+
+    // 修饰符与 let 只出现在声明里
+    if (curr().kind == TokenKind::Let || curr().is_spec()) {
         SpecList ml = parse_specs();
         Location l = get_loc();
-        VarList* vl = parse_var_decl(ml,l);
-        if (vl) {
-            result = cu_.add_node<Stmt>(loc, Stmt::VarDecl{vl});
-            goto End;
-        } else {
-            restore(sp);
-        }
-    }{
-        // 表达式语句
-        Expr* expr = parse_expr();
-        if (!expr) {
-            add_error("expected statement");
-            goto End;
-        }
-        result = cu_.add_node<Stmt>(
-            expr->loc,
-            Stmt::ExprStmt{expr}
-        );
-        goto End;
+        VarList* vl = parse_var_decl(ml, l, true);
+        if (!vl) return nullptr;
+        Stmt* s = cu_.add_node<Stmt>(loc, Stmt::VarDecl{vl});
+        consume_statement_end();
+        return s;
     }
+
+    // 头部判定：类型头后跟标识符是变量声明，否则是表达式语句。
+    // 这是语句层唯一的歧义点，类型没有函数体，试探很浅。
+    {
+        Mark sp = point();
+        Type* head = parse_type();
+        if (head && curr().is_ident()) {
+            SpecList ml;
+            VarList* vl = parse_var_decl_body(ml, loc, head);
+            if (!vl) {
+                // 有标识符时必然产出变量；此处只作防御
+                restore(sp);
+                return nullptr;
+            }
+            Stmt* s = cu_.add_node<Stmt>(loc, Stmt::VarDecl{vl});
+            consume_statement_end();
+            return s;
+        }
+        restore(sp);
     }
-    End:
+
+    Expr* expr = parse_expr();
+    if (!expr) {
+        fail_expected("an expression");
+        consume_statement_end();
+        return nullptr;
+    }
+    Stmt* s = cu_.add_node<Stmt>(expr->loc, Stmt::ExprStmt{expr});
     consume_statement_end();
-    return result;
+    return s;
 }
 
 Stmt* Parser::parse_block_stmt() {
@@ -998,12 +1172,14 @@ Stmt* Parser::parse_block_stmt() {
     std::vector<Stmt*> stmts;
     
     while (!is_eof() && curr().kind != TokenKind::BraceR) {
+        size_t before = errors_.size();
         Stmt* s = parse_stmt();
         if (s) {
             stmts.push_back(s);
         } else {
-            // 解析失败，跳过错误 token
-            add_error("unexpected token in block: " + curr().quote());
+            // 已经给出更具体的语法错误时不再兜底；否则跳过错误 token
+            if (errors_.size() == before)
+                add_error("unexpected token in block: " + curr().quote());
             advance();
         }
     }
@@ -1775,7 +1951,6 @@ Expr* Parser::parse_func_literal() {
     errors_.push_back(Diagnostic(DiagLevel::Error,
         "function literal is not supported yet", loc));
     parse_value_params();
-    admit();
     for (;;) {
         SpecList ml = parse_specs();
         Location vloc = get_loc();
@@ -1890,7 +2065,7 @@ std::vector<VarList*> Parser::parse_value_params(bool* variadic) {
 
 // 类型解析
 
-// 数组长度：只做可逆解析（walk），避免在探测性 parse_var_decl 失败后 restore() 过期
+// 数组长度：表达式解析本身可逆（游标默认回退），无需额外守卫
 Expr* Parser::parse_array_length() {
     return parse_expr();
 }
@@ -1908,14 +2083,9 @@ Type* Parser::parse_type_atom() {
     return parse_postfix_type(t);
 }
 
-// 类型解析全程可逆：探测性 parse_decl 失败后 restore 必须仍然有效。
-// 期间 advance 退化为 walk，退出时恢复。
+// 类型解析：游标默认可逆，探测失败后 restore 仍然有效
 Type* Parser::parse_type() {
-    bool saved = trial_;
-    trial_ = true;
-    Type* t = parse_type_atom();
-    trial_ = saved;
-    return t;
+    return parse_type_atom();
 }
 
 Type* Parser::parse_primitive_type() {
@@ -1979,23 +2149,21 @@ Token Parser::generic_split(Token tok) {
 }
 
 // 泛型形参表 `-<T, U>`：'-<' 已由调用方确认。全程可逆，供函数声明探测使用
-void Parser::parse_type_params(std::vector<TypeParam*>& out) {
-    if (curr().kind != TokenKind::GenericStart) return;
-    parse_list<TypeParam*>(
+std::vector<TypeParam*> Parser::parse_type_params() {
+    return parse_list<TypeParam*>(
         TokenKind::GenericStart,
         TokenKind::Greater,
         TokenKind::Comma,
-        [this, &out]() -> TypeParam* {
+        [this]() -> TypeParam* {
             if (!curr().is_ident()) return nullptr;
             Location loc = get_loc();
             std::string_view name = curr().get_val();
             walk();
             TypeParam* tp = cu_.add_node<TypeParam>(loc, name);
-            out.push_back(tp);
             return tp;
         },
         "type parameter"
-    );
+    ).value_or({});
 }
 
 // 泛型实参表 `-<T, U>`：类型位置与值位置语法同形，实参恒为类型

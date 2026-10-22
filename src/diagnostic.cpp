@@ -25,6 +25,13 @@ void emit_diagnostic(const Diagnostic& diag) {
     for (const auto& sec : diag.secondary_locations) {
         std::cout << "  --> " << sec.filename << ":" << sec.lin << std::endl;
     }
+
+    // 附带说明（如 "parser understood: ..."）：与主错误分开成行
+    for (const auto& child : diag.children) {
+        const char *child_level = child.lvl == DiagLevel::Help ? "help" :
+                                  child.lvl == DiagLevel::Warning ? "warning" : "note";
+        std::cout << "  " << child_level << ": " << child.msg << std::endl;
+    }
     
     // 如果有建议，打印（已预留）
     if (diag.suggestion) {

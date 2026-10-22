@@ -2,6 +2,7 @@
 
 #include <vector>
 #include <utility>
+#include <string>
 
 #include "token.h"
 #include "ast.h"
@@ -26,11 +27,12 @@ private:
     CompUnit &cu_;
     std::vector<Diagnostic> errors_;
     std::vector<Diagnostic> warnings_;
+    // token 缓冲与游标。解析期间只追加、不删除已读入的 token，
+    // 因此 point/restore 永远有效：回退只是把游标移回去。
     std::deque<Token> dq_;
     size_t walk_pos_ = 0;
-    // trial 模式：advance 退化为 walk，用于探测性/类型解析，
-    // 保证 restore(point) 仍能回退。由 parse_type 的守卫设置。
-    bool trial_ = false;
+    // 探针深度：>0 时只做前瞻，不产出诊断
+    size_t probe_ = 0;
     StringPool& pool_;
     struct DefineDecl{
         std::string_view name;
@@ -60,6 +62,17 @@ private:
     inline void add_warning(const std::string &msg) {
         warnings_.push_back(Diagnostic(DiagLevel::Warning, msg, get_loc()));
     }
+
+    // 语法期望失败：主错误只陈述"在等什么"与"遇到什么"，
+    // 已经看懂的结构单独作为 note，两者不混在一句里。
+    void fail_expected(const std::string& expected, const std::string& understood = "");
+    // 无法归类的 token：给出"在某结构之后"的上下文
+    void fail_unexpected(const std::string& previous);
+
+    // 结构描述：报错时说明 parser 已经读懂了什么
+    std::string describe_type(const Type* t) const;
+    std::string describe_expr_short(const Expr* e) const;
+    std::string describe_decl(const Decl* d) const;
 
     // 从外向内查找 define 替换解开链式替换
     std::optional<std::vector<Token>> expand_define(const Token& name) const;
@@ -99,10 +112,14 @@ private:
         return generic_split(std::move(tok));
     }
 
-    // 可逆前进
+    // 可逆前进：缓冲只追加不删除，restore 总能把游标移回来
     inline void walk(const int &step) {
         walk_pos_ += step;
-        while(walk_pos_ >= dq_.size()) {
+        while (walk_pos_ >= dq_.size()) {
+            if (!dq_.empty() && dq_.back().kind == TokenKind::Eof) {
+                walk_pos_ = dq_.size() - 1;
+                return;
+            }
             dq_.push_back(get_token());
         }
     }
@@ -111,64 +128,37 @@ private:
     inline void walk(){
         walk(1);
     }
-    // 不可逆前进
+    // 前进，与 walk 同义。保留它是为了让"提交读取"与"探测读取"在调用处可读。
     inline void advance(const int &step) {
-        if (trial_) { walk(step); return; }
-        walk_pos_ += step;
-        if(walk_pos_ < dq_.size()) {
-            if(walk_pos_ > 0) {
-                dq_.erase(dq_.begin(), dq_.begin() + walk_pos_);
-            }
-        }else {
-            size_t n = dq_.size();
-            dq_.clear();
-            while(walk_pos_ > n){
-                get_token();
-                ++n;
-            }
-            dq_.push_back(get_token());
-        }
-        walk_pos_ = 0;
+        walk(step);
     }
     inline void advance(){
         advance(1);
     }
     inline const Token& peek(size_t offset) {
         offset += walk_pos_;
-        if(offset < dq_.size()) {
-            return dq_[offset];
-        }else {
-            while(offset >= dq_.size()) {
-                dq_.push_back(get_token());
-            }
-            return dq_.back();
+        while (offset >= dq_.size()) {
+            if (!dq_.empty() && dq_.back().kind == TokenKind::Eof) return dq_.back();
+            dq_.push_back(get_token());
         }
+        return dq_[offset];
     }
     inline const Token& peek(){
         return peek(1);
     }
-    // 检查点：同时记录 token 位置与已生成节点数量，支持多层嵌套回退
+    // 检查点：记录游标位置、已生成节点数、诊断数与类体深度
     struct Mark {
         size_t walk_pos;
         size_t nodes;
         size_t error;
-        // 泛型嵌套深度随 token 流前进，回退 token 位置须一并回退
-        size_t generic_depth;
-        // 类体嵌套深度同理，extern 的放置检查依赖它
+        // 类体嵌套深度随解析前进，回退 token 位置须一并回退
         size_t class_depth;
     };
     inline void restore(const Mark & m) {
         walk_pos_ = m.walk_pos;
-        generic_depth_ = m.generic_depth;
         class_depth_ = m.class_depth;
         if (cu_.nodes.size() > m.nodes) cu_.nodes.resize(m.nodes);
         if (errors_.size() > m.error) errors_.resize(m.error);
-    }
-    inline void admit() {
-        if(walk_pos_ > 0) {
-            dq_.erase(dq_.begin(), dq_.begin() + walk_pos_);
-        }
-        walk_pos_ = 0;
     }
     inline Token& curr() {
         if (walk_pos_ >= dq_.size()) {
@@ -177,23 +167,48 @@ private:
         return dq_[walk_pos_];
     }
     inline Mark point() const {
-        return Mark{walk_pos_, cu_.nodes.size(), errors_.size(), generic_depth_, class_depth_};
+        return Mark{walk_pos_, cu_.nodes.size(), errors_.size(), class_depth_};
     }
+    // 探针：只读 token 的前瞻。期间不产出诊断，离开作用域自动回退。
+    // 只用于回溯代价大的歧义点（如 `T{}` 是类体还是切片类型）。
+    struct Probe {
+        Parser& p;
+        Mark m;
+        explicit Probe(Parser& parser) : p(parser), m(parser.point()) { ++p.probe_; }
+        ~Probe() {
+            p.restore(m);
+            --p.probe_;
+        }
+        Probe(const Probe&) = delete;
+        Probe& operator=(const Probe&) = delete;
+    };
     inline bool is_eof() {
         return curr().kind == TokenKind::Eof;
     }
 
     
+    // 声明头部形态：只用于"名字/类型开头"的歧义，关键字声明由 parse_decl 直接派发
+    enum class HeadShape : uint8_t { Unknown, Func, Class, Var };
+    HeadShape scan_decl_head();
+    // 跳过配平的 `-<...>`，进入前 curr 必须是 GenericStart
+    void skip_generic_args();
+    // 跳过一或多个 `#修饰`，返回是否至少跳过一个
+    bool skip_modifier_chain();
+
     // 尝试分析，失败返回空指针
     Decl* parse_decl();
     std::vector<Decl*> parse_members();
     bool parse_modifier_directive(SpecList& defaults);
+    // 当前 '{' 是切片长度括号而非类体（回溯代价大的歧义点，用探针判定）
     bool is_slice_brace();
-    VarList* parse_var_decl(SpecList &ml, Location &loc);
+    // expect_name：形态已确定为变量声明，缺名字要报错
+    VarList* parse_var_decl(SpecList &ml, Location &loc, bool expect_name = false);
+    // 类型已解析后的变量名、后缀维度与初值
+    VarList* parse_var_decl_body(SpecList &ml, Location &loc, Type* type);
     Decl* parse_typedef_decl();
     Decl* parse_exprdef_decl();
     Func* parse_func_decl(SpecList &ml, Location &loc);
-    Class* parse_class_decl(SpecList &ml, Location &loc, std::vector<Type*> injs = {});
+    Class* parse_class_decl(SpecList &ml, Location &loc);
     Namespace* parse_namespace_decl(SpecList &ml, Location &loc);
     Extern* parse_extern_decl(SpecList &ml, Location &loc);
     Operator* parse_operator_overload(SpecList &ml, Location &loc);
@@ -251,7 +266,7 @@ private:
     Type* parse_named_type();    // List
 
     // 泛型：形参表 `foo-<T, U>` 与实参表 `List-<int>`
-    void parse_type_params(std::vector<TypeParam*>& out);
+    std::vector<TypeParam*> parse_type_params();
     // 泛型实参表 `-<T, U>`：base 在类型位置得到 Type::GenericType，
     // 在值位置得到 Expr::GenericType，两者实参都是类型
     std::vector<Type*> parse_generic_args();
