@@ -10,7 +10,7 @@
 特色：
 - 不需要逗号，分号，换行
 - 修饰注入的OOP方式
-- 函数以变量作返回值
+- 函数以量声明作返回值
 
 ## 二、编程模型
 
@@ -48,7 +48,7 @@
 
 ## 四、表达式与类型
 
-表达式与类型共享同一套语法结构。一个结构出现在什么位置，由上下文决定它是表达式还是类型。
+表达式与类型共享部分语法结构，由上下文做具体区分。
 
 ### 字面量
 
@@ -125,7 +125,7 @@ int-** pp = p-&
 指针类型与一元运算的 `-*`、`-&` 是同符号在不同位置的角色。
 
 ```cx
-int x = 1
+var int x = 1
 int-&a = x
 int-&b = a
 x = 2
@@ -137,7 +137,7 @@ int-*& rp = p
 
 对象的引用字段必须在INIT或字段初始化中绑定。
 
-引用可以像指针一样作返回类型，返回的是被引用对象的地址。绑定源不能是函数内的局部变量。
+引用可以像指针一样作返回类型，返回的是被引用对象的地址。绑定源不能是函数内的局部量。
 
 ### 数组类型
 
@@ -181,7 +181,7 @@ b[9][19]    // 正确
 数组默认使用字面量的最后一个作为后所有元素的初值。
 
 ```cx
-int[10] a
+var int[10] a
 a = [1 2 0] // 10个元素全部初始化
 a = []      // 按照默认0值初始化
 ```
@@ -229,14 +229,14 @@ add(int a, int b) int r {
 }
 ```
 
-函数的返回声明 `int r` 声明了一个返回变量 `r`。函数末尾会隐式返回 `r` 的值，不需要写 `return r`。也可以显式 `return` 提前返回。
+函数的返回声明 `int r` 声明了一个返回量 `r`。函数末尾会隐式返回 `r` 的值，不需要写 `return r`。也可以显式 `return` 提前返回。
 
-参数与变量声明规则相同。
+参数与量声明规则相同。
 
 函数支持多个返回声明，永远返回最后一个
 
 ```cx
-foo(int a int b) bool r=false int q=a {
+foo(int a int b) var bool r=false var int q=a {
     if (b > a) {
         q=b
         r=true
@@ -285,15 +285,17 @@ main(){
 
 声明是引入名字的语法单元。一组声明构成一个作用域。
 
-### 变量声明
+### 量声明
 
-变量声明引入一个值量。不赋初值不允许使用（编译期检查），但可以先声明后赋值。包括数组，指针，引用等。
+量声明引入一个值量。包括数组，指针，引用等在内，不赋初值不允许使用（编译期检查），但可以先声明后赋值。
 
 ```cx
 int a = 10
 int b
 b = 0
 ```
+
+量声明默认不可变，使用 `var` 在前修饰来声明可变的量。
 
 ### 函数声明
 
@@ -354,13 +356,13 @@ math::add(1, 2)
 
 ### 类
 
-类是一种容器，其声明一种类型。类可以包含变量声明、函数声明、特殊方法、嵌套容器。
+类是一种容器，其声明一种类型。类可以包含量声明、函数声明、特殊方法、嵌套容器。
 
 ```cx
 Counter {
-    int value = 0
+    var int value = 0
 
-    increment() {
+    mut increment() {
         value = value + 1
     }
 }
@@ -417,7 +419,7 @@ CacheEntry {
 
 ```cx
 Vec2 {
-    pub int x, y
+    var pub int x, y
     operator + (Vec2 other) Vec2 r {
         r = Vec2(x+other.x y+other.y)
     }
@@ -455,7 +457,7 @@ conversion(Vec2 a)Vec2 b{
 ```
 array-<T>{
     T-* h
-    int l
+    var int l
     INIT(int len){
         malloc T{len} a
         h=a
@@ -480,11 +482,12 @@ main(){
 | 关键字 | 含义 | 作用范围 |
 | --- | --- | --- | 
 | static | 全局静态 | 容器除外 |
-| const | 常量不可修改 | 变量声明 |
+| var | 变量 | 量声明 |
+| mut | 方法会修改自身对象 | 成员函数 |
 | inline | 内联 | 函数 |
 | readonly | 外部只读 | 容器成员 |
-| malloc | 堆分配 | 类和变量 |
-| alloca | 栈分配 | 变量 |
+| malloc | 堆分配 | 类和量 |
+| alloca | 栈分配 | 量声明 |
 | pub | 公开 | 容器成员 |
 | priv | 私有 | 容器成员 |
 | uninit | 可以不初始化 | 容器成员 |
@@ -493,15 +496,15 @@ main(){
 
 ```cx
 Base {
-    process(string data) {}
-    Base_setup() { print("Base setup") }
-    setup() { Base_setup() }
+    mut process(string data) {}
+    mut Base_setup() { print("Base setup") }
+    mut setup() { Base_setup() }
 }
 
 Child #Base {
-    process(string data) { print("Implemented") }
-    Child_setup { Base_setup() print("Child setup") }
-    setup() { Child_setup() }
+    mut process(string data) { print("Implemented") }
+    mut Child_setup { Base_setup() print("Child setup") }
+    mut setup() { Child_setup() }
 }
 ```
 
@@ -518,9 +521,9 @@ main(){
 }
 ```
 
-const 只能赋值一次，允许延迟赋值，在类初始化只能且必须赋值一次。
+var可以赋值多次，允许延迟赋值，在类初始化时至少赋值一次。
 
-clux的const是弱const，随着函数返回，取地址和解引用，const标签会消失。
+clux的var是弱var，随着函数返回，取地址和解引用，var标签会消失。
 
 readonly 在类内部可修改，在类外部不可修改。
 

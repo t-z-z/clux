@@ -148,7 +148,7 @@ void Translator::emit_class_decls() {
     }
 }
 
-// 模块级变量：顶层、命名空间内、extern 内的 VarList，按 mangled 名逐个登记
+// 模块级量：顶层、命名空间内、extern 内的 VarList，按 mangled 名逐个登记
 void Translator::collect_globals_decl(Decl* d, const std::string& prefix,
                                       ExternLang lang) {
     if (!d) {
@@ -307,7 +307,7 @@ void Translator::collect_classes_decl(Decl* d, bool from_keep_ir) {
                     f.ir_type = fc ? ("%" + mangler_.of(fc))
                                    : (ft ? object_type(ft) : "i32");
                     if (is_static) {
-                        // static 字段存于模块级全局变量，不进实例 layout
+                        // static 字段存于模块级全局量，不进实例 layout
                         info.static_fields.push_back(f);
                     } else {
                         if (vi->name == "__value") info.value_index = f.index;
@@ -711,7 +711,7 @@ void Translator::emit_func(Func& f, Class* cls) {
         Type* rt_ = (ret_var && ret_var->type) ? ret_var->type : rl->type;
         if (rt_) { ret_t = object_type(rt_); ret_expr = rt_; }
     }
-    // main 有返回变量：不用 sret，改为局部变量 + 统一 exit 块
+    // main 有返回量：不用 sret，改为局部量 + 统一 exit 块
     bool main_with_ret = is_main && ret_var;
     bool plain_main = is_main && !ret_var && ret_t == "void";
     ctx_.plain_main = plain_main;
@@ -723,7 +723,7 @@ void Translator::emit_func(Func& f, Class* cls) {
         ctx_.ret_obj_ptr = "%ret";
         ctx_.ret_obj_cls = ret_cls;
     }
-    // 引用返回变量只是把被引用对象的地址带出去的通道：给它赋值是绑定，
+    // 引用返回量只是把被引用对象的地址带出去的通道：给它赋值是绑定，
     // 存的是地址而非被引用对象的值
     if (ret_var && ret_expr && ret_expr->is_reference())
         ctx_.ret_ref_var = ret_var;
@@ -789,7 +789,7 @@ void Translator::emit_func(Func& f, Class* cls) {
         // 非引用的类指针形参只是借用：不新增持有，也不登记退出时的解引用。
         // 持有关系由调用方与字段赋值各自计一次，形参重复计会把同一次持有数两遍
     }
-    // static 字段与模块级变量的默认值：在任何 INIT 执行前写入
+    // static 字段与模块级量的默认值：在任何 INIT 执行前写入
     if (is_main) {
         emit_global_inits();
         emit_static_inits();
@@ -806,8 +806,8 @@ void Translator::emit_func(Func& f, Class* cls) {
         ctx_.slots[ret_var] = "%ret";
     }
 
-    // 返回变量按声明顺序处理：最后一个为真正的返回值，
-    // 其余按普通局部变量分配槽位并执行初始化
+    // 返回量按声明顺序处理：最后一个为真正的返回值，
+    // 其余按普通局部量分配槽位并执行初始化
     std::vector<VarItem*> ret_vars;
     for (VarList* rl : f.returns) {
         if (!rl) continue;
@@ -822,7 +822,7 @@ void Translator::emit_func(Func& f, Class* cls) {
     }
     for (VarItem* rv : ret_vars) {
         if (!rv->init) continue;
-        // 类返回变量：把初值对象逐字段拷进调用方存储，不产生新的一份持有
+        // 类返回量：把初值对象逐字段拷进调用方存储，不产生新的一份持有
         if (ret_cls && rv == ret_var) {
             std::string v = eval(rv->init);
             emit_fields_copy(ret_cls, v, "%ret", false);
@@ -1129,7 +1129,7 @@ bool Translator::emit_class_var(VarList* vl, VarItem* vi, Class* cls) {
     auto it = classes_.find(cls);
     if (it == classes_.end()) { ctx_.slots[vi] = "null"; return true; }
     std::string inst;
-    // malloc 可以写在类上，也可以写在变量声明上，两者都是堆分配实例
+    // malloc 可以写在类上，也可以写在量声明上，两者都是堆分配实例
     bool is_malloc = cls->specs.has(SpecKind::Malloc) ||
                      (vl && vl->specs.has(SpecKind::Malloc));
     if (vi->init) {
@@ -1156,7 +1156,7 @@ bool Translator::emit_class_var(VarList* vl, VarItem* vi, Class* cls) {
         emit_field_defaults(cls, inst);
         emit_bind_ref(cls, inst, SpecialMethod::Kind::Ref);
     } else {
-        // 变量绑定的实例存储：整个函数一次，循环里复用同一块
+        // 量绑定的实例存储：整个函数一次，循环里复用同一块
         inst = entry_alloca(it->second.llvm_name);
     }
     std::string slot = entry_alloca("ptr");
@@ -1355,7 +1355,7 @@ void Translator::emit_var_decl(VarList* vl) {
             std::string slot = entry_alloca("ptr");
             ctx_.slots[vi] = slot;
             if (vi->init) {
-                // 引用一律存被引用对象的地址：类实例变量要取出槽里的实例
+                // 引用一律存被引用对象的地址：类实例量要取出槽里的实例
                 // 指针，直接用 eval_lvalue 会存成槽地址，读时多绕一层错位
                 // 绑定源写成 &lvalue 时取其 lvalue，与语义检查绑定的对象一致
                 std::string addr = eval_ref_addr(vi->init->bind_source());
@@ -1497,7 +1497,7 @@ void Translator::emit_return(Stmt::Return&) {
         return;
     }
     emit_drops_to(0);
-    // 寄存器返回：return 前加载返回变量
+    // 寄存器返回：return 前加载返回量
     if (ctx_.fn && ctx_.fn->ret_via_reg && !ctx_.fn->returns.empty() &&
         ctx_.fn->returns.back() && !ctx_.fn->returns.back()->vars.empty()) {
         VarItem* rv = ctx_.fn->returns.back()->vars.back();
@@ -1509,7 +1509,7 @@ void Translator::emit_return(Stmt::Return&) {
             return;
         }
     }
-    // 无返回变量的 main 签名为 i32，裸 return 按返回 0 处理
+    // 无返回量的 main 签名为 i32，裸 return 按返回 0 处理
     if (ctx_.plain_main) {
         emit_term("ret i32 0");
         return;
@@ -1742,8 +1742,8 @@ void Translator::emit_static_inits() {
     }
 }
 
-// 模块入口为所有模块级变量写入声明处默认值。
-// 初值在main 入口求值而非写成 LLVM 常量初始化式，因此可以引用其他变量、
+// 模块入口为所有模块级量写入声明处默认值。
+// 初值在main 入口求值而非写成 LLVM 常量初始化式，因此可以引用其他量、
 // 调用函数；代价是 main 之前这些全局量都是零值
 void Translator::emit_global_inits() {
     for (auto& g : globals_) {
@@ -1930,7 +1930,7 @@ std::string Translator::field_addr_of(Expr* e) {
     // static 字段：模块级全局符号，由 Mangler 统一命名
     std::string sg = mangler_.field_of(vi);
     if (!sg.empty()) return "@" + sg;
-    // 模块级变量
+    // 模块级量
     auto git = global_names_.find(vi);
     if (git != global_names_.end()) return "@" + git->second;
     // 实例字段：需要成员表达式的接收者
@@ -1954,7 +1954,7 @@ std::string Translator::field_addr_of(Expr* e) {
 std::string Translator::field_addr_in(Class* cls, const std::string& inst_addr,
                                        Expr* src) {
     if (!cls || inst_addr.empty() || !src || !src->sym) return "";
-    if (src->sym->kind != SymbolKind::Variable) return "";
+    if (src->sym->kind != SymbolKind::Value) return "";
     auto* sv = dynamic_cast<VarItem*>(src->sym->node);
     if (!sv) return "";
     auto it = classes_.find(cls);
@@ -2016,10 +2016,10 @@ std::string Translator::bind_ref_field(Expr* target, Expr* value) {
 }
 
 // 被引用对象的地址：引用绑定、引用形参传参、取地址都走这里。
-// 与 eval_lvalue 的唯一分歧是类值——类实例变量的槽、模块级变量与 static
+// 与 eval_lvalue 的唯一分歧是类值——类实例量的槽、模块级量与 static
 // 字段存的都只是实例指针，作为被引用对象时要取出该指针而非槽地址
 std::string Translator::eval_ref_addr(Expr* e) {
-    if (e && e->sym && e->sym->kind == SymbolKind::Variable && as_class(e->type)) {
+    if (e && e->sym && e->sym->kind == SymbolKind::Value && as_class(e->type)) {
         if (auto* vi = dynamic_cast<VarItem*>(e->sym->node)) {
             std::string g;
             auto it = ctx_.slots.find(vi);
@@ -2048,11 +2048,11 @@ std::string Translator::eval_lvalue(Expr* e) {
     if (auto* id = e->get_identifier()) {
         if (std::string(id->name) == "self" && !ctx_.self_ptr.empty())
             return ctx_.self_ptr;
-        if (e->sym && e->sym->kind == SymbolKind::Variable) {
+        if (e->sym && e->sym->kind == SymbolKind::Value) {
             if (auto* vi = dynamic_cast<VarItem*>(e->sym->node)) {
                 auto it = ctx_.slots.find(vi);
                 if (it != ctx_.slots.end()) {
-                    // 引用变量的 lvalue 是被引用对象：槽存其地址
+                    // 引用量的 lvalue 是被引用对象：槽存其地址
                     if (ctx_.ref_bound.count(vi)) {
                         std::string addr = ir_.reg();
                         emit_instr(addr + " = load ptr, ptr " + it->second);
@@ -2060,7 +2060,7 @@ std::string Translator::eval_lvalue(Expr* e) {
                     }
                     return it->second;
                 }
-                // 模块级变量：其存储本身就是全局量，地址即该符号
+                // 模块级量：其存储本身就是全局量，地址即该符号
                 auto git = global_names_.find(vi);
                 if (git != global_names_.end()) {
                     // 模块级引用的 lvalue 是被引用对象：槽存其地址
@@ -2111,7 +2111,7 @@ std::string Translator::eval_lvalue(Expr* e) {
         emit_instr(addr + " = getelementptr " + et + ", ptr " + base + ", i64 " + idx);
         return addr;
     }
-    if (e->sym && e->sym->kind == SymbolKind::Variable)
+    if (e->sym && e->sym->kind == SymbolKind::Value)
         return field_lvalue(e, field_addr_of(e));
     return "";
 }
@@ -2272,14 +2272,14 @@ std::string Translator::eval_identifier(Expr* e, Expr::Identifier* id) {
     // 函数名作为值：decay 为函数指针，取其地址
     if (e->type && e->type->is_func_ref())
         return "@" + IRWriter::quote(mangler_.of(e->type->get_func_ref()->func));
-    if (e->sym && e->sym->kind == SymbolKind::Variable) {
+    if (e->sym && e->sym->kind == SymbolKind::Value) {
         if (auto* vi = dynamic_cast<VarItem*>(e->sym->node)) {
-            // 类返回变量：值即调用方提供的对象存储指针
+            // 类返回量：值即调用方提供的对象存储指针
             if (vi == ctx_.ret_obj_var && !ctx_.ret_obj_ptr.empty())
                 return ctx_.ret_obj_ptr;
             auto it = ctx_.slots.find(vi);
             if (it != ctx_.slots.end()) {
-                // 引用变量：槽存被引用对象地址，需二次加载
+                // 引用量：槽存被引用对象地址，需二次加载
                 if (ctx_.ref_bound.count(vi)) {
                     std::string addr = ir_.reg();
                     emit_instr(addr + " = load ptr, ptr " + it->second);
@@ -2295,7 +2295,7 @@ std::string Translator::eval_identifier(Expr* e, Expr::Identifier* id) {
                 // 定长数组：值即槽地址
                 if (is_fixed_array(e->type)) return it->second;
                 if (as_class(e->type)) {
-                    // 类实例变量：槽里存的是实例指针
+                    // 类实例量：槽里存的是实例指针
                     std::string r = ir_.reg();
                     emit_instr(r + " = load ptr, ptr " + it->second);
                     return r;
@@ -2305,7 +2305,7 @@ std::string Translator::eval_identifier(Expr* e, Expr::Identifier* id) {
                 emit_instr(r + " = load " + t + ", ptr " + it->second);
                 return r;
             }
-            // 模块级变量：按 VarItem 身份判定，与同名的类字段区分
+            // 模块级量：按 VarItem 身份判定，与同名的类字段区分
             auto git = global_names_.find(vi);
             if (git != global_names_.end()) {
                 if (is_fixed_array(e->type)) return "@" + git->second;
@@ -2344,11 +2344,11 @@ std::string Translator::eval_identifier(Expr* e, Expr::Identifier* id) {
         }
     }
     // 走到这里说明该标识符没有可求值的存储：语义已通过，翻译器却无法定位它。
-    // 不能静默返回 0 把变量引用变成空指针，也不能伪造成一个合法常量
+    // 不能静默返回 0 把量引用变成空指针，也不能伪造成一个合法常量
     std::string name = e->get_identifier()
         ? std::string(e->get_identifier()->name) : "<unknown>";
-    if (e->sym && e->sym->kind == SymbolKind::Variable)
-        error(e->loc, "internal: no storage found for variable '" + name + "'");
+    if (e->sym && e->sym->kind == SymbolKind::Value)
+        error(e->loc, "internal: no storage found for value '" + name + "'");
     else
         error(e->loc, "internal: identifier '" + name + "' has no value");
     return kBadValue;
@@ -2482,7 +2482,7 @@ std::string Translator::eval_unary(Expr* e, Expr::Unary* u) {
     }
     if (u->op == OpKind::BitAnd) {
         // 类值的槽与字段存的都是实例地址，取地址统一走 eval_ref_addr：
-        // 类实例变量由它取出槽里的指针，内联类字段直接就是字段存储地址
+        // 类实例量由它取出槽里的指针，内联类字段直接就是字段存储地址
         return eval_ref_addr(u->operand);
     }
     std::string ot = u->operand && u->operand->type ? map_type(u->operand->type) : "i32";
@@ -2521,7 +2521,7 @@ std::string Translator::eval_unary(Expr* e, Expr::Unary* u) {
 }
 
 std::string Translator::eval_assign(Expr* e, Expr::Assign* a) {
-    // 类返回变量：r = v 把 v 所指对象逐字段拷进调用方存储，不改 r 的指针。
+    // 类返回量：r = v 把 v 所指对象逐字段拷进调用方存储，不改 r 的指针。
     // 这只是把已构造好的对象搬进调用方的存储，不产生新的一份持有
     if (a->op == OpKind::Assign && a->target && a->target->sym &&
         !ctx_.ret_obj_ptr.empty()) {
@@ -2551,9 +2551,9 @@ std::string Translator::eval_assign(Expr* e, Expr::Assign* a) {
               "internal: assignment target has no storage");
         return kBadValue;
     }
-    // 引用返回变量：赋值即绑定，存被引用对象的地址（与引用声明同一路径），
+    // 引用返回量：赋值即绑定，存被引用对象的地址（与引用声明同一路径），
     // 否则存进去的是对象的值，返回出去就是一个被当作地址的数值。
-    // 必须先于下面的类赋值：引用返回变量的表达式类型是目标类，
+    // 必须先于下面的类赋值：引用返回量的表达式类型是目标类，
     // as_class 同样为真，会被误当成值拷贝
     if (a->target->sym && a->target->sym->node == ctx_.ret_ref_var) {
         std::string addr = eval_ref_addr(a->value);
@@ -2563,10 +2563,10 @@ std::string Translator::eval_assign(Expr* e, Expr::Assign* a) {
     }
     // 延迟绑定的局部引用：槽里还没有地址，这次赋值就是绑定，存被引用对象的
     // 地址，与引用声明处初值同一路径。入口即绑定的形参、已带初值的引用
-    // 都在 ref_bound 里，引用返回变量在上面已单独处理；字段不在 slots 里，
+    // 都在 ref_bound 里，引用返回量在上面已单独处理；字段不在 slots 里，
     // INIT 之外的字段赋值是写穿，都不走这里
     if (a->op == OpKind::Assign && a->target->sym &&
-        a->target->sym->kind == SymbolKind::Variable) {
+        a->target->sym->kind == SymbolKind::Value) {
         auto* vi = dynamic_cast<VarItem*>(a->target->sym->node);
         if (vi && is_ref_item(vi, nullptr) && ctx_.slots.count(vi) &&
             !ctx_.ref_bound.count(vi)) {
@@ -2605,9 +2605,9 @@ std::string Translator::eval_assign(Expr* e, Expr::Assign* a) {
             copy_init_into(sp, el, sn64, a->value);
         return ptr;
     }
-    // 类赋值是值拷贝：字段就地搬进内联存储，变量另分配副本，与声明式
-    // `Node b = a` 同一语义。否则两个变量共享同一实例，各自登记的字段
-    // DEREF 会把同一对象析构两次。变量目标 + 需转换时交回通用路径：
+    // 类赋值是值拷贝：字段就地搬进内联存储，量另分配副本，与声明式
+    // `Node b = a` 同一语义。否则两个量共享同一实例，各自登记的字段
+    // DEREF 会把同一对象析构两次。量目标 + 需转换时交回通用路径：
     // 同类 conversion 代替等号拷贝（spec.md）
     if (a->op == OpKind::Assign && a->target && a->value &&
         as_class(a->target->type) &&
@@ -2683,7 +2683,7 @@ std::string Translator::eval_assign(Expr* e, Expr::Assign* a) {
 
 // 类左值 = 类右值
 // 字段是内联存储：把源对象逐字段搬进字段自身，不另分配，字段因此不悬垂。
-// 变量是实例指针槽：另分配副本逐字段复制，源对象保持不变。
+// 量是实例指针槽：另分配副本逐字段复制，源对象保持不变。
 std::string Translator::assign_class_value(Expr* target, Expr* value) {
     Class* pc = as_class(target->type);
     if (!pc) {
@@ -2697,7 +2697,7 @@ std::string Translator::assign_class_value(Expr* target, Expr* value) {
         return kBadValue;
     }
     // 存储形态决定写法：引用左值与内联字段指向的就是对象本身，逐字段搬进去；
-    // 类实例变量的槽存的是实例指针，须另分配副本后改写指针。
+    // 类实例量的槽存的是实例指针，须另分配副本后改写指针。
     // 引用左值是写穿而非重新绑定，与 int-& 一致（s = b 改的是 s 指向的对象）
     Type* dt = target->sym ? target->sym->get_type() : nullptr;
     bool ref_target = dt && dt->is_reference();
@@ -2717,7 +2717,7 @@ std::string Translator::assign_class_value(Expr* target, Expr* value) {
     // 先释放目标原有实例：副本存储在循环里可能就是这一块，
     // 拷贝会覆盖它，先拷贝后释放等于对刚被覆盖的对象调 DROP
     emit_lifecycle(pc, SpecialMethod::Kind::Drop, old);
-    // malloc 类（或 malloc 变量）被赋值时复制的是堆上的对象（spec.md），
+    // malloc 类（或 malloc 量）被赋值时复制的是堆上的对象（spec.md），
     // 否则副本落在栈上，free() 会拿到栈指针
     bool heap = pc->specs.has(SpecKind::Malloc);
     if (!heap && target->sym)
@@ -2755,8 +2755,8 @@ std::string Translator::eval_member(Expr* e, Expr::Member* m) {
         if (auto* ev = e->sym->get<EnumVariant>())
             return std::to_string(ev->value);
     }
-    // static 字段与模块级变量：都是 LLVM 全局量
-    if (e->sym && e->sym->kind == SymbolKind::Variable) {
+    // static 字段与模块级量：都是 LLVM 全局量
+    if (e->sym && e->sym->kind == SymbolKind::Value) {
         if (auto* vi = dynamic_cast<VarItem*>(e->sym->node)) {
             std::string g = mangler_.field_of(vi);
             if (g.empty()) {
@@ -2787,7 +2787,7 @@ std::string Translator::eval_member(Expr* e, Expr::Member* m) {
     }
     // 类字段
     Expr* tgt = m->target;
-    auto* vi = (e->sym && e->sym->kind == SymbolKind::Variable)
+    auto* vi = (e->sym && e->sym->kind == SymbolKind::Value)
         ? dynamic_cast<VarItem*>(e->sym->node) : nullptr;
     // 类名限定访问 static 字段 C::counter：C 在值位置只带符号，
     // 成员查找已由语义阶段按类作用域完成，落到上面的 static 字段分支
@@ -3254,7 +3254,7 @@ std::string Translator::eval_default_ctor(Expr* e, Expr::Call* c) {
 }
 
 // 分配类实例存储并写入声明处字段默认值。不执行 INIT：INIT 是手动调用的
-// 构造方法，模块级变量与 static 字段的默认初始化都只落字段初值
+// 构造方法，模块级量与 static 字段的默认初始化都只落字段初值
 std::string Translator::emit_default_object(Class* cls) {
     if (!cls) {
         error(Location(), "internal: default construction of unknown class");

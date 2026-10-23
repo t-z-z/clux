@@ -57,10 +57,10 @@ Expr* SemanticAnalyzer::make_int_literal(const Location& loc, size_t value) {
         Expr::Literal{LiteralKind::Int, literal_pool_.back()});
 }
 
-// 重名报错时说明占用该名字的符号是什么，避免只看到"重复变量"却找不到前一声明
+// 重名报错时说明占用该名字的符号是什么，避免只看到"重复量"却找不到前一声明
 static const char* symbol_kind_label(SymbolKind kind) {
     switch (kind) {
-        case SymbolKind::Variable:  return "a variable";
+        case SymbolKind::Value:  return "a value";
         case SymbolKind::Function:  return "a function";
         case SymbolKind::Class:     return "a class";
         case SymbolKind::Namespace: return "a namespace";
@@ -108,9 +108,9 @@ void SemanticAnalyzer::analyze_rest() {
     check_embedded_layout();
 }
 
-// extern 块内的变量由外部库定义，存储不在本模块，其类型不受模块级限制。
-// extern 可以写在命名空间里，收集要逐层下钻，否则命名空间内的 extern 变量
-// 会被当成模块级变量，走错模块级变量的检查分支
+// extern 块内的量由外部库定义，存储不在本模块，其类型不受模块级限制。
+// extern 可以写在命名空间里，收集要逐层下钻，否则命名空间内的 extern 量
+// 会被当成模块级量，走错模块级量的检查分支
 void SemanticAnalyzer::collect_extern_vars() {
     extern_vars_.clear();
     std::function<void(const std::vector<Decl*>&)> walk_containers =
@@ -130,7 +130,7 @@ void SemanticAnalyzer::collect_extern_vars() {
     walk_containers(cu_.top_decls);
 }
 
-// 模块级变量按声明顺序编号：初值只能引用序号更小的变量
+// 模块级量按声明顺序编号：初值只能引用序号更小的量
 void SemanticAnalyzer::collect_global_order(Decl* d) {
     if (!d) return;
     if (d->kind == DeclKind::Namespace) {
@@ -250,13 +250,13 @@ void SemanticAnalyzer::collect_decl(Decl* decl, bool default_public) {
                 Symbol* prev = symbols_.current_scope()
                     ? symbols_.current_scope()->lookup_member(
                           std::string(var->name)) : nullptr;
-                Symbol sym(SymbolKind::Variable, var);
+                Symbol sym(SymbolKind::Value, var);
                 sym.specs = &vl->specs;
                 sym.default_public = default_public;
                 Symbol* s = symbols_.insert_member(std::string(var->name),
                                                    std::move(sym));
                 if (!s) {
-                    report_duplicate_decl(var->loc, "variable", var->name,
+                    report_duplicate_decl(var->loc, "value", var->name,
                                           prev);
                 } else {
                     // 成员符号是字段的唯一身份：裸名与 `self.x` 必须解析到它，
@@ -616,7 +616,7 @@ void SemanticAnalyzer::visit_func(Func& f) {
         check_extern_func(f);
         return;
     }
-    // 引用返回：返回的是被引用对象的地址。返回变量只是把该地址带出去的
+    // 引用返回：返回的是被引用对象的地址。返回量只是把该地址带出去的
     // 通道，其存储仍在栈帧上，所以必须用寄存器返回；
     // 绑定源能不能返回出去由流检查判定
     if (!f.returns.empty() && f.returns.back()) {
@@ -644,7 +644,7 @@ void SemanticAnalyzer::visit_special_method(SpecialMethod& sm) {
 static void collect_expr_syms(Expr* e, std::vector<Symbol*>& out) {
     if (!e) return;
     // 访问器与闭包体在各自的遍历上下文里已单独处理
-    if (e->sym && e->sym->kind == SymbolKind::Variable) out.push_back(e->sym);
+    if (e->sym && e->sym->kind == SymbolKind::Value) out.push_back(e->sym);
     if (auto* b = e->get_binary()) {
         collect_expr_syms(b->left, out);
         collect_expr_syms(b->right, out);
@@ -725,7 +725,7 @@ void SemanticAnalyzer::resolve_infer_array_len(Type& type, Type* init_type,
 }
 
 // T[] 的长度只能来自初值，故报错措辞随声明位置不同：形参/返回值/字段没有
-// 初值可用，写成切片也不是出路，只能给定长；只有局部变量能靠初值定长
+// 初值可用，写成切片也不是出路，只能给定长；只有局部量能靠初值定长
 void SemanticAnalyzer::mark_infer_site(Type* t, InferSite site) {
     if (!t) return;
     if (auto* arr = t->get_array_type()) {
@@ -773,36 +773,36 @@ void SemanticAnalyzer::report_infer_arrays() {
     infer_sites_.clear();
 }
 
-// extern 变量的存储在外部库，本模块只发一条 external global 声明，
+// extern 量的存储在外部库，本模块只发一条 external global 声明，
 // 故初值无处附着。类型约束则来自 C 的对象布局：clux 的类值是存储指针，
-// 把类类型的 extern 变量按指针发出去，读写的其实是另一块内存——这类约束
+// 把类类型的 extern 量按指针发出去，读写的其实是另一块内存——这类约束
 // 只对 extern "C" 生效，库名块的布局尚未识别
 void SemanticAnalyzer::check_extern_var_list(VarList& vl, ExternLang lang) {
     bool is_c = lang == ExternLang::C;
     for (VarItem* var : vl.vars) {
         if (!var) continue;
         if (var->init)
-            error(var->loc, "an extern variable cannot have an initializer: its "
+            error(var->loc, "an extern value cannot have an initializer: its "
                             "storage belongs to the external library");
         if (!is_c) continue;
         Type* vt = var->type ? var->type : vl.type;
         if (!vt) continue;
         if (vt->is_inferred()) {
-            error(var->loc, "the type of an extern \"C\" variable cannot be "
+            error(var->loc, "the type of an extern \"C\" value cannot be "
                             "inferred: the C layout is fixed, write it out");
         } else if (as_class(vt)) {
-            error(var->loc, "an extern \"C\" variable cannot be a class: the "
+            error(var->loc, "an extern \"C\" value cannot be a class: the "
                             "value of a class is a pointer to its storage, "
                             "while the external symbol is the object itself, "
                             "use a pointer");
         } else if (is_slice_type(vt)) {
-            error(var->loc, "an extern \"C\" variable cannot be an array slice: "
+            error(var->loc, "an extern \"C\" value cannot be an array slice: "
                             "its length is owned by the local binding, not by "
                             "the external symbol");
         } else if (!(vt->is_primitive() || vt->is_pointer() ||
                      vt->is_func_ptr() || vt->is_array_type())) {
             // 外部符号是一个存储位置，只有布局与 C 侧对象一一对应的类型能对上
-            error(var->loc, "unsupported type for an extern \"C\" variable: "
+            error(var->loc, "unsupported type for an extern \"C\" value: "
                             "only scalars, pointers, function pointers and "
                             "fixed-length arrays match an external storage "
                             "location");
@@ -811,7 +811,7 @@ void SemanticAnalyzer::check_extern_var_list(VarList& vl, ExternLang lang) {
 }
 
 void SemanticAnalyzer::visit_var_list(VarList& vl) {
-    // uninit 是“允许不初始化”的容器成员修饰，局部量、形参和模块级变量
+    // uninit 是“允许不初始化”的容器成员修饰，局部量、形参和模块级量
     // 都仍然要走各自的初始化规则
     if (vl.specs.has(SpecKind::Uninit)) {
         bool is_field = false;
@@ -820,7 +820,7 @@ void SemanticAnalyzer::visit_var_list(VarList& vl) {
         if (!is_field)
             error(vl.loc, "uninit is only allowed on container members");
     }
-    // 模块级变量的存储是 LLVM 全局量，其类型必须是常量可表达的
+    // 模块级量的存储是 LLVM 全局量，其类型必须是常量可表达的
     auto ext = extern_vars_.find(&vl);
     bool in_extern = ext != extern_vars_.end();
     bool module_level = !current_params && !current_members && !in_extern;
@@ -828,17 +828,17 @@ void SemanticAnalyzer::visit_var_list(VarList& vl) {
         check_extern_var_list(vl, ext->second);
     }
     if (module_level) {
-        // 模块级变量必须显式初始化：没有初值时槽里只剩零值，类值更是空指针，
+        // 模块级量必须显式初始化：没有初值时槽里只剩零值，类值更是空指针，
         // 读取就会得到无效对象。数组的存储本身是完整的零初始化对象，
         // 不在此列
         for (VarItem* var : vl.vars) {
             if (!var || var->init) continue;
             Type* dt = var->type ? var->type : vl.type;
             if (dt && dt->is_array_type()) continue;
-            error(var->loc, "module-level variable '" + std::string(var->name) +
+            error(var->loc, "module-level value '" + std::string(var->name) +
                   "' must be initialized");
         }
-        // 初值在 main 入口按声明顺序求值，引用后方声明的变量只会读到零值
+        // 初值在 main 入口按声明顺序求值，引用后方声明的量只会读到零值
         for (VarItem* var : vl.vars) {
             if (!var || !var->init) continue;
             auto self = global_order_.find(var);
@@ -851,7 +851,7 @@ void SemanticAnalyzer::visit_var_list(VarList& vl) {
                 auto other = global_order_.find(rvi);
                 if (other != global_order_.end() && other->second > self->second)
                     error(var->init->loc,
-                          "initializer of module-level variable '" +
+                          "initializer of module-level value '" +
                           std::string(var->name) + "' refers to '" +
                           std::string(rvi->name) + "', which is declared later");
             }
@@ -871,7 +871,7 @@ void SemanticAnalyzer::visit_var_list(VarList& vl) {
                                          dt->is_string_literal_type());
             // 标记bug
                                          if (init_aggregate || decl_aggregate)
-                error(var->loc, "module-level variable cannot be an array or "
+                error(var->loc, "module-level value cannot be an array or "
                       "string: its storage would not outlive the initializer");
         }
     }
@@ -879,8 +879,8 @@ void SemanticAnalyzer::visit_var_list(VarList& vl) {
     for (VarItem* var : vl.vars) {
         if (!var) continue;
         Type* dt = var->type ? var->type : vl.type;
-        // T[]：长度由初值推导。多个变量共用一个类型节点时按声明顺序取第一个
-        // 能定出长度的初值，各变量长度不一致由数组字面量长度检查报出
+        // T[]：长度由初值推导。多个量共用一个类型节点时按声明顺序取第一个
+        // 能定出长度的初值，各量长度不一致由数组字面量长度检查报出
         if (dt && dt->is_array_type()) {
             resolve_infer_array_len(*dt, var->init ? var->init->type : nullptr,
                                     var->init);
@@ -891,7 +891,7 @@ void SemanticAnalyzer::visit_var_list(VarList& vl) {
             mark_infer_site(dt, site);
         }
         // T{} / T{n}：长度必须在声明处确定，否则没有可分配的存储。
-        // 形参/返回变量/字段本来就不许是切片，由各自的位置检查报错，不在此重复
+        // 形参/返回量/字段本来就不许是切片，由各自的位置检查报错，不在此重复
         if (!is_param_item(var) && !is_return_var_item(var) &&
             !is_field_item(var) && is_slice_type(dt) &&
             !dt->get_array_type()->length &&
@@ -918,12 +918,12 @@ void SemanticAnalyzer::visit_var_list(VarList& vl) {
         // 再拿这个无效类型检查初值只会多出一条看不懂的转换错误
         if (dt->is_named() && !dt->resolved_decl && !dt->resolved_scope && !dt->sym)
             continue;
-        // 返回变量不接受数组/字符串字面量：栈存储返回后悬垂
+        // 返回量不接受数组/字符串字面量：栈存储返回后悬垂
         bool lit_slice = var->init->is_array() ||
             (var->init->type && var->init->type->is_string_literal_type());
         if (lit_slice && is_return_var_item(var)) {
             error(var->init->loc,
-                  "cannot initialize return variable with array literal: "
+                  "cannot initialize return value with array literal: "
                   "its stack storage would dangle after return");
         }
         // 数组字面量：元素数不得超过声明的编译期常量长度
@@ -953,13 +953,13 @@ void SemanticAnalyzer::visit_var_list(VarList& vl) {
         // 字段的身份是 collect 阶段登记的类成员符号，裸名与 `self.x` 都解析到它；
         // 再登记一个同名局部量只会让同一个字段分裂成两个 Symbol
         if (is_field_item(var)) continue;
-        Symbol sym(SymbolKind::Variable, var);
+        Symbol sym(SymbolKind::Value, var);
         sym.specs = &vl.specs;
         sym.default_public = true;
         if (!symbols_.insert_local(var->name, std::move(sym))) {
             Symbol* prev = symbols_.current_scope()
                 ? symbols_.current_scope()->lookup_local(var->name) : nullptr;
-            report_duplicate_decl(var->loc, "variable", var->name, prev);
+            report_duplicate_decl(var->loc, "value", var->name, prev);
         } else {
             var_symbols_[var] = symbols_.current_->lookup_local(var->name);
         }
@@ -1006,7 +1006,7 @@ Symbol* SemanticAnalyzer::class_field_symbol(std::string_view name) const {
     if (!current_class || !current_class->scope) return nullptr;
     Symbol* m = SymbolTable::lookup_member_in(current_class->scope,
                                               std::string(name));
-    return (m && m->kind == SymbolKind::Variable) ? m : nullptr;
+    return (m && m->kind == SymbolKind::Value) ? m : nullptr;
 }
 
 // inner 是否在 outer 之内（含自身）
@@ -1228,7 +1228,7 @@ void SemanticAnalyzer::visit_expr_identifier(Expr::Identifier& id) {
         (!sym || !scope_within(sym->decl_scope, current_class->scope))) {
         if (Symbol* field = class_field_symbol(id.name)) sym = field;
     }
-    // 块内的 exprdef 与局部变量同一套查找，先判别名再走变量路径
+    // 块内的 exprdef 与局部量同一套查找，先判别名再走量路径
     if (sym && sym->kind == SymbolKind::ExprAlias) {
         expand_expr_alias(sym);
         return;
@@ -1236,10 +1236,10 @@ void SemanticAnalyzer::visit_expr_identifier(Expr::Identifier& id) {
     if (sym) {
         current_expr->sym = sym;
         Type* st = sym->get_type();
-        // 读取引用变量即读取被引用对象：隐式解引用为其目标类型
+        // 读取引用量即读取被引用对象：隐式解引用为其目标类型
         if (st && st->is_reference()) st = st->get_reference()->target;
         current_expr->type = st;
-        current_expr->is_lvalue = (sym->kind == SymbolKind::Variable);
+        current_expr->is_lvalue = (sym->kind == SymbolKind::Value);
         return;
     }
 
@@ -1257,7 +1257,7 @@ void SemanticAnalyzer::visit_expr_identifier(Expr::Identifier& id) {
         }
         current_expr->sym = member;
         check_access(member, current_expr->loc);
-        if (member->kind == SymbolKind::Variable) {
+        if (member->kind == SymbolKind::Value) {
             // 读取引用字段即读取被绑定对象：隐式解引用为其目标类型
             Type* mt = member->get_type();
             if (mt && mt->is_reference()) mt = mt->get_reference()->target;
@@ -1631,14 +1631,14 @@ void SemanticAnalyzer::visit_expr_assign(Expr::Assign& a) {
         }
     }
 
-    // 返回变量不接受数组/字符串字面量：字面量存储留在函数栈上，返回后指针悬垂
+    // 返回量不接受数组/字符串字面量：字面量存储留在函数栈上，返回后指针悬垂
     bool literal_slice = a.value->is_array() ||
         (a.value->type && a.value->type->is_string_literal_type());
     if (literal_slice && a.target->sym) {
         VarItem* tvi = dynamic_cast<VarItem*>(a.target->sym->node);
         if (is_return_var_item(tvi)) {
             error(a.value->loc,
-                  "cannot assign array literal to return variable: "
+                  "cannot assign array literal to return value: "
                   "its stack storage would dangle after return");
         }
     }
@@ -1785,17 +1785,17 @@ void SemanticAnalyzer::visit_expr_member(Expr::Member& m) {
         bool is_static = member->specs &&
                          member->specs->has(SpecKind::Static);
         if (via_class_name && !is_static &&
-            (member->kind == SymbolKind::Variable ||
+            (member->kind == SymbolKind::Value ||
              member->kind == SymbolKind::Function)) {
             error(current_expr->loc,
-                  std::string(member->kind == SymbolKind::Variable
+                  std::string(member->kind == SymbolKind::Value
                                   ? "cannot access instance field '"
                                   : "cannot access instance method '") +
                       field + "' through class '" + target_scope->name +
                       "' without an instance");
         }
 
-        if (member->kind == SymbolKind::Variable && member->get_type()) {
+        if (member->kind == SymbolKind::Value && member->get_type()) {
             // 读取引用字段即读取被绑定对象：隐式解引用为其目标类型
             Type* ft = member->get_type();
             if (ft->is_reference()) ft = ft->get_reference()->target;
@@ -2015,7 +2015,7 @@ void SemanticAnalyzer::visit_expr_spawn(Expr::Spawn& sp) {
     current_expr->is_lvalue = false;
 
     if (auto* c = sp.call->get_call()) {
-        // 引用形参按地址传递，被引用对象可能是栈变量，故同样禁止
+        // 引用形参按地址传递，被引用对象可能是栈量，故同样禁止
         std::vector<Type*> params;
         if (c->resolved) {
             if (c->resolved->kind == DeclKind::Func ||
@@ -2177,7 +2177,7 @@ void SemanticAnalyzer::expand_expr_alias(Symbol* sym) {
 // 类型位置的裸名：按类型解析
 void SemanticAnalyzer::visit_type_identifier(Type::Identifier& id) {
     std::string name(id.name);
-    // 块内的 typedef 只在其后生效，与局部变量同一套查找
+    // 块内的 typedef 只在其后生效，与局部量同一套查找
     Symbol* s = symbols_.lookup_local(name);
     if (!s) s = symbols_.lookup_member(name);
     if (s && s->kind == SymbolKind::TypeAlias) {

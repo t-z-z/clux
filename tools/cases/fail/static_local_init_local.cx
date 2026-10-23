@@ -1,0 +1,9 @@
+// static 局部量的初值在 main 入口求值，不能引用函数内的自动存储
+f(int a) int r {
+    int local = 1
+    static int x = a + local
+    r = x
+}
+main() {
+    f(1)
+}

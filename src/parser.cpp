@@ -91,7 +91,7 @@ std::string Parser::describe_decl(const Decl* d) const {
     switch (d->kind) {
         case DeclKind::VarList: {
             const auto* vl = static_cast<const VarList*>(d);
-            std::string s = "a variable declaration";
+            std::string s = "a value declaration";
             if (!vl->vars.empty()) {
                 s += " \"";
                 for (size_t k = 0; k < vl->vars.size(); ++k) {
@@ -254,7 +254,7 @@ static bool is_decl_start(const Token &tok) {
         || tok.kind == TokenKind::Dollar
         || tok.kind == TokenKind::Hash;
 }
-// 变量名之后仍属该变量声明的 token；其余（'{'、'('、'-<'、'.' 等）
+// 量名之后仍属该量声明的 token；其余（'{'、'('、'-<'、'.' 等）
 // 说明该标识符是下一个声明的开头
 static bool is_var_tail(const Token &tok) {
     return tok.kind == TokenKind::Assign || tok.kind == TokenKind::Comma
@@ -326,7 +326,7 @@ bool Parser::skip_modifier_chain() {
     return any;
 }
 
-// 判定声明头部形态。只读 token，用于消解"类体 / 切片类型 / 函数 / 变量"的歧义。
+// 判定声明头部形态。只读 token，用于消解"类体 / 切片类型 / 函数 / 量"的歧义。
 // 关键字开头的声明已在 parse_decl 里定型，这里只处理名字与类型开头。
 Parser::HeadShape Parser::scan_decl_head() {
     // 前置注入 `#a #b Name {`：注入链之后必须是类名，否则不是类声明
@@ -347,8 +347,8 @@ Parser::HeadShape Parser::scan_decl_head() {
             return is_slice_brace() ? HeadShape::Var : HeadShape::Class;
         return HeadShape::Var;
     }
-    // 类型开头只能是变量声明；缺名字的形态由变量分支报错。
-    // `let` 也走变量分支，由它统一报“未实现”
+    // 类型开头只能是量声明；缺名字的形态由量分支报错。
+    // `let` 也走量分支，由它统一报“未实现”
     if (curr().is_type() || curr().kind == TokenKind::Dollar
         || curr().kind == TokenKind::Let)
         return HeadShape::Var;
@@ -431,7 +431,7 @@ Func* Parser::parse_func_decl(SpecList &ml, Location &loc) {
     return f;
 }
 
-// 变量的识别：类型或推导符加标识符。
+// 量的识别：类型或推导符加标识符。
 // 失败时游标停在出错处，不自行回退——回退由调用方按需负责。
 VarList* Parser::parse_var_decl(SpecList &ml, Location &loc, bool expect_name) {
     bool is_let = curr().kind == TokenKind::Let;
@@ -445,14 +445,14 @@ VarList* Parser::parse_var_decl(SpecList &ml, Location &loc, bool expect_name) {
         if (!type) return nullptr;
     }
     VarList* vl = parse_var_decl_body(ml, loc, type);
-    // 形态已确定为变量声明时，失败点就是缺名字
+    // 形态已确定为量声明时，失败点就是缺名字
     if (!vl && expect_name && !is_let)
         fail_expected("an identifier after the type \"" + describe_type(type) + "\"",
-                      "a variable declaration");
+                      "a value declaration");
     return vl;
 }
 
-// 类型已解析：读取变量名（可多个）、后缀维度与初值
+// 类型已解析：读取量名（可多个）、后缀维度与初值
 VarList* Parser::parse_var_decl_body(SpecList &ml, Location &loc, Type* type) {
     std::vector<VarItem*> vars;
     for (;;) {
@@ -558,8 +558,8 @@ Decl* Parser::parse_exprdef_decl() {
     return cu_.add_node<ExprDef>(loc, name, target);
 }
 
-// 当前 '{' 是否为切片类型的长度括号而非类体：只在 `T{n} 变量名` 中出现，
-// 即 '}' 之后紧跟变量名，且该名字之后仍能续接变量声明；
+// 当前 '{' 是否为切片类型的长度括号而非类体：只在 `T{n} 量名` 中出现，
+// 即 '}' 之后紧跟量名，且该名字之后仍能续接量声明；
 // 否则它是新声明的开头，如空体类之后的函数声明
 bool Parser::is_slice_brace() {
     // 与 parse_postfix_type 的判据一致：只有 {} 与 {长度} 才可能是切片
@@ -840,7 +840,7 @@ static bool extern_def_spec(const SpecList& specs, std::string& out) {
     return false;
 }
 
-// extern 块内只允许 C 意义上的声明：函数声明与外部变量。其余成员要么是 clux
+// extern 块内只允许 C 意义上的声明：函数声明与外部量。其余成员要么是 clux
 // 独有的构造（在外部符号空间里没有对应物），要么是容器（会让译者在发声明时
 // 漏掉它，生成残缺甚至非法的 IR），一律报错。extern "LLVMIR" 另开一条路：
 // 那里的一切实现都来自 keep`` 的 IR，类只是 clux 侧的类型名，不发射任何声明
@@ -1085,7 +1085,7 @@ Stmt* Parser::parse_stmt() {
         return s;
     }
 
-    // 头部判定：类型头后跟标识符是变量声明，否则是表达式语句。
+    // 头部判定：类型头后跟标识符是量声明，否则是表达式语句。
     // 这是语句层唯一的歧义点，类型没有函数体，试探很浅。
     {
         Mark sp = point();
@@ -1094,7 +1094,7 @@ Stmt* Parser::parse_stmt() {
             SpecList ml;
             VarList* vl = parse_var_decl_body(ml, loc, head);
             if (!vl) {
-                // 有标识符时必然产出变量；此处只作防御
+                // 有标识符时必然产出量；此处只作防御
                 restore(sp);
                 return nullptr;
             }
@@ -1444,7 +1444,7 @@ bool Parser::is_statement_boundary() {
             break;
     }
     
-    // 类型名开头可能是变量声明
+    // 类型名开头可能是量声明
     if (curr().is_type()) return true;
     
     return false;

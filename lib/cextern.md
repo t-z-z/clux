@@ -37,7 +37,7 @@ getter 的名字规则是 `结构体名_字段名`。`struct tm` 的 `tm_year` �
 
 ### 引用参数
 
-需要传入结构体让函数填写的接口，参数类型是**引用**（`T-&`），调用时直接传变量名：
+需要传入结构体让函数填写的接口，参数类型是**引用**（`T-&`），调用时直接传量名：
 
 ```cx
 time_t t = 0
@@ -50,7 +50,7 @@ long quot = _imaxdiv_quot(q)   // 正确
 long quot = _imaxdiv_quot(q-&) // 错误：q-& 是 _imaxdiv_t-*，不是 _imaxdiv_t
 ```
 
-引用参数要求实参是 **lvalue**（有名字的变量、解引用结果），不能是字面量、临时值、`-&` 取地址的结果。
+引用参数要求实参是 **lvalue**（有名字的量、解引用结果），不能是字面量、临时值、`-&` 取地址的结果。
 
 ### 按值声明的结构体
 
@@ -61,7 +61,7 @@ jmp_buf env = jmp_buf()
 fenv_t fenv = fenv_t()
 ```
 
-不初始化会报 `use of uninitialized variable`。
+不初始化会报 `use of uninitialized value`。
 
 ### `setjmp` 的特殊情况
 
@@ -96,7 +96,7 @@ C 结构体的内存布局由 C ABI 决定，而 clux 类的布局由 clux 决�
 
 ### 为什么引用参数传 lvalue，不传指针
 
-clux 的引用参数（`T-&`）在 IR 侧就是 `ptr`，和 C 的指针语义一致。区别在 clux 侧的写法：引用参数直接传变量名，指针参数要写 `-&`。这让调用更接近 C 的写法——C 里 `time(&t)` 传地址，clux 里 `time(t)` 传 lvalue，编译器自动取地址。
+clux 的引用参数（`T-&`）在 IR 侧就是 `ptr`，和 C 的指针语义一致。区别在 clux 侧的写法：引用参数直接传量名，指针参数要写 `-&`。这让调用更接近 C 的写法——C 里 `time(&t)` 传地址，clux 里 `time(t)` 传 lvalue，编译器自动取地址。
 
 这条规则也意味着引用参数不能绑临时值。`time(time(null))` 不合法，因为内层 `time(null)` 的返回值不是 lvalue。这其实和 C 一致——C 里也不能写 `time(&time(NULL))`。
 

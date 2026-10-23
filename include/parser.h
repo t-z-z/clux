@@ -199,9 +199,9 @@ private:
     bool parse_modifier_directive(SpecList& defaults);
     // 当前 '{' 是切片长度括号而非类体（回溯代价大的歧义点，用探针判定）
     bool is_slice_brace();
-    // expect_name：形态已确定为变量声明，缺名字要报错
+    // expect_name：形态已确定为量声明，缺名字要报错
     VarList* parse_var_decl(SpecList &ml, Location &loc, bool expect_name = false);
-    // 类型已解析后的变量名、后缀维度与初值
+    // 类型已解析后的量名、后缀维度与初值
     VarList* parse_var_decl_body(SpecList &ml, Location &loc, Type* type);
     Decl* parse_typedef_decl();
     Decl* parse_exprdef_decl();

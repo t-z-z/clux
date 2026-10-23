@@ -1,4 +1,4 @@
-// INIT 的形参与局部变量在构造返回后即失效
+// INIT 的形参与局部量在构造返回后即失效
 A {
     pub int-& r
     pub INIT(int s) { self.r = s }

@@ -15,7 +15,7 @@ public:
     std::string special_name(SpecialMethod* sm);
     std::string conversion_name(Conversion* cf);
     std::string type_key(Type* t);
-    // 模块级变量的 LLVM 全局符号名；类实例字段不在此表内
+    // 模块级量的 LLVM 全局符号名；类实例字段不在此表内
     std::string global_of(const VarItem* vi) const;
     // static 字段的 LLVM 全局符号名；实例字段无全局符号，返回空
     std::string field_of(const VarItem* vi) const;

@@ -1,4 +1,4 @@
-// 命名空间内的模块级变量
+// 命名空间内的模块级量
 namespace cfg {
     int limit = 5
     int total = 0

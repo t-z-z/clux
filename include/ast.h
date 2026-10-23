@@ -40,13 +40,13 @@
 //
 //   Expr::sym          [写 P1 visit_expr_identifier / visit_expr_member]
 //                      [读 P1 P2]
-//                      解析到的符号（变量/函数/类/枚举成员）。变量引用的 lvalue
+//                      解析到的符号（量/函数/类/枚举成员）。量引用的 lvalue
 //                      判定、函数引用的 mangled name、类构造都依赖它。
 //                      与 type 至少有一个非空（见文件头"semantic基础规则"）。
 //
 //   Expr::is_lvalue    [写 P1] [读 P2]
 //                      是否可取地址。函数返回值、字面量、cast 结果等为 false；
-//                      变量引用、成员访问（变量）、数组下标为 true。
+//                      量引用、成员访问（量）、数组下标为 true。
 //
 //   Type::resolved_decl / Type::resolved_scope
 //                      [写 P1 visit_type_identifier / visit_type_member /
@@ -80,7 +80,7 @@
 //   Type::ArrayType [写 P1 parse(语法) / visit_type_array(常量长度、签名校验) /
 //                    resolve_infer_array_len(T[] 推导)] [读 P1 P2]
 //                      T[N] 的 length 为编译期整数字面量；T{} 的 length 为空且只允许
-//                      出现在局部变量；T[] 推导成功后 length 变为字面量、kind 变为
+//                      出现在局部量；T[] 推导成功后 length 变为字面量、kind 变为
 //                      Fixed，推导不出来时 kind 保持 Infer、length 为空并报错。
 //
 //   TypeDef::target / ExprDef::target
@@ -88,7 +88,7 @@
 //                      [读 P1 使用点展开]
 //                      声明处不遍历目标（Stmt::Def 同理）。每个使用点克隆一份目标，
 //                      就地把节点内容换成克隆件并按新形态继续遍历，因此链式别名
-//                      逐层展开成定义处的类型。展开时机与局部变量一致，故别名
+//                      逐层展开成定义处的类型。展开时机与局部量一致，故别名
 //                      先声明后使用。
 //
 // 约定：
@@ -308,7 +308,7 @@ enum class OpKind{
 };
 
 // 数组类型的长度种类：T[N] 定长、T[] 长度待推导、T{} 运行期长度的所有权切片。
-// T{} 只出现在局部变量上：所有权不外泄，故不能作形参、返回类型或类字段
+// T{} 只出现在局部量上：所有权不外泄，故不能作形参、返回类型或类字段
 enum class ArrayKind : uint8_t {
     Fixed,
     Infer,
@@ -480,7 +480,7 @@ struct Stmt : ASTNode {
     struct Asm      { std::string_view code; };
     struct Keep     { std::string_view tokens; };
     struct VarDecl  { VarList* vars; };
-    // 函数体内的 typedef / exprdef：和局部变量一样，登记进当前作用域后向下生效
+    // 函数体内的 typedef / exprdef：和局部量一样，登记进当前作用域后向下生效
     struct Def      { Decl* decl; };
     using Variant = std::variant<
         Block, ExprStmt, If, While, For,
@@ -542,7 +542,7 @@ struct Cont : Decl { // container 容器，用于包含申明
         return true;
     }
 };
-// VarItem 是单个变量申明
+// VarItem 是单个量申明
 struct VarItem : ASTNode {
     std::string_view name;
     Expr *init;
@@ -553,7 +553,7 @@ struct VarItem : ASTNode {
     VarItem(const Location& loc, std::string_view n, Expr* i, Type* t):
         ASTNode(loc), name(n), init(i), type(t) {}
 };
-// VarList 是同一种类型的多个变量申明
+// VarList 是同一种类型的多个量申明
 struct VarList : Decl {
     Type* type = nullptr;
     std::vector<VarItem*> vars;
@@ -775,7 +775,7 @@ struct ASTVisitor {
     int loop_depth_ = 0;
     // 匿名作用域（block/for）计数器：避免同名子作用域被复用
     int anon_scope_ = 0;
-    // 正在遍历调用表达式的被调用者，供标识符解析区分函数名与普通变量
+    // 正在遍历调用表达式的被调用者，供标识符解析区分函数名与普通量
     bool in_callee_ = false;
     // 正在遍历泛型应用的 base：该名字本就指向模板本体，不算裸用模板
     bool in_generic_base_ = false;
@@ -938,7 +938,7 @@ struct ASTVisitor {
         Func* pre_func = current_func;
         auto* pre_members = current_members;
         current_class = &c;
-        // 类体不在任何函数内：返回变量之类的判定不应看到外层函数
+        // 类体不在任何函数内：返回量之类的判定不应看到外层函数
         current_func = nullptr;
         current_members = &c.members;
         scope_in(std::string(c.name));

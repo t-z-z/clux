@@ -17,7 +17,7 @@ main() {
 
 ### 嵌套闭包与 self
 
-内层闭包引用的自由变量可能已被外层捕获，需要闭包传递（transitive capture）。
+内层闭包引用的自由量可能已被外层捕获，需要闭包传递（transitive capture）。
 闭包体内引用类字段依赖 `self`，需明确 `self` 是否可捕获。
 
 ### 尾随代码块
@@ -39,7 +39,7 @@ main() {
 }
 ```
 
-`sizeof(变量)` 会生成运行时的 `sizeof` 函数，`offset`,`fieldtype` 同理。
+`sizeof(量)` 会生成运行时的 `sizeof` 函数，`offset`,`fieldtype` 同理。
 
 ## 组合声明
 
@@ -56,7 +56,7 @@ main(){
 
 ## let推导
 
-`let` 推导变量类型：
+`let` 推导量类型：
 
 ```cx
 let a = 1        // a 为 int

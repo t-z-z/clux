@@ -85,7 +85,7 @@ bool is_integer_promotable(Type* t);
 // void 类型（含源码中的 void 关键字节点）
 bool is_void_type(Type* t);
 
-// 符号的展示名：变量取变量名，其余取声明名
+// 符号的展示名：量取量名，其余取声明名
 std::string sym_display_name(Symbol* sym);
 
 } // namespace cx

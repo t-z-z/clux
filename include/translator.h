@@ -21,7 +21,7 @@ struct TranslatorClass {
     // 实例字段按 VarItem 身份索引；__value 是 inject 合成的承载字段
     std::unordered_map<const VarItem*, int> field_index;
     int value_index = -1;
-    // static 字段：存储在模块级全局变量，不进实例 layout。
+    // static 字段：存储在模块级全局量，不进实例 layout。
     // 其 LLVM 符号名由 Mangler::field_of 统一分配
     std::vector<TranslatorField> static_fields;
     // extern "LLVMIR" 块内的类：布局由 keep`` 的 IR 给出，译者为它发类型
@@ -34,7 +34,7 @@ struct TranslatorClass {
 // 由前端统一建一份，各 Translator 共用。
 struct TranslatorTables {
     Mangler mangler;
-    // 模块级变量的 LLVM 全局符号名
+    // 模块级量的 LLVM 全局符号名
     std::unordered_map<const VarItem*, std::string> global_names;
     std::unordered_map<Class*, TranslatorClass> classes;
     // 类按声明顺序登记：类结构体类型要按内联字段依赖拓扑发射，
@@ -89,20 +89,20 @@ private:
         bool is_extern = false;   // extern 声明：由外部库定义，此处只声明不初始化
         bool skip_emit = false;   // extern "LLVMIR"：实现由 keep`` 给出，两样都不发
     };
-    // 顶层 / 命名空间 / extern 内的 VarList：模块级变量
+    // 顶层 / 命名空间 / extern 内的 VarList：模块级量
     std::vector<GlobalVar> globals_;
     void collect_globals_decl(Decl* d, const std::string& prefix,
                               ExternLang lang = ExternLang::None);
 
     struct LoopCtx { std::string break_label, continue_label; int scope_depth; };
     struct CleanupEntry {
-        // Drop/Deref: 类实例与指针变量的析构；Restore: 回收栈上的切片存储
+        // Drop/Deref: 类实例与指针量的析构；Restore: 回收栈上的切片存储
         enum Kind { Drop, Deref, Restore };
         Kind        kind = Drop;
-        std::string slot;         // Drop: 实例指针槽；Deref: 指针变量槽
+        std::string slot;         // Drop: 实例指针槽；Deref: 指针量槽
         std::string ptr;          // Restore: llvm.stacksave 的返回值
         // Deref 用：从宿主实例逐级 getelementptr 到目标指针字段。
-        // 空路径表示清理指针变量本身（槽里直接就是那个指针）
+        // 空路径表示清理指针量本身（槽里直接就是那个指针）
         std::vector<std::pair<std::string, int>> path;
         Class*      cls = nullptr; // Deref 用
         int         scope_depth = 0;
@@ -117,21 +117,21 @@ private:
         std::string ret_type;
         std::string exit_label;
         std::unordered_map<const VarItem*, std::string> slots;
-        // 引用变量与引用字段：其槽存被引用对象的地址
+        // 引用量与引用字段：其槽存被引用对象的地址
         std::unordered_set<const VarItem*> ref_bound;
         bool term = false;
-        // 无返回变量的 main：签名是 i32 但体内按 void 走，裸 return 需补 i32 0
+        // 无返回量的 main：签名是 i32 但体内按 void 走，裸 return 需补 i32 0
         bool plain_main = false;
         std::vector<CleanupEntry> drops;
-        // 本函数内按 malloc 分配实例的类变量：赋值时副本同样要落在堆上，
+        // 本函数内按 malloc 分配实例的类量：赋值时副本同样要落在堆上，
         // 否则 free() 会拿到栈指针
         std::unordered_set<const VarItem*> malloc_vars;
         int scope_depth = 0;
-        // 类返回：返回变量 r 即 sret 目标对象，r 的值是 %ret 指针
+        // 类返回：返回量 r 即 sret 目标对象，r 的值是 %ret 指针
         const VarItem* ret_obj_var = nullptr;
         std::string ret_obj_ptr;
         Class* ret_obj_cls = nullptr;
-        // 引用返回变量：对其赋值是绑定，存被引用对象的地址
+        // 引用返回量：对其赋值是绑定，存被引用对象的地址
         const VarItem* ret_ref_var = nullptr;
     };
     Ctx ctx_;
@@ -220,7 +220,7 @@ private:
     void emit_field_defaults(Class* cls, const std::string& slot);
     // 模块入口为所有 static 字段写入声明处默认值
     void emit_static_inits();
-    // 模块入口为所有模块级变量写入声明处默认值
+    // 模块入口为所有模块级量写入声明处默认值
     void emit_global_inits();
     // 写入单个字段的声明处默认值：引用字段的初值即绑定点，存地址而非值
     void emit_field_default(const std::string& dst_addr, const std::string& inst_addr,

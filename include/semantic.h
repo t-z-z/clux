@@ -36,7 +36,7 @@ inline bool is_generic_decl(const Decl* d) {
 struct Scope;
 
 enum class SymbolKind {
-    Variable,
+    Value,
     Function,
     Class,
     Namespace,
@@ -54,7 +54,7 @@ enum class Access {
 };
 
 struct Symbol {
-    SymbolKind kind = SymbolKind::Variable;
+    SymbolKind kind = SymbolKind::Value;
     ASTNode* node = nullptr;
     Scope* scope = nullptr; // 类/命名空间的符号表指针，保证在collect时所有解析到的scope都会写入
     // 声明所在作用域；当前作用域不在 root->...->current 路径上时访问控制生效
@@ -69,7 +69,7 @@ struct Symbol {
         : kind(k), node(n), scope(s) {}
     explicit Symbol(Decl* d) : node(d) {
         switch (d->kind) {
-            case DeclKind::VarList:       kind = SymbolKind::Variable; break;
+            case DeclKind::VarList:       kind = SymbolKind::Value; break;
             case DeclKind::Func:          kind = SymbolKind::Function; break;
             case DeclKind::Class:         kind = SymbolKind::Class; break;
             case DeclKind::Enum:          kind = SymbolKind::Enum; break;
@@ -78,7 +78,7 @@ struct Symbol {
             case DeclKind::Operator:      kind = SymbolKind::Function; break;
             case DeclKind::TypeDef:       kind = SymbolKind::TypeAlias; break;
             case DeclKind::ExprDef:       kind = SymbolKind::ExprAlias; break;
-            default:                      kind = SymbolKind::Variable; break;
+            default:                      kind = SymbolKind::Value; break;
         }
     }
     Type* get_type() {
@@ -127,7 +127,7 @@ struct Scope {
 
     // 键为自有字符串，避免拷贝/合并时引用他处存储导致悬垂
     std::unordered_map<std::string, Symbol, StringViewHash, StringViewEqual> locals;
-    // 函数，类，命名空间，成员变量的统一表，函数使用mangled name作为键
+    // 函数，类，命名空间，成员量的统一表，函数使用mangled name作为键
     std::unordered_map<std::string, Symbol, StringViewHash, StringViewEqual> members;
 
     Scope() = default;
@@ -300,7 +300,7 @@ class SemanticAnalyzer : public ASTVisitor {
     SymbolTable symbols_;
     std::unique_ptr<InjectionExpander> injector_;
     std::unordered_map<VarItem*, Symbol*> var_symbols_;
-    // 模块级变量的声明序号，用于检测初值里的前向引用
+    // 模块级量的声明序号，用于检测初值里的前向引用
     std::unordered_map<const VarItem*, size_t> global_order_;
     void collect_global_order(Decl* d);
     // 单模块时用自带状态，多模块时由前端传入共享状态
@@ -320,7 +320,7 @@ class SemanticAnalyzer : public ASTVisitor {
     enum class InferSite : uint8_t { Other, Local, Param, Return, Field };
     std::unordered_map<const Type*, InferSite> infer_sites_;
     void mark_infer_site(Type* t, InferSite site);
-    // extern 块内的变量声明：存储在外部库，不受模块级变量限制。
+    // extern 块内的量声明：存储在外部库，不受模块级量限制。
     // 值是所属 extern 块的外部 ABI，决定施加哪一类约束
     std::unordered_map<const Decl*, ExternLang> extern_vars_;
     void collect_extern_vars();
@@ -535,7 +535,7 @@ private:
     void check_no_slice(const std::vector<VarList*>& lists, const char* what);
     // extern 函数声明的 ABI 约束：形参与返回值必须能与 C 侧对上
     void check_extern_func(Func& f);
-    // extern 变量声明的约束：存储在外部库，类型须与外部符号的对象布局对上
+    // extern 量声明的约束：存储在外部库，类型须与外部符号的对象布局对上
     void check_extern_var_list(VarList& vl, ExternLang lang);
     std::string build_callkey(const std::string& name, const std::vector<VarList*>& params);
     std::string build_callkey(const std::string& name, const std::vector<Expr*>& args);
@@ -549,7 +549,7 @@ private:
     Class* wrap_class_of(Type* t);
     // 任意类（含非包装类）的解析
     Class* wrap_or_plain_class(Type* t);
-    // 表达式是否持有 malloc 实例：类本身是 malloc 类，或变量声明带 malloc 修饰
+    // 表达式是否持有 malloc 实例：类本身是 malloc 类，或量声明带 malloc 修饰
     bool is_malloc_value(Expr* e);
     // 包装类的承载类型
     Type* wrap_base_type(Class* c);
@@ -624,7 +624,7 @@ private:
     bool check_ref_param(Expr* arg, Type* param);
     bool args_match(const std::vector<VarList*>& params,
                     const std::vector<Expr*>& args);
-    // vi 是否为当前函数最后一个返回声明中的返回变量
+    // vi 是否为当前函数最后一个返回声明中的返回量
     bool is_return_var_item(VarItem* vi) const;
     // vi 是否为当前函数某个形参
     bool is_param_item(VarItem* vi) const;

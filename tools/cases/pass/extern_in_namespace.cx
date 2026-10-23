@@ -1,4 +1,4 @@
-// extern 块写在命名空间里时：变量不再走模块级变量的检查分支，
+// extern 块写在命名空间里时：量不再走模块级量的检查分支，
 // 符号名保持原样（不拼命名空间前缀）
 namespace io {
     extern "c" {
@@ -10,7 +10,7 @@ namespace io {
 }
 
 main() int r {
-    // 同名 extern 变量与函数各自独立，符号名不与命名空间前缀混拼
+    // 同名 extern 量与函数各自独立，符号名不与命名空间前缀混拼
     io.stderr = io.stdout
     io.fflush(io.stdout)
     io.puts("hi")

@@ -26,7 +26,7 @@
 | 修饰注入 | [`src/inject.cpp`](src/inject.cpp), [`include/inject.h`](include/inject.h) | 类 `#修饰` 展开与成员合并，`#foo-<T>` 泛型来源按实参实例化 |
 | 类型转换 | [`src/convert.cpp`](src/convert.cpp) | 隐式/显式转换判定与检查 |
 | 调用解析 | [`src/call_resolve.cpp`](src/call_resolve.cpp) | 调用路径解析、实参匹配 |
-| 流检查 | [`src/flow_check.cpp`](src/flow_check.cpp), [`include/flow_check.h`](include/flow_check.h) | 跳转 label（含前向跳过声明）、变量初始化（数组无初值时不得读取）、字段初始化（默认值或 INIT 每条路径，`uninit` 字段除外）、返回变量赋值、const 的一次性初始化、引用的一次性绑定（延迟绑定，字段须在 INIT 每条路径绑定）、引用返回的绑定源不得落在本帧存储 |
+| 流检查 | [`src/flow_check.cpp`](src/flow_check.cpp), [`include/flow_check.h`](include/flow_check.h) | 跳转 label（含前向跳过声明）、量初始化（数组无初值时不得读取）、字段初始化（默认值或 INIT 每条路径，`uninit` 字段除外）、返回量赋值、const 的一次性初始化、引用的一次性绑定（延迟绑定，字段须在 INIT 每条路径绑定）、引用返回的绑定源不得落在本帧存储 |
 | 诊断系统 | [`src/diagnostic.cpp`](src/diagnostic.cpp), [`include/diagnostic.h`](include/diagnostic.h) | 错误/警告/信息的统一格式输出 |
 | 前端入口 | [`src/compiler.cpp`](src/compiler.cpp), [`include/compiler.h`](include/compiler.h) | `check` / `translate` 接口、import 解析与路由 |
 | IR 生成 | [`src/translator.cpp`](src/translator.cpp), [`src/ir_writer.cpp`](src/ir_writer.cpp), [`include/translator.h`](include/translator.h), [`include/ir_writer.h`](include/ir_writer.h) | AST → LLVM IR 文本 |
@@ -68,10 +68,11 @@ future.md        未来特性规划
 
 1. `future.md` 内容均未实现。
 1. 无分号、无逗号：语句和元素自动分隔，`;` 和 `,` 仅用于强制分隔。
-2. 直接返回变量：函数末尾表达式隐式返回。
+2. 直接返回量：函数末尾表达式隐式返回。
 3. 修饰而非继承的 OOP：使用 `#修饰符 类名` 注入行为。类声明以类名加 `{` 起始，`@` 已非必需。
 4. 数组与 C 定长数组一致：`T[N]`（`T[]` 由初值推导长度）在 IR 里就是 `[N x T]`，存储内联、整体拷贝、可按值传参与返回，`.len` 是编译期常量，数组名退化成指针。
-5. `T{}` / `T{n}` 是拥有自己存储的切片，只出现在局部变量，不能作形参、返回类型或类字段，跨函数传递一律用指针。长度是编译期常量时存储放函数入口块、整个函数一次；长度在运行期时仍是栈上 `alloca`，用 `llvm.stacksave` / `llvm.stackrestore` 在作用域结束归还栈（`alloca` 本身只在函数返回时释放，循环里会逐轮吃栈）。`malloc` 修饰则走堆分配、不自动回收。
+5. `T{}` / `T{n}` 是拥有自己存储的切片，只出现在局部量，不能作形参、返回类型或类字段，跨函数传递一律用指针。长度是编译期常量时存储放函数入口块、整个函数一次；长度在运行期时仍是栈上 `alloca`，用 `llvm.stacksave` / `llvm.stackrestore` 在作用域结束归还栈（`alloca` 本身只在函数返回时释放，循环里会逐轮吃栈）。`malloc` 修饰则走堆分配、不自动回收。
+6. `static` 局部量的存储提升为模块级全局量，声明处不执行任何代码；初值与模块级量一样在 main 入口写入，因此初值不能引用函数内的局部量，也不能是切片。
 
 ## 构建
 

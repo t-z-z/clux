@@ -83,7 +83,7 @@ bool SemanticAnalyzer::is_malloc_value(Expr* e) {
     if (Class* c = wrap_or_plain_class(e->type)) {
         if (c->specs.has(SpecKind::Malloc)) return true;
     }
-    // malloc 修饰写在变量声明上时由符号带出（VarItem 借所属 VarList 的修饰）
+    // malloc 修饰写在量声明上时由符号带出（VarItem 借所属 VarList 的修饰）
     return e->sym && e->sym->specs && e->sym->specs->has(SpecKind::Malloc);
 }
 

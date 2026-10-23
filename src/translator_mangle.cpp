@@ -58,7 +58,7 @@ void Mangler::walk(Decl* d, const std::string& prefix) {
                     mangled_[m] = here + "_" +
                         conversion_name(static_cast<Conversion*>(m));
                 } else if (m->kind == DeclKind::VarList) {
-                    // static 字段存于模块级全局变量，分配全局符号名；
+                    // static 字段存于模块级全局量，分配全局符号名；
                     // 实例字段进实例 layout，无全局符号
                     auto* vl = static_cast<VarList*>(m);
                     if (vl->specs.has(SpecKind::Static)) {
@@ -74,7 +74,7 @@ void Mangler::walk(Decl* d, const std::string& prefix) {
             break;
         }
         case DeclKind::VarList: {
-            // 模块级 / 命名空间级变量：每个 VarItem 一个 LLVM 全局符号
+            // 模块级 / 命名空间级量：每个 VarItem 一个 LLVM 全局符号
             for (VarItem* vi : static_cast<VarList*>(d)->vars) {
                 if (!vi) continue;
                 globals_[vi] = prefix.empty()
