@@ -339,13 +339,18 @@ bool SemanticAnalyzer::check_conversion(Type* src, Type* dst, const std::string&
         bool both_ptr = (us->is_pointer() || us->is_reference() || us->is_func_ptr()) &&
             (ud->is_pointer() || ud->is_reference() || ud->is_func_ptr());
         if (base_same || both_ptr) {
-            warning(loc, "explicit cast between incompatible types in " + context);
+            warning(loc, "explicit cast between incompatible types '" +
+                    describe_type(us) + "' and '" + describe_type(ud) +
+                    "' in " + context);
             return true;
         }
-        error(loc, "cannot cast between incompatible types in " + context);
+        error(loc, "cannot cast between incompatible types '" +
+              describe_type(us) + "' and '" + describe_type(ud) +
+              "' in " + context);
         return false;
     }
-    error(loc, "cannot implicitly convert between incompatible types in " + context);
+    error(loc, "cannot implicitly convert '" + describe_type(src) + "' to '" +
+          describe_type(dst) + "' in " + context);
     return false;
 }
 

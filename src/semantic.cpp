@@ -17,17 +17,18 @@ semantic基础规则
 */
 
 
-void SemanticAnalyzer::error(const Location& loc, const std::string& msg) {
+bool SemanticAnalyzer::error(const Location& loc, const std::string& msg) {
     // 注入来源的成员会按类克隆，同一个声明可能被多个类各查一遍；
     // 位置与文本都相同的错误对使用者是重复信息，只保留第一条
     for (const Diagnostic& d : diagnostics_) {
         if (d.lvl == DiagLevel::Error && d.loc.lin == loc.lin &&
             d.loc.col == loc.col && d.loc.filename == loc.filename &&
             d.msg == msg)
-            return;
+            return false;
     }
     diagnostics_.push_back(Diagnostic(DiagLevel::Error, msg, loc));
     has_error_ = true;
+    return true;
 }
 
 void SemanticAnalyzer::note(const Location& loc, const std::string& msg) {
@@ -54,6 +55,21 @@ Expr* SemanticAnalyzer::make_int_literal(const Location& loc, size_t value) {
     literal_pool_.push_back(std::to_string(value));
     return cu_.add_node<Expr>(loc,
         Expr::Literal{LiteralKind::Int, literal_pool_.back()});
+}
+
+// 重名报错时说明占用该名字的符号是什么，避免只看到"重复变量"却找不到前一声明
+static const char* symbol_kind_label(SymbolKind kind) {
+    switch (kind) {
+        case SymbolKind::Variable:  return "a variable";
+        case SymbolKind::Function:  return "a function";
+        case SymbolKind::Class:     return "a class";
+        case SymbolKind::Namespace: return "a namespace";
+        case SymbolKind::Enum:      return "an enum";
+        case SymbolKind::EnumVar:   return "an enum variant";
+        case SymbolKind::TypeAlias: return "a typedef";
+        case SymbolKind::ExprAlias: return "an exprdef";
+    }
+    return "a declaration";
 }
 
 bool SemanticAnalyzer::analyze() {
@@ -231,13 +247,17 @@ void SemanticAnalyzer::collect_decl(Decl* decl, bool default_public) {
         case DeclKind::VarList: {
             auto* vl = static_cast<VarList*>(decl);
             for (auto* var : vl->vars) {
+                Symbol* prev = symbols_.current_scope()
+                    ? symbols_.current_scope()->lookup_member(
+                          std::string(var->name)) : nullptr;
                 Symbol sym(SymbolKind::Variable, var);
                 sym.specs = &vl->specs;
                 sym.default_public = default_public;
                 Symbol* s = symbols_.insert_member(std::string(var->name),
                                                    std::move(sym));
                 if (!s) {
-                    error(vl->loc, "duplicate declaration of variable '" + std::string(var->name) + "'");
+                    report_duplicate_decl(var->loc, "variable", var->name,
+                                          prev);
                 } else {
                     // 成员符号是字段的唯一身份：裸名与 `self.x` 必须解析到它，
                     // 否则同一字段会得到两个互不相干的 Symbol
@@ -260,10 +280,7 @@ void SemanticAnalyzer::collect_decl(Decl* decl, bool default_public) {
             Symbol* existing = symbols_.current_scope()
                 ? symbols_.current_scope()->lookup_member(name) : nullptr;
             if (existing) {
-                if (existing->kind == SymbolKind::Class || existing->kind == SymbolKind::Namespace)
-                    error(cls->loc, "redefinition of class '" + name + "'");
-                else
-                    error(cls->loc, "cannot declare class '" + name + "' with same name as non-container");
+                report_duplicate_decl(cls->loc, "class", name, existing);
                 symbols_.push_scope(name);
             } else {
                 Symbol* sym = symbols_.insert_and_push(name, Symbol(SymbolKind::Class, cls));
@@ -285,10 +302,7 @@ void SemanticAnalyzer::collect_decl(Decl* decl, bool default_public) {
             Symbol* existing = symbols_.current_scope()
                 ? symbols_.current_scope()->lookup_member(name) : nullptr;
             if (existing) {
-                if (existing->kind == SymbolKind::Class || existing->kind == SymbolKind::Namespace)
-                    error(ns->loc, "redefinition of namespace '" + name + "'");
-                else
-                    error(ns->loc, "cannot declare namespace '" + name + "' with same name as non-container");
+                report_duplicate_decl(ns->loc, "namespace", name, existing);
                 symbols_.push_scope(name);
             } else {
                 Symbol* sym = symbols_.insert_and_push(name, Symbol(SymbolKind::Namespace, ns));
@@ -322,7 +336,7 @@ void SemanticAnalyzer::collect_decl(Decl* decl, bool default_public) {
             Scope* parent = symbols_.current_scope();
             Symbol* existing = parent ? parent->lookup_member(ename) : nullptr;
             if (existing) {
-                error(e->loc, "redefinition of enum '" + ename + "'");
+                report_duplicate_decl(e->loc, "enum", ename, existing);
             }
             Scope* enum_scope = parent ? parent->get_or_create_child(ename) : nullptr;
             e->scope = enum_scope;
@@ -355,10 +369,13 @@ void SemanticAnalyzer::collect_decl(Decl* decl, bool default_public) {
             Symbol sym(is_type ? SymbolKind::TypeAlias : SymbolKind::ExprAlias, decl);
             sym.specs = &decl->specs;
             sym.default_public = default_public;
+            Symbol* prev = symbols_.current_scope()
+                ? symbols_.current_scope()->lookup_member(
+                      std::string(decl->name)) : nullptr;
             if (!symbols_.insert_member(std::string(decl->name), std::move(sym))) {
-                error(decl->loc, "redefinition of " +
-                      std::string(is_type ? "typedef" : "exprdef") + " '" +
-                      std::string(decl->name) + "'");
+                report_duplicate_decl(decl->loc,
+                                      is_type ? "typedef" : "exprdef",
+                                      decl->name, prev);
             }
             break;
         }
@@ -366,6 +383,22 @@ void SemanticAnalyzer::collect_decl(Decl* decl, bool default_public) {
             break;
     }
 
+}
+
+void SemanticAnalyzer::report_duplicate_decl(const Location& loc,
+                                             std::string_view kind,
+                                             std::string_view name,
+                                             Symbol* prev) {
+    if (!prev) {
+        error(loc, "duplicate declaration of " + std::string(kind) + " '" +
+                   std::string(name) + "'");
+        return;
+    }
+    if (error(loc, "cannot declare " + std::string(kind) + " '" +
+                   std::string(name) + "': the name is already used by " +
+                   symbol_kind_label(prev->kind) + " in this scope") &&
+        prev->node)
+        note(prev->node->loc, "previous declaration is here");
 }
 
 void SemanticAnalyzer::register_func(Func& f, bool default_public) {
@@ -377,8 +410,8 @@ void SemanticAnalyzer::register_func(Func& f, bool default_public) {
     std::string key;
     if (f.kind == DeclKind::Conversion) key = build_conv_key(f);
     else key = keyed ? build_callkey(name, f.params) : name;
-    if (scope && scope->lookup_member(key)) {
-        error(f.loc, "duplicate declaration of function '" + name + "'");
+    if (Symbol* prev = scope ? scope->lookup_member(key) : nullptr) {
+        report_duplicate_decl(f.loc, "function", name, prev);
         return;
     }
     Symbol sym(SymbolKind::Function, &f);
@@ -881,6 +914,10 @@ void SemanticAnalyzer::visit_var_list(VarList& vl) {
         }
         if (!var->init || !var->init->type) continue;
         if (!dt || dt->is_inferred()) continue;
+        // 类型名本身没解析成功（unknown type、exprdef 当类型等）时已经报过错，
+        // 再拿这个无效类型检查初值只会多出一条看不懂的转换错误
+        if (dt->is_named() && !dt->resolved_decl && !dt->resolved_scope && !dt->sym)
+            continue;
         // 返回变量不接受数组/字符串字面量：栈存储返回后悬垂
         bool lit_slice = var->init->is_array() ||
             (var->init->type && var->init->type->is_string_literal_type());
@@ -920,7 +957,9 @@ void SemanticAnalyzer::visit_var_list(VarList& vl) {
         sym.specs = &vl.specs;
         sym.default_public = true;
         if (!symbols_.insert_local(var->name, std::move(sym))) {
-            error(var->loc, "duplicate variable '" + std::string(var->name) + "'");
+            Symbol* prev = symbols_.current_scope()
+                ? symbols_.current_scope()->lookup_local(var->name) : nullptr;
+            report_duplicate_decl(var->loc, "variable", var->name, prev);
         } else {
             var_symbols_[var] = symbols_.current_->lookup_local(var->name);
         }
@@ -1954,12 +1993,12 @@ void SemanticAnalyzer::visit_stmt_var_decl(Stmt::VarDecl&) {}
 void SemanticAnalyzer::visit_stmt_def(Stmt::Def& d) {
     Decl* decl = d.decl;
     if (!decl) return;
-    if (symbols_.current_scope() &&
-        symbols_.current_scope()->lookup_local(decl->name)) {
-        error(decl->loc, "redefinition of " +
-              std::string(decl->kind == DeclKind::TypeDef ? "typedef" : "exprdef") +
-              " '" + std::string(decl->name) + "'");
-        return;
+    std::string kind = decl->kind == DeclKind::TypeDef ? "typedef" : "exprdef";
+    if (Scope* scope = symbols_.current_scope()) {
+        if (Symbol* prev = scope->lookup_local(decl->name)) {
+            report_duplicate_decl(decl->loc, kind, decl->name, prev);
+            return;
+        }
     }
     Symbol sym(decl->kind == DeclKind::TypeDef
         ? SymbolKind::TypeAlias : SymbolKind::ExprAlias, decl);

@@ -1,4 +1,5 @@
 #include "../include/parser.h"
+#include "../include/sem_types.h"
 #include "token.h"
 
 #include <vector>
@@ -83,56 +84,6 @@ void Parser::fail_unexpected(const std::string& previous) {
     std::string msg = "unexpected token " + std::string(curr().quote());
     if (!previous.empty()) msg += " after " + previous;
     add_error(msg);
-}
-
-// 只需短描述：字面量取原文，其余不展开表达式
-std::string Parser::describe_expr_short(const Expr* e) const {
-    if (!e) return "";
-    if (const auto* l = e->get_literal()) return std::string(l->value);
-    if (const auto* i = e->get_identifier()) return std::string(i->name);
-    return "N";
-}
-
-std::string Parser::describe_type(const Type* t) const {
-    if (!t) return "<unknown>";
-    if (const auto* p = t->get_primitive()) {
-        return token_kind_to_string(static_cast<TokenKind>(
-            static_cast<int>(TokenKind::Int8) + static_cast<int>(p->kind)));
-    }
-    if (t->is_void()) return "void";
-    if (t->is_null()) return "null";
-    if (t->is_inferred()) return "<inferred>";
-    if (t->is_string_literal_type()) return "<string literal>";
-    if (const auto* p = t->get_pointer()) return describe_type(p->pointee) + "-*";
-    if (const auto* r = t->get_reference()) return describe_type(r->target) + "-&";
-    if (const auto* a = t->get_array_type()) {
-        std::string len = describe_expr_short(a->length);
-        switch (a->kind) {
-            case ArrayKind::Fixed: return describe_type(a->element) + "[" + len + "]";
-            case ArrayKind::Infer: return describe_type(a->element) + "[]";
-            case ArrayKind::Slice: return describe_type(a->element) + "{" + len + "}";
-        }
-    }
-    if (const auto* i = t->get_identifier()) return std::string(i->name);
-    if (const auto* m = t->get_member())
-        return describe_type(m->target) + "." + std::string(m->member);
-    if (const auto* g = t->get_generic_type()) {
-        std::string s = describe_type(g->base) + "-<";
-        for (size_t k = 0; k < g->args.size(); ++k) {
-            if (k) s += ", ";
-            s += describe_type(g->args[k]);
-        }
-        return s + ">";
-    }
-    if (const auto* f = t->get_func_ptr()) {
-        std::string s = "$" + describe_type(f->return_type) + "(";
-        for (size_t k = 0; k < f->params.size(); ++k) {
-            if (k) s += ", ";
-            s += describe_type(f->params[k]);
-        }
-        return s + ")";
-    }
-    return "<type>";
 }
 
 std::string Parser::describe_decl(const Decl* d) const {
@@ -507,6 +458,7 @@ VarList* Parser::parse_var_decl_body(SpecList &ml, Location &loc, Type* type) {
     for (;;) {
         if (curr().is_ident()) {
             std::string_view name = curr().get_val();
+            Location name_loc = get_loc();
             Expr* init = nullptr;
             walk();
             // 后缀数组维度：T name[d1][d2] 等价于 T[d1][d2] name。
@@ -546,7 +498,7 @@ VarList* Parser::parse_var_decl_body(SpecList &ml, Location &loc, Type* type) {
             } else if(type->is_inferred()) {
                 add_error("can not infer type");
             }
-            vars.push_back(cu_.add_node<VarItem>(get_loc(), name, init, vtype));
+            vars.push_back(cu_.add_node<VarItem>(name_loc, name, init, vtype));
         } else if (vars.empty()) {
             return nullptr;
         } else {

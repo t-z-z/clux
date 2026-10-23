@@ -70,8 +70,6 @@ private:
     void fail_unexpected(const std::string& previous);
 
     // 结构描述：报错时说明 parser 已经读懂了什么
-    std::string describe_type(const Type* t) const;
-    std::string describe_expr_short(const Expr* e) const;
     std::string describe_decl(const Decl* d) const;
 
     // 从外向内查找 define 替换解开链式替换

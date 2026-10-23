@@ -512,7 +512,8 @@ public:
 private:
 
     // 诊断工具
-    void error(const Location& loc, const std::string& msg);
+    // 返回 false 表示同一位置同一文本的重复错误已被丢弃（注入克隆会重复分析）
+    bool error(const Location& loc, const std::string& msg);
     void note(const Location& loc, const std::string& msg);
     void warning(const Location& loc, const std::string& msg);
 
@@ -578,6 +579,9 @@ private:
     // P1：处理类的修饰注入并注册类成员（含嵌套类递归）
     void process_using_namespaces();
     void collect_decl(Decl* decl, bool default_public);
+    // 同作用域重名：说明占用名字的符号种类，并指向前一声明
+    void report_duplicate_decl(const Location& loc, std::string_view kind,
+                               std::string_view name, Symbol* prev);
     void register_func(Func& f, bool default_public);
     void register_special(SpecialMethod& sm, bool default_public);
     // typedef/exprdef 使用点：节点内容换成目标的克隆件，再按新形态遍历一遍

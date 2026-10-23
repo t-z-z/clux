@@ -12,6 +12,10 @@ struct Symbol;
 // 类型名节点（Identifier / 限定名 Member 链）的完整名字
 std::string type_name_string(Type* t);
 
+// 诊断用类型写法：按源码形式展开 T-*、T-&、T[N]、T{}、$T(...)，
+// 供语法与语义报错说明具体类型
+std::string describe_type(const Type* t);
+
 // 引用类型的表达式即 lvalue
 bool ref_is_lvalue(Type* t);
 
