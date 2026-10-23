@@ -1,4 +1,4 @@
-f() const int r {
+f() int r {
     r = 1
     r = 2
     return

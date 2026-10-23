@@ -1,6 +1,6 @@
 P {
-    pub int x = 0
-    pub int y = 0
+    pub var int x = 0
+    pub var int y = 0
     pub INIT(int a, int b) { x = a  y = b }
 }
 make() P r { r = P(1, 2) }

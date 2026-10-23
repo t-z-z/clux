@@ -2,7 +2,7 @@
 // 函数引用 decay 成函数指针后照常调用
 identity-<T>(T x) T r = x {}
 apply($int(int) f, int x) int r { r = f(x) }
-main() int r {
+main() var int r {
     r = 0
     $int(int) f = identity-<int>
     if f(3) != 3 { r = r + 1 }

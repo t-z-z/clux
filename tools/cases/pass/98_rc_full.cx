@@ -1,5 +1,5 @@
 rc {
-    int cnt = 0
+    var int cnt = 0
     REF { }
     DEREF { cnt -= 1  if cnt == 0 { free() } }
     free() { }

@@ -3,7 +3,7 @@ extern "c" {
     putchar(int c) int r { }
 }
 emit(int-* codes, int n) int r {
-    for int i = 0; i < n; i += 1 {
+    for var int i = 0; i < n; i += 1 {
         putchar(codes[i])
     }
     r = 0

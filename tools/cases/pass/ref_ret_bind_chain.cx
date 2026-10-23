@@ -1,7 +1,7 @@
 import cstdio
 int g = 0
 Box {
-    pub int v = 0
+    pub var int v = 0
 
     pub INIT(int x) { self.v = x }
 }
@@ -21,7 +21,7 @@ from_param(Box b) Box-& r {
 }
 // 剥一层解引用：绑的是调用方指过来的对象，形参的槽不参与
 deref(int-* p) int-& r { r = p-*  return }
-main() int r {
+main() var int r {
     r = 0
     int-& ig = from_global()
     ig = 7

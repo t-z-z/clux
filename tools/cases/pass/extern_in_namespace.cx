@@ -3,7 +3,7 @@
 namespace io {
     extern "c" {
         void-* stdout
-        void-* stderr
+        var void-* stderr
         fflush(void-* s) int r { }
         puts(char-* s) { }
     }

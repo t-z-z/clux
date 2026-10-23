@@ -6,7 +6,8 @@
 namespace cx{
 
 #define MODIFIER \
-    X(Const, "const") \
+    X(Var, "var") \
+    X(Mut, "mut") \
     X(Static, "static") \
     X(Pub, "pub") \
     X(Priv, "priv") \
@@ -222,7 +223,7 @@ struct Token {
         return kind > TokenKind::Identifier && kind < TokenKind::Unknown;
     }
     inline bool is_spec() const {
-        return kind >= TokenKind::Const && kind <= TokenKind::Over;
+        return kind >= TokenKind::Var && kind <= TokenKind::Over;
     }
     inline bool is_type() const {
         return kind >= TokenKind::Int8 && kind <= TokenKind::Enum;

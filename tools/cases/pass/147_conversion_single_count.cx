@@ -2,7 +2,7 @@
 // 存储"，不是复制出新的一份持有，不该再计一次 REF
 import cstdio
 Res {
-    pub int n = 0
+    pub var int n = 0
 
     pub REF { n += 1 }
     pub DEREF { n -= 1 }
@@ -15,7 +15,7 @@ Owner {
 conversion(Owner a) Owner b {
     b = Owner(a.held)
 }
-main() int r {
+main() var int r {
     Res v = Res()
     Owner o = Owner(v-&)
     Owner q = o

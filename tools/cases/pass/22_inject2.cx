@@ -1,7 +1,7 @@
 Base {
-    int value = 0
+    var int value = 0
     pub INIT() { }
-    pub inc() { value = value + 1 }
+    pub mut inc() { value = value + 1 }
 }
 #Base Child {
     pub INIT() { }

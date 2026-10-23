@@ -2,21 +2,21 @@
 // 两个对象不共享实例，字段 DEREF 也各计各的
 import cstdio
 Res {
-    pub int n = 0
+    pub var int n = 0
 
     pub REF { n += 1 }
     pub DEREF { n -= 1 }
 }
 Owner {
-    pub Res-* held
+    pub var Res-* held
 
     pub INIT() { self.held = null }
 }
-main() int r {
+main() var int r {
     Res v = Res()
     Owner a = Owner()
     a.held = v-&
-    Owner c
+    var Owner c
     c = a
     r = 0
     // 赋值式已复制：改 a 不影响 c

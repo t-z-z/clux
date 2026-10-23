@@ -213,6 +213,12 @@ void SemanticAnalyzer::resolve_named_call(Expr* call_expr, Expr::Call& c,
         return;
     }
 
+    // mut 方法会修改自身对象：不带 mut 的成员方法不得调用
+    if (func->specs.has(SpecKind::Mut) && in_non_mut_method()) {
+        error(call_expr->loc, "cannot call mut method '" + name +
+              "' from a non-mut method: declare the calling method mut");
+    }
+
     pack_array_args(func, call_expr, c);
     pack_class_args(func, call_expr, c);
     check_call_args(func, c.args, call_expr->loc);

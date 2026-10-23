@@ -17,7 +17,7 @@ Box {
 relay(Node-& x) Node-* p {
     p = x-&
 }
-main() int r {
+main() var int r {
     Node n = Node(3)
     Node-* pn = n-&
     Box b = Box(n)

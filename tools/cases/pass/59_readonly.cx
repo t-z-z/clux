@@ -1,7 +1,7 @@
 C {
-    pub readonly int x = 0
+    pub readonly var int x = 0
     pub INIT() { }
-    pub set(int v) { x = v }
+    pub mut set(int v) { x = v }
 }
 main() {
     C c = C()

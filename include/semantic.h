@@ -60,7 +60,7 @@ struct Symbol {
     Scope* scope = nullptr; // 类/命名空间的符号表指针，保证在collect时所有解析到的scope都会写入
     // 声明所在作用域；当前作用域不在 root->...->current 路径上时访问控制生效
     Scope* decl_scope = nullptr;
-    // 声明的修饰符（VarItem 借其所属 VarList 的），访问控制与 const 直接查此
+    // 声明的修饰符（VarItem 借其所属 VarList 的），访问控制与 var/mut 直接查此
     SpecList* specs = nullptr;
     // 未显式 pub/priv 时的容器默认：类成员默认私有，其余默认公开
     bool default_public = true;
@@ -108,8 +108,8 @@ struct Symbol {
         }
         return default_public ? Access::Public : Access::Private;
     }
-    bool is_const() const {
-        return specs && specs->has(SpecKind::Const);
+    bool is_var() const {
+        return specs && specs->has(SpecKind::Var);
     }
 
     template<typename T>
@@ -594,6 +594,8 @@ private:
     bool is_scope_on_path(Scope* s) const;
     void check_access(Symbol* sym, const Location& loc);
     void check_write_access(Symbol* sym, const Location& loc);
+    // 当前是否处在不带 mut 的成员方法体内：这类方法不得写字段或调用 mut 方法
+    bool in_non_mut_method() const;
 
 
 

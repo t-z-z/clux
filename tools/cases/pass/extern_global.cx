@@ -1,11 +1,11 @@
 extern "c" {
-    void-* stdout, stderr
+    var void-* stdout, stderr
     fflush(void-* s) int r { }
 }
 
 namespace io {
     extern "c" {
-        int optind
+        var int optind
     }
 }
 

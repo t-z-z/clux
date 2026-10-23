@@ -126,9 +126,10 @@ static std::optional<ConstValue> eval_symbol_value(Expr* e, ConstEvalSink& sink,
         if (!ev || !ev->has_value) return std::nullopt;
         return make_int((unsigned long long)ev->value, true, 32);
     }
-    if (sym->is_const()) {
+    if (!sym->is_var()) {
         auto* vi = dynamic_cast<VarItem*>(sym->node);
-        if (vi && vi->init) return eval_expr(vi->init, sink, depth + 1);
+        if (vi && !vi->is_param && vi->init)
+            return eval_expr(vi->init, sink, depth + 1);
     }
     return std::nullopt;
 }

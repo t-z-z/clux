@@ -1,13 +1,13 @@
 // static 局部量的存储属于模块级：循环里的声明不再逐轮重置，
 // 函数调用之间也保持上一次的值
 counter() int r {
-    static int x = 0
+    static var int x = 0
     x += 1
     r = x
 }
 main() int r {
-    for int i = 0; i < 3; i += 1 {
-        static int loop = 0
+    for var int i = 0; i < 3; i += 1 {
+        static var int loop = 0
         loop += 1
     }
     int a = counter()

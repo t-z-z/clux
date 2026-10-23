@@ -29,7 +29,7 @@ Pair-<A, B> {
         self.snd = b
     }
 }
-main() int r {
+main() var int r {
     r = 0
     Plain p = Plain(3)
     if p.get() != 3 { r = r + 1 }

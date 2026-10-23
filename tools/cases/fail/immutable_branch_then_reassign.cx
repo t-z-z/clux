@@ -1,6 +1,6 @@
 // 分支里用过一次机会，分支之后就不许再用（union 合并）
 main() int r {
-    const int x
+    int x
     if 0 {
         x = 1
     } else {

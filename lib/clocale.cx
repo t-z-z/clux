@@ -18,7 +18,7 @@ exprdef LC_ALL = 6
 // C 函数
 
 extern "C" {
-    setlocale(int category const char-* locale) char-* r{}
+    setlocale(int category char-* locale) char-* r{}
     localeconv() lconv-* r{}
 }
 

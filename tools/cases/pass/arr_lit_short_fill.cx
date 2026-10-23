@@ -1,5 +1,5 @@
 // 短数组字面量用最后一个元素补齐，空字面量按零初始化，不能留未初始化元素
-main() int r {
+main() var int r {
     r = 0
     int[4] a = [1 2]
     if a[0] != 1 { r = 1 return }

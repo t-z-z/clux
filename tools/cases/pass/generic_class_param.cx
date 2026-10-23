@@ -15,7 +15,7 @@ elem-<T>(Box-<T>-* b) T r {
     Box-<T> q = b-*
     r = q.v
 }
-main() int r {
+main() var int r {
     r = 0
     Box-<int> a = Box-<int>(1)
     if unwrap(a) != 1 { r = r + 1 }

@@ -2,7 +2,7 @@
 // 不必再在 INIT 里赋一次；构造完成后再赋值是写穿被引用的对象
 int g = 5
 Holder {
-    pub int v = 0
+    pub var int v = 0
     pub int-& r = g
 
     pub INIT(int x) { self.v = x }
@@ -13,7 +13,7 @@ Alias {
 
     pub INIT() { }
 }
-main() int r {
+main() var int r {
     r = 0
     Holder h = Holder(3)
     if h.r != 5 { r = r + 1 }

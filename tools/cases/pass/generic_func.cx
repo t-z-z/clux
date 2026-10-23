@@ -2,7 +2,7 @@
 // 模板本体不进 IR，语义阶段按实参各生成一份实例
 identity-<T>(T x) T r = x {}
 pairup-<A, B>(A a B b) int r { r = 0 }
-main() int r {
+main() var int r {
     r = 0
     if identity-<int>(1) != 1 { r = r + 1 }
     if identity(2L) != 2L { r = r + 2 }

@@ -628,7 +628,8 @@ void SemanticAnalyzer::visit_func(Func& f) {
     // body 为空（未写 {}）时不检查返回值是否被赋值
     if (!f.body) return;
     flow_.check_jumps(f.body);
-    flow_.check_initialization(f.body, f.params, f.returns, false, current_class);
+    flow_.check_initialization(f.body, f.params, f.returns, false, current_class,
+                               f.specs.has(SpecKind::Mut));
     if (flow_.can_use_register_ret(f)) f.ret_via_reg = true;
 }
 
@@ -636,8 +637,10 @@ void SemanticAnalyzer::visit_special_method(SpecialMethod& sm) {
     check_no_slice(sm.params, "parameter");
     if (!sm.body) return;
     flow_.check_jumps(sm.body);
+    // INIT/DROP 等特殊方法本身就承担构造与析构的写入，按 mut 方法处理
     flow_.check_initialization(sm.body, sm.params, {},
-                               sm.kind == SpecialMethod::Kind::Init, current_class);
+                               sm.kind == SpecialMethod::Kind::Init, current_class,
+                               true);
 }
 
 // 收集表达式引用的标识符符号（含成员访问），用于前向引用检测
@@ -987,6 +990,7 @@ void SemanticAnalyzer::visit_var_list(VarList& vl) {
     }
     for (VarItem* var : vl.vars) {
         if (!var->type) var->type = vl.type;
+        var->is_param = is_param_item(var);
         // 字段的身份是 collect 阶段登记的类成员符号，裸名与 `self.x` 都解析到它；
         // 再登记一个同名局部量只会让同一个字段分裂成两个 Symbol
         if (is_field_item(var)) continue;
@@ -1083,15 +1087,13 @@ void SemanticAnalyzer::visit_class(Class& c) {
                     if (is_static)
                         error(vi->loc, "uninit field '" + std::string(vi->name) +
                               "' cannot be static: static storage is zero-initialized");
-                    if (vl->specs.has(SpecKind::Const))
-                        error(vi->loc, "uninit field '" + std::string(vi->name) +
-                              "' cannot be const");
                     continue;
                 }
-                // const 字段只在声明处的初值或 INIT 里赋值一次，二者都没有
+                // 非 var 字段只在声明处的初值或 INIT 里赋值一次，二者都没有
                 // 就没有任何赋值点：类一旦建成就再也写不进去
-                if (vl->specs.has(SpecKind::Const) && !vi->init) {
-                    std::string f = "const field '" + std::string(vi->name) + "'";
+                if (!vl->specs.has(SpecKind::Var) && !vi->init) {
+                    std::string f = "immutable field '" +
+                                    std::string(vi->name) + "'";
                     if (is_static) {
                         error(vi->loc, f + " cannot be static: its storage is "
                                "initialized before any INIT runs, so give it "
@@ -1405,15 +1407,23 @@ void SemanticAnalyzer::check_access(Symbol* sym, const Location& loc) {
     }
 }
 
+bool SemanticAnalyzer::in_non_mut_method() const {
+    return current_class && current_func &&
+           !current_func->specs.has(SpecKind::Mut);
+}
+
 // 写访问控制：离开声明作用域后 priv / readonly 均不可写
 void SemanticAnalyzer::check_write_access(Symbol* sym, const Location& loc) {
     if (!sym) return;
-    // const 不可二次写入：方法体内的赋值由流检查按路径判定，第一次赋值是
+    // operator[] 之类的重载下标把赋值派发成函数调用，符号不是可写的量
+    if (sym->kind != SymbolKind::Value) return;
+    // 非 var 不可二次写入：方法体内的赋值由流检查按路径判定，第一次赋值是
     // 初始化；方法体之外（形参默认值、字段与模块级初值）没有这样的流，
-    // 对 const 的赋值必定是二次写入
-    if (sym->is_const()) {
+    // 对非 var 的赋值必定是二次写入。引用赋值写穿被引用对象，不在此列
+    Type* wt = sym->get_type();
+    if (!sym->is_var() && !(wt && wt->is_reference())) {
         if (!current_body)
-            error(loc, "cannot assign to const '" + sym_display_name(sym) + "'");
+            error(loc, "cannot assign to immutable '" + sym_display_name(sym) + "'");
         return;
     }
     Access acc = sym->access_level();

@@ -832,7 +832,7 @@ static bool valid_extern_lib_name(std::string_view name) {
 
 // extern 里只有声明，没有定义体：描述定义的修饰（链接方式、存储、代码生成）
 // 写在这里要么被静默忽略，要么与"外部符号"自相矛盾（static 尤其容易让人以为
-// 拿到了内部链接的符号，实际仍然导出）。可见性与 const 是声明本身的属性，放行
+// 拿到了内部链接的符号，实际仍然导出）。可见性与 var 是声明本身的属性，放行
 static bool extern_def_spec(const SpecList& specs, std::string& out) {
     if (specs.has(SpecKind::Static)) { out = "static"; return true; }
     if (specs.has(SpecKind::Inline)) { out = "inline"; return true; }

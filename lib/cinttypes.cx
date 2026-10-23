@@ -236,8 +236,8 @@ extern "LLVMIR" {
 // 标量函数
 extern "C" {
     imaxabs(long j) long r{}
-    strtoimax(const char-* nptr char-** endptr int base) long r{}
-    strtoumax(const char-* nptr char-** endptr int base) ulong r{}
+    strtoimax(char-* nptr char-** endptr int base) long r{}
+    strtoumax(char-* nptr char-** endptr int base) ulong r{}
     // wcstoimax / wcstoumax 不声明：clux 没有宽字符
 }
 

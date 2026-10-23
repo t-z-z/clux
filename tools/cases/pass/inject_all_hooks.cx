@@ -1,6 +1,6 @@
 // 注入来源与主类自己的 REF/DEREF/DROP 全部生效：malloc 实例构造时所有 REF
 // 都执行，free() 时所有来源的 DROP、DEREF 都执行（DROP/DEREF 逆序）
-int hits = 0
+var int hits = 0
 h1 {
     REF { hits += 1 }
     DEREF { hits += 16 }

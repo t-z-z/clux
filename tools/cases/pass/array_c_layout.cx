@@ -1,6 +1,6 @@
 // 定长数组与 C 定长数组一致：存储内联、整体拷贝、可按值传参与返回
 extern "c" { putchar(int c) int r {} }
-swap(int[3] a, int[3] b) {
+swap(var int[3] a, var int[3] b) {
     int[3] t = a
     a = b
     b = t
@@ -13,7 +13,7 @@ main() int r {
     int[3] a = [1 2 3]
     int[3] b = [7 8 9]
     swap(a, b)
-    for int i = 0; i < a.len; i += 1 { putchar(a[i] + 48) }
+    for var int i = 0; i < a.len; i += 1 { putchar(a[i] + 48) }
     putchar(10)
     int[2] m = make()
     putchar(m[0] + 48)

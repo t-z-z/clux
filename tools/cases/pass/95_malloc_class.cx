@@ -1,4 +1,4 @@
-malloc Heap { pub int v = 0 }
+malloc Heap { pub var int v = 0 }
 main() {
     Heap h = Heap()
     h.v = 1

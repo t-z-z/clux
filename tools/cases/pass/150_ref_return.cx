@@ -1,7 +1,7 @@
 // 引用可以像指针一样返回：返回的是被引用对象的地址，机制同指针。
 // 绑定源允许形参、模块级量、字段与解引用；返回后仍可写穿。
 Node {
-    pub int v = 0
+    pub var int v = 0
 
     pub INIT(int s) { self.v = s }
 }
@@ -21,7 +21,7 @@ pickg() Node-& r { r = g }
 deref(Node-* p) Node-& r { r = p-* }
 // 整型引用返回
 picki(int-& a) int-& r { r = a }
-main() int r {
+main() var int r {
     r = 0
     Node a = Node(3)
     Node-& x = pick(a)

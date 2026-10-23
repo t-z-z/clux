@@ -3,7 +3,7 @@
 // 覆盖：模块级引用量、局部引用绑局部/模块级类量、引用形参、引用字段、
 // 定长数组与标量引用，以及引用赋类值的写穿语义。
 Node {
-    pub int v = 0
+    pub var int v = 0
 
     pub INIT(int s) { self.v = s }
 }
@@ -16,8 +16,8 @@ Holder {
     pub INIT() { self.n = gr }
 }
 relay(Node-& x) int v { v = x.v }
-take(Node-& x) int v { x.v = x.v + 1  v = x.v }
-main() int r {
+take(Node-& x) var int v { x.v = x.v + 1  v = x.v }
+main() var int r {
     r = 0
     // 模块级引用量
     if gref.v != 2 { r = 1 }

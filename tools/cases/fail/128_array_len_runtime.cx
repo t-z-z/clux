@@ -1,6 +1,6 @@
 // T[N] 的长度是编译期常量：运行期长度要用所有权切片 T{}
 main() int r {
-    int n = 3
+    var int n = 3
     int[n] a = [1 2 3]
     r = a.len
 }

@@ -2,9 +2,9 @@
 // 取 .len、隐式转换为指针；数组可给切片，切片长度不定不能给数组
 extern "c" { putchar(int c) int r {} }
 main() int r {
-    int n = 3
+    var int n = 3
     int{n} a = [1 2 3]
-    int{} b = a
+    var int{} b = a
     putchar(b.len + 48)
     putchar(b[0] + 48)
     int-* p = b

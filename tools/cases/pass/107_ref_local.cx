@@ -1,7 +1,7 @@
 // 局部引用：创建时绑定、读取即被引用对象、赋值只写穿不重绑定
-main() int r {
+main() var int r {
   int a = 1
-  int-* p = a-&
+  var int-* p = a-&
   int-*& rp = p
   int b = 2
   p = b-&

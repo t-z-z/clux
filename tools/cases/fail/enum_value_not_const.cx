@@ -1,5 +1,5 @@
 // 枚举初值必须是编译期整数常量
-int g = 1
+var int g = 1
 enum E {
     A = g
 }

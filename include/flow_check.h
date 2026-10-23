@@ -27,11 +27,13 @@ public:
     // label / goto 的 label 检查：遵循 C++ 的跳转规则
     void check_jumps(Stmt* body);
     // 量初始化检查：不得读取未赋值过的量，引用不得在绑定前读取。
-    // cls 非空时，类的 const 字段与引用字段也纳入检查：INIT 内赋值/绑定一次，
-    // 其余方法视为已构造
+    // 非 var 的局部量、形参、返回量、字段只能初始化一次；var 可重复赋值。
+    // cls 非空时，类的非 var 字段与引用字段也纳入检查：INIT 内赋值/绑定一次，
+    // 其余方法视为已构造。mut_method 为 false 的成员方法不得写类字段
     void check_initialization(Stmt* body, const std::vector<VarList*>& params,
                               const std::vector<VarList*>& returns,
-                              bool in_init = false, Class* cls = nullptr);
+                              bool in_init = false, Class* cls = nullptr,
+                              bool mut_method = true);
     // 标量返回且每条路径末尾恰好一次赋值 → 可用寄存器 ret
     bool can_use_register_ret(Func& f);
 
@@ -39,26 +41,29 @@ private:
     struct InitCtx {
         std::unordered_set<Symbol*> declared;
         std::unordered_set<Symbol*> assigned;
-        // 每条路径都必须已赋值/绑定的类字段（const 字段与引用字段）
+        // 每条路径都必须已赋值/绑定的类字段（非 var 字段与引用字段）
         std::vector<Symbol*> must_init;
+        // 当前类的字段：非 mut 方法对它们的写入一律非法
+        std::unordered_set<Symbol*> fields;
         // 入口即已绑定或带出的量（形参、返回量）：对它们的赋值不是绑定点
         std::unordered_set<Symbol*> bound_before;
         // 本类的引用字段：绑定只发生在 INIT 里，且可以多次绑定换观察对象
         std::unordered_set<Symbol*> ref_fields;
         // 本方法体里声明过的局部量：存储在栈帧上，返回即失效
         std::unordered_set<Symbol*> locals;
-        // 当前路径上已被消耗的一次性机会：const 已初始化、延迟绑定的引用已绑定。
+        // 当前路径上已被消耗的一次性机会：非 var 已初始化、引用已绑定。
         // 进分支时随 InitCtx 一起拷贝，if/else 合并时取两支的并集——
         // 任一支用过，分支之后就不许再用，而各支各用一次不冲突
         std::unordered_set<Symbol*> bound;
         Symbol* ret_sym = nullptr;   // 当前函数的返回量（若有）
         bool terminated = false;     // 当前路径是否已终止（return）
         bool in_init = false;        // 当前检查的是 INIT 方法体
+        bool mut_method = true;      // 当前方法是否带 mut：非 mut 不得写字段
     };
 
     void init_stmt(InitCtx& ctx, Stmt* s);
     void init_expr(InitCtx& ctx, Expr* e);
-    // 赋值：目标符号的 const / 绑定规则，以及绑定点的来源检查
+    // 赋值：目标符号的可变 / 绑定规则，以及绑定点的来源检查
     void check_assign(InitCtx& ctx, Expr::Assign* a);
     // 剥到绑定源最终指着的量；落在本帧存储上时返回它，否则 nullptr
     VarItem* ref_bind_root(Expr* e, const InitCtx& ctx) const;

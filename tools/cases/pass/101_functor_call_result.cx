@@ -10,7 +10,7 @@ Adder-<T> {
     pub operator () (T x) T r { r = base + x }
 }
 make-<T>(Box-<T> b) Adder-<T> r { r = Adder-<T>(b.v) }
-main() int r {
+main() var int r {
     r = 0
     Box-<int> a = Box-<int>(10)
     if make(a)(5) != 15 { r = r + 1 }

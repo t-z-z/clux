@@ -9,7 +9,7 @@ C {
     spec static:
     pub f(int a) int r { r = a + 1 }
 }
-main() int r {
+main() var int r {
     r = 0
     $int(int) a = ns::plus1
     if a(1) != 2 { r = r + 1 }

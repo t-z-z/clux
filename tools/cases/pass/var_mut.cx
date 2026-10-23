@@ -1,0 +1,23 @@
+// var 可重复赋值；mut 方法可以写字段并调用其它 mut 方法
+Counter {
+    var int value = 0
+
+    pub mut increment() {
+        value = value + 1
+    }
+    pub mut add_and_call(int d) {
+        increment()
+        value = value + d
+    }
+    pub get() int r { r = value  return }
+}
+grow(int-& x) { x = x + 1 }
+main() int r {
+    var int n = 0
+    n = n + 1
+    grow(n)
+    Counter c = Counter()
+    c.increment()
+    c.add_and_call(2)
+    r = c.get() + n
+}

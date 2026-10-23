@@ -2,10 +2,10 @@
 // free() 会拿到非法地址
 import cstdio
 Plain {
-    pub int n = 0
+    pub var int n = 0
 }
 main() int r {
-    malloc Plain a = Plain()
+    malloc var Plain a = Plain()
     Plain b = Plain()
     b.n = 5
     a = b

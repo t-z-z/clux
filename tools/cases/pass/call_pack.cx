@@ -1,7 +1,7 @@
 extern "c" { putchar(int c) int r {} }
 print(char[5][4] vs) {
-    for int i = 0; i < vs.len; i += 1 {
-        for int j = 0; j < vs[i].len; j += 1 {
+    for var int i = 0; i < vs.len; i += 1 {
+        for var int j = 0; j < vs[i].len; j += 1 {
             putchar(int(vs[i][j]))
         }
     }

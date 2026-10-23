@@ -15,7 +15,7 @@ extern "C" {
 
 main() int r {
     Pair q = imaxdiv(Pair(17, 5))
-    int bad = 0
+    var int bad = 0
     if q.quot != 3 bad = 1
     if q.rem != 2 bad = 2
     printf("%ld %ld %d\n", q.quot, q.rem, bad)

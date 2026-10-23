@@ -1,9 +1,9 @@
 // 引用形参：out 参数、写穿；类形参同样适用
 Node {
-    pub int v
+    pub var int v
 
     pub INIT(int s) { self.v = s }
-    pub zero() { v = 0  return }
+    pub mut zero() { v = 0  return }
 }
 bump(int-& x, int d) {
     x = x + d
@@ -16,7 +16,7 @@ reset(int-*& p) {
 read_ptr(int-*& p) int-* r { r = p  return }
 clear(Node-& n) { n.zero()  return }
 add(int-& y, int d) int s { y = y + d  s = y }
-main() int r {
+main() var int r {
     int a = 1
     int b = 2
     int-& t = b

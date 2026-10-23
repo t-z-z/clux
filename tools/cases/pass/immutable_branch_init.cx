@@ -1,8 +1,8 @@
-// const 的一次性初始化按路径计：if/else 各赋一次是两条路径各一次，
-// 不算二次写入。返回量、局部量、类 const 字段同理
+// 非 var 的一次性初始化按路径计：if/else 各赋一次是两条路径各一次，
+// 不算二次写入。返回量、局部量、类字段同理
 C {
     pub:
-    const int x
+    int x
     INIT(bool f) {
         if f {
             self.x = 1
@@ -11,7 +11,7 @@ C {
         }
     }
 }
-pick(bool f) const int r {
+pick(bool f) int r {
     if f {
         r = 1
     } else {
@@ -19,13 +19,13 @@ pick(bool f) const int r {
     }
     return
 }
-main() int r {
+main() var int r {
     if pick(0) > 1 {
         r = 1
     } else {
         r = 0
     }
-    const int a
+    int a
     if r != 0 {
         a = 1
     } else {

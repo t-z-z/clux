@@ -1,6 +1,6 @@
 // 延迟绑定的引用同样按路径计：if/else 各绑一次是两条路径各绑一次，
 // 之后写穿时两边都已绑定
-main() int r {
+main() var int r {
     r = 0
     int a = 1
     int b = 2

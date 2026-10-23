@@ -251,7 +251,7 @@ enum class SpecKind {
 };
 
 inline SpecKind token_to_spec(TokenKind tk) {
-    int offset = static_cast<int>(tk) - static_cast<int>(TokenKind::Const);
+    int offset = static_cast<int>(tk) - static_cast<int>(TokenKind::Var);
     return static_cast<SpecKind>(offset);
 }
 
@@ -547,6 +547,9 @@ struct VarItem : ASTNode {
     std::string_view name;
     Expr *init;
     Type* type = nullptr;
+    // 语义阶段写入：形参。形参的默认值只在调用方省略实参时生效，
+    // 不能当作编译期常量
+    bool is_param = false;
     VarItem() = default;
     VarItem(const Location& loc, std::string_view n, Expr* i):
         ASTNode(loc), name(n), init(i) {}

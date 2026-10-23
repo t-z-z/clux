@@ -7,7 +7,7 @@ Node {
     pub INIT() { self.ref = self.v }
 }
 malloc V {
-    pub int v = 0
+    pub var int v = 0
     pub int-& ref
 
     pub INIT(int a) {
@@ -20,7 +20,7 @@ main() int r {
     Node b = a
     b.ref = 9
     V p = V(3)
-    V q = V(0)
+    var V q = V(0)
     q = p
     q.ref = 8
     r = a.ref + p.ref

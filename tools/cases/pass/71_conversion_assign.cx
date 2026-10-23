@@ -1,5 +1,5 @@
 bar {
-    pub int value = 0
+    pub var int value = 0
     pub INIT() { }
 }
 conversion(int v) bar r {
@@ -7,6 +7,6 @@ conversion(int v) bar r {
     r.value = v
 }
 main() {
-    bar b = 1
+    var bar b = 1
     b = 2
 }

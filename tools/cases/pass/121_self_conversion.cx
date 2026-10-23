@@ -1,7 +1,7 @@
 // 同类 conversion（自转）在左值赋给左值时触发，代替原本的等号拷贝，
 // 因此不会产生引用字段的跨对象别名
 malloc V {
-    pub int v = 0
+    pub var int v = 0
     pub int-& ref
 
     pub INIT(int a) {
@@ -14,7 +14,7 @@ conversion(V a) V b {
 }
 main() int r {
     V p = V(3)
-    V q = V(0)
+    var V q = V(0)
     q = p
     V d = p
     r = q.v

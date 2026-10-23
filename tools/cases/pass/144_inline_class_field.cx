@@ -2,7 +2,7 @@
 // `self.item = Node(7)` 就地构造进字段，不再存 INIT 栈帧上的临时实例地址，
 // 因此 h1.item 不受第二次构造的影响。
 Node {
-    pub int v = 0
+    pub var int v = 0
     pub int w = 0
 
     pub INIT(int s) { self.v = s }
@@ -12,7 +12,7 @@ Holder {
 
     pub INIT(int s) { self.item = Node(s) }
 }
-main() int r {
+main() var int r {
     r = 0
     Holder h1 = Holder(7)
     Holder h2 = Holder(999)

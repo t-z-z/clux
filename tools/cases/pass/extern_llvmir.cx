@@ -3,7 +3,7 @@
 // 类同理：块内的类只是 clux 侧的类型名，%Box 这个结构体由 keep`` 定义。
 extern "LLVMIR" {
     Box { pub uninit long v }
-    Box box
+    var Box box
     box_new(long v) Box r {}
     box_get(Box-* b) long r {}
 }

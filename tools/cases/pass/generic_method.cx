@@ -14,7 +14,7 @@ Holder {
     pub INIT() {}
     pub twice-<T>(T v) T r { r = v }
 }
-main() int r {
+main() var int r {
     r = 0
     Holder h = Holder()
     if h.twice(3) != 3 { r = r + 1 }

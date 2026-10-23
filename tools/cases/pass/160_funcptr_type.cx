@@ -10,7 +10,7 @@ Node {
     pub uninit $int(int, int)-* fp
 }
 
-main() int r {
+main() var int r {
     int[3] arr = [1 2 3]
     int x = 2
     $int(int, int) f = add

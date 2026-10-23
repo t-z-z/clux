@@ -1,0 +1,7 @@
+// 非 mut 方法不得调用 mut 方法
+C {
+    var int x = 0
+    mut inc() { x = x + 1 }
+    call() { inc() }
+}
+main() {}

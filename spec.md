@@ -648,7 +648,7 @@ define i32 @add(i32 %a, i32 %b) {
 
 ```cx
 extern "C" { // 小写c也可以
-    printf(const char-* s ...) int r{}
+    printf(char-* s ...) int r{}
 }
 ```
 
@@ -709,8 +709,8 @@ main(int argc, char-** argv) int r { }
 ```cx
 @foo {
     pub:
-    int a
-    spec static const:
+    var int a
+    spec static:
     int b = 1
     spec:
     int c

@@ -138,7 +138,8 @@ void FlowChecker::check_jumps(Stmt* body) {
 // 量初始化检查：不得读取未赋值过的量
 void FlowChecker::check_initialization(
         Stmt* body, const std::vector<VarList*>& params,
-        const std::vector<VarList*>& returns, bool in_init, Class* cls) {
+        const std::vector<VarList*>& returns, bool in_init, Class* cls,
+        bool mut_method) {
     // 一次性的绑定链与返回量改写记录都只在本方法体内有意义，
     // 放在函数体判空之前，免得空函数体把上一个的记录带过来
     ref_src_.clear();
@@ -148,6 +149,7 @@ void FlowChecker::check_initialization(
     if (!body) return;
     InitCtx ctx;
     ctx.in_init = in_init;
+    ctx.mut_method = mut_method;
     // 参数视为已赋值
     for (VarList* vl : params) {
         if (!vl) continue;
@@ -192,6 +194,7 @@ void FlowChecker::check_initialization(
                 Symbol* sym = sym_of(vi);
                 if (!sym) continue;
                 ctx.declared.insert(sym);
+                ctx.fields.insert(sym);
                 if (ft->is_reference()) ctx.ref_fields.insert(sym);
                 if (vi->init || is_static || !in_init) {
                     ctx.assigned.insert(sym);
@@ -217,8 +220,8 @@ void FlowChecker::check_initialization(
             if (ft && ft->is_reference())
                 error_(loc, "reference field '" + sym_display_name(sym) +
                       "' is never bound: bind it in INIT on every path");
-            else if (sym->is_const())
-                error_(loc, "const field '" + sym_display_name(sym) +
+            else if (!sym->is_var())
+                error_(loc, "immutable field '" + sym_display_name(sym) +
                       "' is never assigned: assign it in INIT on every path "
                       "or give it an initializer");
             else
@@ -417,37 +420,40 @@ VarItem* FlowChecker::ref_bind_root(Expr* e, const InitCtx& ctx) const {
     return nullptr;
 }
 
-// 赋值：目标符号的 const 与绑定规则，以及绑定点上的来源检查。
-// const 的第一次赋值是初始化，之后再赋值报错；延迟绑定的局部引用同理，
-// 本方法体里第一次赋值绑定被引用对象，之后的赋值是写穿。
+// 赋值：目标符号的可变 / 绑定规则，以及绑定点上的来源检查。
+// 非 var 的第一次赋值是初始化，之后再赋值报错；var 可以反复赋值。
+// 指针解引用与下标没有目标符号，写穿它们不受绑定可变性的限制。
+// 引用赋值写的是被引用对象：已绑定的引用每次赋值都是写穿，不消耗初始化机会；
+// 延迟绑定的局部引用第一次赋值才绑定。INIT 内对引用字段的赋值是绑定，
+// 非 var 引用字段因此只能绑定一次。
 // 登记在 declared 里的是本方法体的存储（局部量、形参、返回量、本类的
 // 受管字段），未登记的量（全局量、static 字段、他类的字段）都已带着值，
 // 不是初始化点；声明处带值的量（形参、字段初值、构造期）同理。
 // 判断"已经赋过值"看当前路径：赋值写在分支里、分支之后再来一次才是二次写入，
-    // 而 if/else 各赋一次是两条路径各一次，不冲突
-    void FlowChecker::check_assign(InitCtx& ctx, Expr::Assign* a) {
+// 而 if/else 各赋一次是两条路径各一次，不冲突
+void FlowChecker::check_assign(InitCtx& ctx, Expr::Assign* a) {
     Expr* target = a ? a->target : nullptr;
     if (!target || !target->sym) return;
     Symbol* sym = target->sym;
+    // operator[] 之类的重载下标把赋值派发成函数调用，符号不是可写的量
+    if (sym->kind != SymbolKind::Value) return;
+    // 非 mut 成员方法不得写当前类的字段。指针解引用、下标不是字段符号，
+    // 对它们的写穿仍然允许
+    if (ctx.fields.count(sym) && !ctx.in_init && !ctx.mut_method) {
+        error_(target->loc, "cannot modify field '" + sym_display_name(sym) +
+               "' in a non-mut method: declare the method mut");
+        return;
+    }
     bool tracked = ctx.declared.count(sym) != 0;
     Type* dt = sym->get_type();
     // 延迟绑定的局部引用：声明处没有初值，第一次赋值才绑定。形参入口即绑定、
     // 返回量由 return 带出、引用字段只在 INIT 里绑定，都不是这里的绑定点
     VarItem* vi = dynamic_cast<VarItem*>(sym->node);
-    bool late_ref = tracked && dt && dt->is_reference() && vi && !vi->init &&
+    bool is_ref = dt && dt->is_reference();
+    bool late_ref = tracked && is_ref && vi && !vi->init &&
                     !ctx.bound_before.count(sym) && !ctx.ref_fields.count(sym);
     bool ref_binding = false;
-    if (sym->is_const()) {
-        if (!tracked) {
-            error_(target->loc,
-                   "cannot assign to const '" + sym_display_name(sym) + "'");
-        } else if (ctx.assigned.count(sym) || ctx.bound.count(sym)) {
-            error_(target->loc, "cannot assign to const '" + sym_display_name(sym) +
-                  "': it is already initialized");
-        } else {
-            ctx.bound.insert(sym);
-        }
-    } else if (late_ref) {
+    if (late_ref) {
         if (ctx.bound.count(sym)) {
             // 绑定之后这次赋值是写穿：写穿得先有绑定可写，
             // 绑定点写在分支里时不保证已经执行
@@ -458,10 +464,28 @@ VarItem* FlowChecker::ref_bind_root(Expr* e, const InitCtx& ctx) const {
             ctx.bound.insert(sym);
             ref_binding = true;
         }
-    } else if (dt && dt->is_reference()) {
-        // 引用字段在 INIT 里的赋值、引用返回量的赋值，存的都是地址
+    } else if (is_ref) {
+        // 引用字段在 INIT 里的赋值、引用返回量的赋值，存的都是地址；
+        // 其余场合的赋值写穿到被引用对象，不构成重新绑定
         ref_binding = (ctx.in_init && ctx.ref_fields.count(sym)) ||
                       sym == ctx.ret_sym;
+        if (ref_binding && !sym->is_var() &&
+            (ctx.assigned.count(sym) || ctx.bound.count(sym))) {
+            error_(target->loc, "cannot reinitialize immutable reference '" +
+                   sym_display_name(sym) + "': it is already bound");
+        } else if (ref_binding) {
+            ctx.bound.insert(sym);
+        }
+    } else if (!sym->is_var()) {
+        if (!tracked) {
+            error_(target->loc,
+                   "cannot assign to immutable '" + sym_display_name(sym) + "'");
+        } else if (ctx.assigned.count(sym) || ctx.bound.count(sym)) {
+            error_(target->loc, "cannot assign to immutable '" +
+                   sym_display_name(sym) + "': it is already initialized");
+        } else {
+            ctx.bound.insert(sym);
+        }
     }
     if (tracked) ctx.assigned.insert(sym);
     if (sym == ctx.ret_sym) ++ret_assigns_;
@@ -508,7 +532,7 @@ void FlowChecker::check_bind_source(InitCtx& ctx, Symbol* target, Expr* src) {
 void FlowChecker::init_expr(InitCtx& ctx, Expr* e) {
     if (!e) return;
     // 读取检查：局部量、形参、返回量与类的受管字段都登记在 declared 里，
-    // 其中 const 字段在 INIT 内尚未赋值、引用字段尚未绑定时同样不得读取
+    // 其中字段在 INIT 内尚未赋值、引用字段尚未绑定时同样不得读取
     auto check_read = [&](Symbol* sym) {
         if (!sym || !ctx.declared.count(sym) || ctx.assigned.count(sym)) return;
         Type* dt = sym->get_type();

@@ -5,7 +5,7 @@ int g = 5
 int-& gr = g-&
 
 Box {
-    pub int v = 7
+    pub var int v = 7
 }
 Box b = Box()
 Box-& gb = b

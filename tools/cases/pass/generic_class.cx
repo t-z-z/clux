@@ -19,7 +19,7 @@ Array-<T> {
     pub get(int i) T r { r = data[i] }
     pub size() int r { r = len }
 }
-main() int r {
+main() var int r {
     r = 0
     Array-<int> a = Array-<int>()
     a.put(1, 3)

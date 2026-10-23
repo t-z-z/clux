@@ -1,21 +1,21 @@
-// const 的第一次赋值是初始化：局部量、返回量、类字段各一次
+// 非 var 的第一次赋值是初始化：局部量、返回量、类字段各一次
 C {
     pub:
-    const int x
-    const int y = 10
+    int x
+    int y = 10
     INIT(int v) { self.x = v }
     sum() int r { r = x + y  return }
 }
-twice(int v) const int r {
+twice(int v) int r {
     r = v * 2
     return
 }
-main() int r {
+main() var int r {
     r = 0
-    const int a
+    int a
     a = 1
     r = r + a
-    const int b
+    int b
     b = 2
     r = r + b
     C c = C(4)

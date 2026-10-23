@@ -14,11 +14,11 @@ nested(int c) int r {
         if c > 5 { r = 1 } else { r = 2 }
     } else { r = 3 }
 }
-tail_after_loop(int n) int r {
+tail_after_loop(var int n) int r {
     while n > 0 { n = n - 1 }
     r = 5
 }
-multi() int r {
+multi() var int r {
     r = 1
     r = 2
 }

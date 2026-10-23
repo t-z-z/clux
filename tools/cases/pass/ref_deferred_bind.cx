@@ -1,8 +1,8 @@
 import cstdio
-int probe = 0
+var int probe = 0
 // 引用字段的绑定点可以写在 INIT 的分支里，但每条路径都得绑定
 Box {
-    pub int value = 0
+    pub var int value = 0
     pub int-& slot
 
     pub INIT(int v) {
@@ -17,7 +17,7 @@ value_of(int v) int-& r {
     r = probe
     return
 }
-main() int r {
+main() var int r {
     r = 0
     int i = 1
     int-& s
@@ -37,8 +37,8 @@ main() int r {
     if b.slot != 3 { r = r + 16 }
     if b.value != 3 { r = r + 32 }
     // 绑定点写在循环里：每轮都重新绑定，读到的都是当前值
-    int k = 0
-    int sum = 0
+    var int k = 0
+    var int sum = 0
     int-& cur
     while k < 3 {
         cur = k

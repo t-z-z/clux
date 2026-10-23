@@ -14,11 +14,11 @@ extern "C" {
     time(time_t-* timer) time_t r{}
     difftime(time_t t1 time_t t0) double r{}
     mktime(tm-* timeptr) time_t r{}
-    localtime(const time_t-* timer) tm-* r{}
-    gmtime(const time_t-* timer) tm-* r{}
-    asctime(const tm-* timeptr) char-* r{}
-    ctime(const time_t-* timer) char-* r{}
-    strftime(char-* s size_t maxsize const char-* format const tm-* timeptr) size_t r{}
+    localtime(time_t-* timer) tm-* r{}
+    gmtime(time_t-* timer) tm-* r{}
+    asctime(tm-* timeptr) char-* r{}
+    ctime(time_t-* timer) char-* r{}
+    strftime(char-* s size_t maxsize char-* format tm-* timeptr) size_t r{}
 }
 
 // LLVMIR 符号声明

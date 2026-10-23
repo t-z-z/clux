@@ -3,7 +3,7 @@ C {
     pub uninit int[4] data
     INIT() {}
 }
-main() int r {
+main() var int r {
     r = 0
     C c = C()
     c.data[0] = 7

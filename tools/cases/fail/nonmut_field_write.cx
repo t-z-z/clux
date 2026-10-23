@@ -1,6 +1,6 @@
 C {
     pub:
-    const int x
+    var int x
     INIT() { x = 1 }
     set() { self.x = 2 }
 }

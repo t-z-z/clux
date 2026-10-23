@@ -1,0 +1,13 @@
+Bump {
+    pub int-* target
+    pub INIT(int-* t) { self.target = t }
+
+    // 非 mut 方法也能穿过指针写：解引用默认可以写穿
+    pub poke() { target-* = 7 }
+}
+main() int r {
+    int x = 0
+    Bump b = Bump(x-&)
+    b.poke()
+    r = x
+}

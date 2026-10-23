@@ -6,16 +6,16 @@ import cstddef    // size_t, ptrdiff_t, NULL
 
 extern "C" {
     // 数值转换
-    atof(const char-* nptr) double r{}
-    atoi(const char-* nptr) int r{}
-    atol(const char-* nptr) long r{}
-    atoll(const char-* nptr) long r{}
-    strtol(const char-* nptr char-** endptr int base) long r{}
-    strtoll(const char-* nptr char-** endptr int base) long r{}
-    strtoul(const char-* nptr char-** endptr int base) ulong r{}
-    strtoull(const char-* nptr char-** endptr int base) ulong r{}
-    strtof(const char-* nptr char-** endptr) float r{}
-    strtod(const char-* nptr char-** endptr) double r{}
+    atof(char-* nptr) double r{}
+    atoi(char-* nptr) int r{}
+    atol(char-* nptr) long r{}
+    atoll(char-* nptr) long r{}
+    strtol(char-* nptr char-** endptr int base) long r{}
+    strtoll(char-* nptr char-** endptr int base) long r{}
+    strtoul(char-* nptr char-** endptr int base) ulong r{}
+    strtoull(char-* nptr char-** endptr int base) ulong r{}
+    strtof(char-* nptr char-** endptr) float r{}
+    strtod(char-* nptr char-** endptr) double r{}
     // strtold 需要 long double，clux 无此类型
 
     // 伪随机序列
@@ -35,11 +35,11 @@ extern "C" {
     _Exit(int status) {}
     quick_exit(int status) {}
     abort() {}
-    getenv(const char-* name) char-* r{}   // 返回只读字符串，clux 无 const
-    system(const char-* string) int r{}
+    getenv(char-* name) char-* r{}
+    system(char-* string) int r{}
 
     // 搜索与排序
-    bsearch(const void-* key const void-* base size_t nmemb size_t size $int(void-* void-*) compar) void-* r{}
+    bsearch(void-* key void-* base size_t nmemb size_t size $int(void-* void-*) compar) void-* r{}
     qsort(void-* base size_t nmemb size_t size $int(void-* void-*) compar) {}
 
     // 整数运算
