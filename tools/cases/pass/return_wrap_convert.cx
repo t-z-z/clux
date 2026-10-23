@@ -1,0 +1,21 @@
+num#int{
+
+}
+from_int(int v) num r {
+    r = v
+}
+from_lit() num r {
+    r = 1
+}
+inc-<T>(T i) T r {
+    if (i > 0) {
+        r = 1
+    } else {
+        r = -1
+    }
+}
+main() {
+    num a = from_int(2)
+    num b = from_lit()
+    num c = inc(a)
+}

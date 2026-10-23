@@ -2615,7 +2615,9 @@ std::string Translator::eval_assign(Expr* e, Expr::Assign* a) {
         !ctx_.ret_obj_ptr.empty()) {
         if (auto* vi = dynamic_cast<VarItem*>(a->target->sym->node)) {
             if (vi == ctx_.ret_obj_var) {
-                std::string v = eval(a->value);
+                // 右值可能需要包装/解包或 conversion，直接 eval 会把标量当对象地址
+                std::string v = needs_convert(a->value) ? eval_converted(a->value)
+                                                        : eval(a->value);
                 emit_fields_copy(ctx_.ret_obj_cls, v, ctx_.ret_obj_ptr, false);
                 return v;
             }
