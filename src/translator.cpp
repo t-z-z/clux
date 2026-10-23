@@ -121,6 +121,7 @@ void Translator::collect() {
     mangler_.collect(cu_);
     collect_classes();
     collect_globals_decl(nullptr, "");
+    collect_local_statics_decl(nullptr);
 }
 
 void Translator::run() {
@@ -183,6 +184,82 @@ void Translator::collect_globals_decl(Decl* d, const std::string& prefix,
         g.skip_emit = lang == ExternLang::LLVMIR;
         globals_.push_back(g);
         global_names_[vi] = sym;
+    }
+}
+
+// 函数体内的 static 局部量：声明处不执行任何代码，存储提升为模块级全局量。
+// 遍历语句树找出这些声明，按函数符号分配全局名字后登记，初值随模块级量
+// 在 main 入口写入
+void Translator::collect_local_statics_stmt(Stmt* s, const std::string& fn_sym) {
+    if (!s) return;
+    if (auto* v = s->get_var_decl()) {
+        VarList* vl = v->vars;
+        if (!vl || !vl->specs.has(SpecKind::Static)) return;
+        for (VarItem* vi : vl->vars) {
+            if (!vi || global_names_.count(vi)) continue;
+            std::string sym = IRWriter::quote(
+                fn_sym + "$static$" + std::to_string(local_static_seq_++));
+            Type* vt = vi->type ? vi->type : vl->type;
+            GlobalVar g;
+            g.var = vi;
+            g.sym = sym;
+            g.ir_type = vt ? object_type(vt) : "i32";
+            globals_.push_back(g);
+            global_names_[vi] = sym;
+        }
+        return;
+    }
+    if (auto* b = s->get_block()) {
+        for (Stmt* x : b->stmts) collect_local_statics_stmt(x, fn_sym);
+        return;
+    }
+    if (auto* i = s->get_if()) {
+        collect_local_statics_stmt(i->then_branch, fn_sym);
+        collect_local_statics_stmt(i->else_branch, fn_sym);
+        return;
+    }
+    if (auto* w = s->get_while()) {
+        collect_local_statics_stmt(w->body, fn_sym);
+        return;
+    }
+    if (auto* f = s->get_for()) {
+        collect_local_statics_stmt(f->init, fn_sym);
+        collect_local_statics_stmt(f->next, fn_sym);
+        collect_local_statics_stmt(f->body, fn_sym);
+    }
+}
+
+void Translator::collect_local_statics_decl(Decl* d) {
+    if (!d) {
+        for (Decl* t : cu_.top_decls) collect_local_statics_decl(t);
+        return;
+    }
+    switch (d->kind) {
+        case DeclKind::Func:
+        case DeclKind::Operator:
+        case DeclKind::Conversion: {
+            auto* f = static_cast<Func*>(d);
+            collect_local_statics_stmt(f->body, mangler_.of(f));
+            break;
+        }
+        case DeclKind::SpecialMethod: {
+            auto* sm = static_cast<SpecialMethod*>(d);
+            collect_local_statics_stmt(sm->body, mangler_.of(sm));
+            break;
+        }
+        case DeclKind::Class:
+            for (Decl* m : static_cast<Class*>(d)->members)
+                collect_local_statics_decl(m);
+            break;
+        case DeclKind::Namespace:
+            for (Decl* m : static_cast<Namespace*>(d)->members)
+                collect_local_statics_decl(m);
+            break;
+        case DeclKind::Extern:
+            for (Decl* m : static_cast<Extern*>(d)->members)
+                collect_local_statics_decl(m);
+            break;
+        default: break;
     }
 }
 
@@ -1346,6 +1423,9 @@ void Translator::emit_slice_init(VarList* vl, const std::string& slot,
 
 void Translator::emit_var_decl(VarList* vl) {
     if (!vl) return;
+    // static 局部量的存储是模块级全局量，声明处不执行任何代码：
+    // 名字已在 collect 阶段登记，初值随模块级量在 main 入口写入
+    if (vl->specs.has(SpecKind::Static)) return;
     std::string t = map_type(vl->type);
     for (VarItem* vi : vl->vars) {
         if (!vi) continue;
@@ -1742,7 +1822,7 @@ void Translator::emit_static_inits() {
     }
 }
 
-// 模块入口为所有模块级量写入声明处默认值。
+// 模块入口为所有模块级量与 static 局部量写入声明处默认值。
 // 初值在main 入口求值而非写成 LLVM 常量初始化式，因此可以引用其他量、
 // 调用函数；代价是 main 之前这些全局量都是零值
 void Translator::emit_global_inits() {
@@ -1762,6 +1842,13 @@ void Translator::emit_global_inits() {
             std::string addr = eval_ref_addr(g.var->init->bind_source());
             if (addr.empty()) addr = "null";
             emit_instr("store ptr " + addr + ", ptr @" + g.sym);
+            continue;
+        }
+        // 定长数组：全局量的存储就是数组本体，初值就地写进这块存储
+        if (is_fixed_array(g.var->type)) {
+            Type* el = g.var->type->get_array_type()->element;
+            emit_fixed_array_init("@" + g.sym, el,
+                                  array_length_of(g.var->type), g.var->init);
             continue;
         }
         bool converted = needs_convert(g.var->init);
@@ -2325,12 +2412,13 @@ std::string Translator::eval_identifier(Expr* e, Expr::Identifier* id) {
                 emit_instr(r + " = load " + t + ", ptr @" + git->second);
                 return r;
             }
+            // static 字段：模块级全局符号。不依赖当前类，static 局部量的
+            // 初值在 main 入口求值时也要能引用它
+            std::string sg = mangler_.field_of(vi);
+            if (!sg.empty()) return eval_field_value(e, "@" + sg);
             if (ctx_.current_class) {
                 auto cit = classes_.find(ctx_.current_class);
                 if (cit != classes_.end()) {
-                    // static 字段：模块级全局符号
-                    std::string sg = mangler_.field_of(vi);
-                    if (!sg.empty()) return eval_field_value(e, "@" + sg);
                     auto fit = cit->second.field_index.find(vi);
                     if (fit != cit->second.field_index.end()) {
                         std::string addr = ir_.reg();

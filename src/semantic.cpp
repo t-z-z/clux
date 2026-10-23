@@ -827,6 +827,43 @@ void SemanticAnalyzer::visit_var_list(VarList& vl) {
     if (in_extern) {
         check_extern_var_list(vl, ext->second);
     }
+    // static 局部量：存储提升为模块级全局量，初值在 main 入口求值。那里
+    // 没有函数的栈帧，故初值不能引用局部量、形参或实例字段；切片的长度
+    // 运行期才知道，没有可计算的全局存储大小
+    bool local_static = current_body && vl.specs.has(SpecKind::Static);
+    if (local_static) {
+        for (VarItem* var : vl.vars) {
+            if (!var) continue;
+            Type* dt = var->type ? var->type : vl.type;
+            if (dt && is_slice_type(dt))
+                error(var->loc, "static local '" + std::string(var->name) +
+                      "' cannot be an array slice: its storage is a module-level "
+                      "global whose size must be known at compile time");
+            // 延迟绑定是函数一次运行内的事，static 的槽在 main 入口写入，
+            // 没有"第一次赋值"的位置
+            if (dt && dt->is_reference() && !var->init)
+                error(var->loc, "static local reference '" +
+                      std::string(var->name) + "' must be bound by an initializer");
+            if (!var->init) continue;
+            std::vector<Symbol*> refs;
+            collect_expr_syms(var->init, refs);
+            for (Symbol* sym : refs) {
+                auto* rvi = sym ? dynamic_cast<VarItem*>(sym->node) : nullptr;
+                if (!rvi) continue;
+                bool local = local_vars_.count(rvi) != 0;
+                bool field = is_field_item(rvi);
+                bool static_field = field && sym->specs &&
+                                    sym->specs->has(SpecKind::Static);
+                if (!local && (!field || static_field)) continue;
+                error(var->init->loc, "the initializer of static local '" +
+                      std::string(var->name) + "' cannot reference " +
+                      (local ? "local '" : "instance field '") +
+                      std::string(rvi->name) +
+                      "': it is evaluated at the module entry");
+                break;
+            }
+        }
+    }
     if (module_level) {
         // 模块级量必须显式初始化：没有初值时槽里只剩零值，类值更是空指针，
         // 读取就会得到无效对象。数组的存储本身是完整的零初始化对象，
@@ -953,6 +990,10 @@ void SemanticAnalyzer::visit_var_list(VarList& vl) {
         // 字段的身份是 collect 阶段登记的类成员符号，裸名与 `self.x` 都解析到它；
         // 再登记一个同名局部量只会让同一个字段分裂成两个 Symbol
         if (is_field_item(var)) continue;
+        // 模块级量、extern 量与 static 局部量的存储都不在函数栈帧上，
+        // static 局部量的初值可以引用它们；其余登记为本帧的局部量
+        if (!module_level && !in_extern && !vl.specs.has(SpecKind::Static))
+            local_vars_.insert(var);
         Symbol sym(SymbolKind::Value, var);
         sym.specs = &vl.specs;
         sym.default_public = true;

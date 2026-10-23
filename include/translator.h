@@ -89,10 +89,15 @@ private:
         bool is_extern = false;   // extern 声明：由外部库定义，此处只声明不初始化
         bool skip_emit = false;   // extern "LLVMIR"：实现由 keep`` 给出，两样都不发
     };
-    // 顶层 / 命名空间 / extern 内的 VarList：模块级量
+    // 顶层 / 命名空间 / extern 内的 VarList：模块级量。
+    // 函数体内的 static 局部量也登记在这里，存储提升为模块级全局量
     std::vector<GlobalVar> globals_;
     void collect_globals_decl(Decl* d, const std::string& prefix,
                               ExternLang lang = ExternLang::None);
+    // static 局部量的符号名按 <函数符号>$static$<序号> 分配，序号在本模块内递增
+    int local_static_seq_ = 0;
+    void collect_local_statics_decl(Decl* d);
+    void collect_local_statics_stmt(Stmt* s, const std::string& fn_sym);
 
     struct LoopCtx { std::string break_label, continue_label; int scope_depth; };
     struct CleanupEntry {

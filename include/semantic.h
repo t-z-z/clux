@@ -7,6 +7,7 @@
 #include <string_view>
 #include <vector>
 #include <unordered_map>
+#include <unordered_set>
 
 #include "ast.h"
 #include "inject.h"
@@ -303,6 +304,8 @@ class SemanticAnalyzer : public ASTVisitor {
     // 模块级量的声明序号，用于检测初值里的前向引用
     std::unordered_map<const VarItem*, size_t> global_order_;
     void collect_global_order(Decl* d);
+    // 函数体内的局部量（含形参与返回量）：static 局部量的初值不能引用它们
+    std::unordered_set<const VarItem*> local_vars_;
     // 单模块时用自带状态，多模块时由前端传入共享状态
     GenericState own_generics_;
     GenericState* generics_ = &own_generics_;

@@ -328,6 +328,7 @@ void FlowChecker::init_stmt_body(InitCtx& ctx, Stmt* s) {
     if (auto* v = s->get_var_decl()) {
         VarList* vl = v->vars;
         if (!vl) return;
+        bool is_static = vl->specs.has(SpecKind::Static);
         for (VarItem* vi : vl->vars) {
             Symbol* sym = sym_of(vi);
             if (vi->init) {
@@ -338,7 +339,9 @@ void FlowChecker::init_stmt_body(InitCtx& ctx, Stmt* s) {
             // 声明之后必须赋值才能读取
             if (sym) {
                 ctx.declared.insert(sym);
-                ctx.locals.insert(sym);
+                // static 局部量的初值在 main 入口写入，存储不属于本帧：
+                // 除存储位置外的使用规则与普通局部量一致
+                if (!is_static) ctx.locals.insert(sym);
             }
         }
         return;
