@@ -994,6 +994,31 @@ void Translator::emit_special(SpecialMethod& sm, Class* cls) {
         // 非引用的类指针形参只是借用：INIT 内的字段赋值才是那次持有
     }
 
+    // 基础类型派发的 INIT(T)：实参即承载值，直接写入承载字段
+    if (sm.synthesized && sm.kind == SpecialMethod::Kind::Init && cls) {
+        auto it = classes_.find(cls);
+        std::string cls_ir = (it != classes_.end()) ? it->second.llvm_name
+                                                     : "%" + mangler_.of(cls);
+        int vi = (it != classes_.end()) ? it->second.value_index : 0;
+        if (vi < 0) vi = 0;
+        VarItem* arg = nullptr;
+        for (VarList* vl : sm.params) {
+            if (!vl) continue;
+            for (VarItem* item : vl->vars) { arg = item; break; }
+            if (arg) break;
+        }
+        auto sit = arg ? ctx_.slots.find(arg) : ctx_.slots.end();
+        if (arg && sit != ctx_.slots.end()) {
+            std::string base_ir = base_ir_of(cls->base_source);
+            std::string addr = ir_.reg();
+            emit_instr(addr + " = getelementptr " + cls_ir + ", ptr %self, i32 0, i32 " +
+                       std::to_string(vi));
+            std::string v = ir_.reg();
+            emit_instr(v + " = load " + base_ir + ", ptr " + sit->second);
+            emit_instr("store " + base_ir + " " + v + ", ptr " + addr);
+        }
+    }
+
     if (sm.body) emit_stmt(sm.body);
     if (!ctx_.term) {
         emit_drops_to(0);

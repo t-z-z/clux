@@ -202,6 +202,7 @@ Decl* CompUnit::clone_decl(Decl* d) {
             auto* cloned = add_node<SpecialMethod>(sm->loc, sm->kind, sm->specs,
                 clone_stmt(sm->body), std::move(params));
             cloned->origin = sm->origin;
+            cloned->synthesized = sm->synthesized;
             return cloned;
         }
         case DeclKind::Conversion: {

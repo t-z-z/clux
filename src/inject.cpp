@@ -33,20 +33,36 @@ std::vector<std::string> decl_key_names(const Decl* d) {
     }
     // 特殊方法没有名字：REF/DEREF/DROP 来自多个来源时全部保留，
     // 由钩子身份去重（见 expand_class），不参与按名字的覆盖
-    if (d->kind == DeclKind::SpecialMethod) return names;
+    if (d->kind == DeclKind::SpecialMethod) {
+        auto* sm = static_cast<const SpecialMethod*>(d);
+        // 基础类型派发的 INIT(T) 以承载类型作键：同一个类被重复展开时
+        // 不会叠加多份同签名的合成构造
+        if (sm->kind == SpecialMethod::Kind::Init && sm->synthesized) {
+            Type* pt = nullptr;
+            if (!sm->params.empty() && sm->params[0] &&
+                !sm->params[0]->vars.empty()) {
+                VarItem* vi = sm->params[0]->vars[0];
+                pt = vi ? (vi->type ? vi->type : sm->params[0]->type) : nullptr;
+            }
+            return {"__INIT_" + describe_type(pt)};
+        }
+        return names;
+    }
     if (!d->name.empty()) names.push_back(std::string(d->name));
     return names;
 }
 
 // 注入来源里哪些成员参与合并：INIT / conversion / operator 只有主类自身的
 // 才起效；REF/DEREF/DROP 是生命周期钩子，所有来源的都生效。
-// 基础类型来源派发的运算符（synthesized）必须合并，包装类靠它们参与运算
+// 基础类型来源派发的运算符（synthesized）必须合并，包装类靠它们参与运算；
+// 派发的 INIT(T) 同理，包装类靠它用承载类型显式构造
 bool merges_from_source(const Decl* d) {
     if (!d) return false;
     switch (d->kind) {
-        case DeclKind::SpecialMethod:
-            return static_cast<const SpecialMethod*>(d)->kind !=
-                   SpecialMethod::Kind::Init;
+        case DeclKind::SpecialMethod: {
+            auto* sm = static_cast<const SpecialMethod*>(d);
+            return sm->kind != SpecialMethod::Kind::Init || sm->synthesized;
+        }
         case DeclKind::Conversion:
             return false;
         case DeclKind::Operator:
@@ -112,11 +128,18 @@ Class* InjectionExpander::make_base_source(PrimitiveTypeKind base,
     // 承载字段 __value：类布局首字段，不可直接访问
     Type* vt = mk_type();
     auto* vvi = cu_.add_node<VarItem>(loc, "__value", nullptr, vt);
-    // 承载字段由包装/解包路径直接写入，构造期不经过 INIT
+    // 承载字段没有声明处初值：由包装/解包路径或派发的 INIT(T) 直接写入
     SpecList carrier_specs;
     carrier_specs.set(SpecKind::Uninit);
     synth->members.push_back(cu_.add_node<VarList>(loc, carrier_specs, vt,
         std::vector<VarItem*>{vvi}));
+
+    // 构造：INIT(T) 把实参写进承载字段，包装类才能用承载类型显式构造
+    auto* init = cu_.add_node<SpecialMethod>(loc, SpecialMethod::Kind::Init,
+        SpecList{}, nullptr,
+        std::vector<VarList*>{mk_param("value", mk_type())});
+    init->synthesized = true;
+    synth->members.push_back(init);
 
     bool is_bool = (base == PrimitiveTypeKind::Bool);
 

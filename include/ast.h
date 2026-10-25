@@ -691,6 +691,8 @@ struct SpecialMethod : Decl {
     } kind;
     std::vector<VarList*> params;
     Stmt* body = nullptr;
+    // 由基础类型来源自动派发的 INIT(T)：body 置空，translator 直接把实参写入承载字段
+    bool synthesized = false;
     // 钩子身份：注入克隆件指向最初声明的钩子，去重时缺省身份是钩子自身。
     // 同一个类被不同模块的 expander 重复展开时据此避免登记两遍
     SpecialMethod* origin = nullptr;

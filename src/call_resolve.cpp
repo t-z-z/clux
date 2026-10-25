@@ -78,14 +78,20 @@ bool SemanticAnalyzer::resolve_ctor_call(Expr* call_expr, Expr::Call& c,
     Class* cls = static_cast<Class*>(cls_decl);
 
     SpecialMethod* ctor = nullptr;
+    SpecialMethod* synth_ctor = nullptr;
     bool has_init = false;
     for (Decl* m : cls->members) {
         if (!m || m->kind != DeclKind::SpecialMethod) continue;
         auto* sm = static_cast<SpecialMethod*>(m);
         if (sm->kind != SpecialMethod::Kind::Init) continue;
-        has_init = true;
-        if (args_match(sm->params, c.args)) { ctor = sm; break; }
+        // 派发的 INIT(T) 不阻止零参默认构造：无用户 INIT 的包装类仍可 num()
+        if (!sm->synthesized) has_init = true;
+        if (!args_match(sm->params, c.args)) continue;
+        // 用户 INIT 优先于派发的 INIT(T)，注入方向不影响这一优先级
+        if (!sm->synthesized) { ctor = sm; break; }
+        if (!synth_ctor) synth_ctor = sm;
     }
+    if (!ctor) ctor = synth_ctor;
     // 无 INIT 的类允许零参默认构造，字段用声明处默认值初始化
     if (!ctor && (has_init || !c.args.empty())) {
         call_fail(call_expr, "no matching constructor for class '" + name + "'");

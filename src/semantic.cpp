@@ -1055,11 +1055,13 @@ void SemanticAnalyzer::check_ref_init_source(const VarItem& var, const Type& dt)
         error(init->loc, "reference target type mismatch");
 }
 
-// 类里是否声明了 INIT：没有 INIT 的类只能走零参默认构造，没有字段赋值点
+// 类里是否声明了 INIT：没有 INIT 的类只能走零参默认构造，没有字段赋值点。
+// 基础类型派发的 INIT(T) 只写承载字段，不能充当用户字段的赋值点
 static bool class_has_init(const Class& c) {
     for (Decl* m : c.members) {
         if (!m || m->kind != DeclKind::SpecialMethod) continue;
-        if (static_cast<SpecialMethod*>(m)->kind == SpecialMethod::Kind::Init)
+        auto* sm = static_cast<SpecialMethod*>(m);
+        if (sm->kind == SpecialMethod::Kind::Init && !sm->synthesized)
             return true;
     }
     return false;
