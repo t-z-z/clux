@@ -1,0 +1,7 @@
+#int num{}
+#int interger{}
+main(){
+    num i=1
+    interger j=0
+    num x=i+j
+}

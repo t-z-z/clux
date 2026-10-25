@@ -127,11 +127,13 @@ std::string Parser::describe_decl(const Decl* d) const {
 CompUnit* Parser::parse() {
     bool ltu = false; // 记录上一个token是否是unexpected，如果是则不连续报token unexpected
     std::string prev; // 上一个已提交的结构，用于"在某结构之后"的报错
+    Decl* prevdecl = nullptr;
     while(!is_eof()){
         size_t before = errors_.size();
         bool u = parse_using_namespace(); // 避免namespace decl识别报错，必须在前
         if (u){
             prev = "a using directive";
+            prevdecl = nullptr;
             ltu = false;
             continue;
         }
@@ -140,6 +142,7 @@ CompUnit* Parser::parse() {
             Import* i = parse_import();
             if (i){
                 prev = "an import";
+                prevdecl = nullptr;
                 ltu = false;
                 continue;
             }
@@ -154,7 +157,7 @@ CompUnit* Parser::parse() {
                         cu_.register_type(d->name, d);
                     }
                 }
-                prev = describe_decl(d);
+                prevdecl = d;
                 ltu = false;
                 continue;
             }
@@ -164,7 +167,7 @@ CompUnit* Parser::parse() {
         if (errors_.size() > before) {
             ltu = true;
         } else if (!ltu) {
-            fail_unexpected(prev);
+            fail_unexpected(prevdecl?describe_decl(prevdecl):prev);
             ltu = true;
         }
         advance();
@@ -341,7 +344,10 @@ Parser::HeadShape Parser::scan_decl_head() {
         if (curr().kind == TokenKind::GenericStart) skip_generic_args();
         // 类名之后允许修饰符与尾随注入（`Name #mod {`）
         while (curr().is_spec()) walk();
-        if (curr().kind == TokenKind::Hash) skip_modifier_chain();
+        if (curr().kind == TokenKind::Hash) {
+            skip_modifier_chain();
+            return HeadShape::Class;
+        }
         if (curr().kind == TokenKind::ParenL) return HeadShape::Func;
         if (curr().kind == TokenKind::BraceL)
             return is_slice_brace() ? HeadShape::Var : HeadShape::Class;
@@ -595,7 +601,7 @@ Class* Parser::parse_class_decl(SpecList &ml, Location &loc) {
         if (!mod) break;
         trailing.push_back(mod);
     }
-    if (curr().kind != TokenKind::BraceL || is_slice_brace()) return nullptr;
+    if (curr().kind != TokenKind::BraceL) return nullptr;
     ml.merge(nml);
     ++class_depth_;
     std::vector<Decl*> members = parse_members();

@@ -1366,6 +1366,13 @@ Symbol* SemanticAnalyzer::find_operator_overload(OpKind op, Type& type, Type& ot
         if (pl->vars.empty() || !pl->vars[0]) continue;
         Type* pt = pl->vars[0]->type ? pl->vars[0]->type : pl->type;
         if (!pt) continue;
+        // 基础类型派发的运算符只是该包装类自身的成员，另一个包装类
+        // 不能靠解包到共同承载类型来借用它
+        if (opd->synthesized) {
+            Class* owner = wrap_class_of(&type);
+            Class* arg = wrap_class_of(&other);
+            if (arg && arg != owner) continue;
+        }
         if (can_convert_to(&other, pt)) {
             if (matched_param) *matched_param = pt;
             return &member;
@@ -1461,10 +1468,11 @@ void SemanticAnalyzer::visit_expr_binary(Expr::Binary& b) {
     Type* rt = b.right ? b.right->type : nullptr;
     if (!lt || !rt) return;
 
-    // 非同包装类的混合运算：解包包装类一侧，走基础运算
+    // 包装类与基础值混合运算：解包包装类一侧，走基础运算。
+    // 两个包装类之间保持原类型，由各自的操作符决定能否匹配
     Class* lw = wrap_class_of(lt);
     Class* rw = wrap_class_of(rt);
-    if (!(lw && rw && lw == rw) && (lw || rw)) {
+    if (!(lw && rw) && (lw || rw)) {
         if (lw) {
             Type* base_t = wrap_base_type(lw);
             record_conversion(b.left, base_t);
@@ -1494,6 +1502,16 @@ void SemanticAnalyzer::visit_expr_binary(Expr::Binary& b) {
             record_conversion(b.right, matched_param);
         current_expr->type = overload_ret;
         current_expr->sym = s;
+        current_expr->is_lvalue = false;
+        return;
+    }
+
+    // 两个不同的包装类没有共同的运算符：各自不能借对方的基础类型操作符
+    if (lw && rw && lw != rw) {
+        error(current_expr->loc, "no matching operator '" +
+              std::string(opkind_to_sv(b.op)) + "' for types '" +
+              type_name_string(lt) + "' and '" + type_name_string(rt) + "'");
+        current_expr->type = lt;
         current_expr->is_lvalue = false;
         return;
     }
@@ -1676,6 +1694,17 @@ void SemanticAnalyzer::visit_expr_assign(Expr::Assign& a) {
             if (matched && !is_same_type(rt, matched))
                 record_conversion(a.value, matched);
             current_expr->sym = s;
+            current_expr->type = lt;
+            current_expr->is_lvalue = false;
+            return;
+        }
+        // 同二元运算：不同包装类之间没有可借用的复合赋值运算符
+        Class* lw = wrap_class_of(lt);
+        Class* rw = wrap_class_of(rt);
+        if (lw && rw && lw != rw) {
+            error(current_expr->loc, "no matching operator '" +
+                  std::string(opkind_to_sv(a.op)) + "' for types '" +
+                  type_name_string(lt) + "' and '" + type_name_string(rt) + "'");
             current_expr->type = lt;
             current_expr->is_lvalue = false;
             return;
