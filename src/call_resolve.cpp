@@ -98,6 +98,12 @@ bool SemanticAnalyzer::resolve_ctor_call(Expr* call_expr, Expr::Call& c,
         return true;
     }
     if (ctor) check_call_args(ctor->params, c.args, call_expr->loc);
+    // 参数已是同类临时值：派发的 INIT(T) 只会先解包再原样包回去
+    if (ctor && ctor == synth_ctor && c.args.size() == 1 && c.args[0] &&
+        c.args[0]->type && !c.args[0]->is_lvalue &&
+        c.args[0]->type->resolved_decl == cls_decl)
+        warning(c.callee ? c.callee->loc : call_expr->loc,
+                "unnecessary cast, types are identical");
 
     call_expr->sym = nullptr;
     call_expr->type = make_named_type(call_expr->loc, cls->name, cls, cls_scope);

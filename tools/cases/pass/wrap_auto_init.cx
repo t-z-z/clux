@@ -1,8 +1,8 @@
-// 基础类型来源自动派发 INIT(T)：包装类可用承载类型显式构造
+// 基础类型来源自动派发 INIT(T)，运算符返回主类
 #int num{}
 main() {
     num a = num()
     num b = num(1)
-    num c = num(b + 1)
-    int n = num(b + 1)
+    num c = b + 1
+    int n = int(c)
 }

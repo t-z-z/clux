@@ -34,6 +34,7 @@ declare -A EXPECT=(
     [ref_branch_bind]=2
     [var_mut]=6
     [nonmut_pointer_write]=7
+    [wrap_operator_return]=18
 )
 
 tmp=$(mktemp -d)

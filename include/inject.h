@@ -42,7 +42,8 @@ public:
 private:
     enum class ExpandState { InProgress, Done };
 
-    Class* make_base_source(PrimitiveTypeKind base, const Location& loc);
+    Class* make_base_source(PrimitiveTypeKind base, const Location& loc,
+                            Class* main);
 
     CompUnit& cu_;
     SymbolTable& symbols_;

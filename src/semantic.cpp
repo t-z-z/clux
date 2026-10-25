@@ -1504,12 +1504,14 @@ void SemanticAnalyzer::visit_expr_binary(Expr::Binary& b) {
     Type* rt = b.right ? b.right->type : nullptr;
     if (!lt || !rt) return;
 
-    // 包装类与基础值混合运算：解包包装类一侧，走基础运算。
+    // 包装类与基础值混合运算：包装类在左侧且类里有匹配的操作符时优先用
+    // 类自己的实现，结果保持主类；否则解包包装类一侧，走基础运算。
     // 两个包装类之间保持原类型，由各自的操作符决定能否匹配
     Class* lw = wrap_class_of(lt);
     Class* rw = wrap_class_of(rt);
     if (!(lw && rw) && (lw || rw)) {
-        if (lw) {
+        bool own_op = lw && find_operator_overload(b.op, *lt, *rt);
+        if (!own_op && lw) {
             // 解包会绕过类里的操作符查找，no 声明仍须在混合运算处生效
             if (Symbol* s = find_operator_overload(b.op, *lt, *rt))
                 check_no_call(s, current_expr->loc);
@@ -1517,7 +1519,7 @@ void SemanticAnalyzer::visit_expr_binary(Expr::Binary& b) {
             record_conversion(b.left, base_t);
             lt = base_t;
         }
-        if (rw) {
+        if (!own_op && rw) {
             Type* base_t = wrap_base_type(rw);
             record_conversion(b.right, base_t);
             rt = base_t;

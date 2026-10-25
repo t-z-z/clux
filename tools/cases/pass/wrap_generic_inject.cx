@@ -1,0 +1,9 @@
+// 泛型类从基础类型注入：模板里不生成运算符，实例化后再派发
+A-<T> #int {
+    pub uninit T x
+}
+main() {
+    A-<int> a = 5
+    A-<int> b = a + 1
+    int n = int(b)
+}

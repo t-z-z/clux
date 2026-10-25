@@ -111,13 +111,17 @@ void InjectionExpander::expand_decl(Decl* decl, Scope* parent_scope) {
 
 
 Class* InjectionExpander::make_base_source(PrimitiveTypeKind base,
-                                        const Location& loc) {
+                                        const Location& loc, Class* main) {
     auto* synth = cu_.add_node<Class>(loc, "__base", SpecList{},
         std::vector<Decl*>{});
     synth->base_source = base;
 
     auto mk_type = [&]() {
         return cu_.add_node<Type>(loc, Type::Primitive{base});
+    };
+    // 派发的运算符返回主类而不是承载类型：num + 1 仍是 num，与类的值语义一致
+    auto mk_main_type = [&]() {
+        return cu_.add_node<Type>(loc, Type::Identifier{main->name});
     };
     auto mk_param = [&](std::string_view nm, Type* t) {
         auto* vi = cu_.add_node<VarItem>(loc, nm, nullptr, t);
@@ -133,6 +137,10 @@ Class* InjectionExpander::make_base_source(PrimitiveTypeKind base,
     carrier_specs.set(SpecKind::Uninit);
     synth->members.push_back(cu_.add_node<VarList>(loc, carrier_specs, vt,
         std::vector<VarItem*>{vvi}));
+
+    // 模板体内的类还没有实例名，运算符返回类型无从落笔；实例化时会重新展开
+    // 注入并生成完整成员，模板里只留承载字段与 base_source 标记
+    if (template_depth_ > 0) return synth;
 
     // 构造：INIT(T) 把实参写进承载字段，包装类才能用承载类型显式构造
     auto* init = cu_.add_node<SpecialMethod>(loc, SpecialMethod::Kind::Init,
@@ -157,10 +165,9 @@ Class* InjectionExpander::make_base_source(PrimitiveTypeKind base,
         auto* op_node = cu_.add_node<Operator>(loc, op, opkind_to_sv(op),
             SpecList{},
             std::vector<VarList*>{mk_param("other", mk_type())},
-            std::vector<VarList*>{mk_param("r", mk_type())},
+            std::vector<VarList*>{mk_param("r", mk_main_type())},
             nullptr);
         op_node->synthesized = true;
-        op_node->ret_via_reg = true;
         synth->members.push_back(op_node);
     }
 
@@ -205,23 +212,24 @@ Class* InjectionExpander::make_base_source(PrimitiveTypeKind base,
     }
 
     // 一元操作符：params=[]（self 隐含）
-    auto make_unary = [&](OpKind op, PrimitiveTypeKind ret_kind) {
-        Type* rt = cu_.add_node<Type>(loc, Type::Primitive{ret_kind});
+    auto make_unary = [&](OpKind op, Type* rt, bool via_reg) {
         auto* op_node = cu_.add_node<Operator>(loc, op, opkind_to_sv(op),
             SpecList{},
             std::vector<VarList*>{},
             std::vector<VarList*>{mk_param("r", rt)},
             nullptr);
         op_node->synthesized = true;
-        op_node->ret_via_reg = true;
+        op_node->ret_via_reg = via_reg;
         synth->members.push_back(op_node);
     };
     if (is_bool) {
-        make_unary(OpKind::Not, PrimitiveTypeKind::Bool);
+        Type* bt = cu_.add_node<Type>(loc, Type::Primitive{PrimitiveTypeKind::Bool});
+        make_unary(OpKind::Not, bt, true);
     } else {
-        make_unary(OpKind::Minus, base);
-        make_unary(OpKind::Not, PrimitiveTypeKind::Bool);
-        make_unary(OpKind::BitNot, base);
+        make_unary(OpKind::Minus, mk_main_type(), false);
+        Type* bt = cu_.add_node<Type>(loc, Type::Primitive{PrimitiveTypeKind::Bool});
+        make_unary(OpKind::Not, bt, true);
+        make_unary(OpKind::BitNot, mk_main_type(), false);
     }
 
     return synth;
@@ -289,7 +297,7 @@ void InjectionExpander::expand_class(Class* cls, Scope* parent_scope) {
     auto resolve = [&](Type* mod) -> Class* {
         if (!mod) return nullptr;
         if (auto* p = mod->get_primitive())
-            return make_base_source(p->kind, mod->loc);
+            return make_base_source(p->kind, mod->loc, cls);
         if (auto* g = mod->get_generic_type()) {
             // 模板体内的实参还是形参名，此处解析不出类型，交给实例化时结算
             if (template_depth_ > 0) return nullptr;

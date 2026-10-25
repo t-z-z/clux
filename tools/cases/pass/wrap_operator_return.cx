@@ -1,0 +1,9 @@
+// 基础类型派发的运算符返回主类：混合运算保持包装类型，显式转换走解包
+#int num{}
+main() int r {
+    num i = 5
+    num j = i + 1
+    int k = int(i + 1)
+    num m = 1 + i
+    r = j + k + m
+}

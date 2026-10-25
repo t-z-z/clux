@@ -1165,11 +1165,19 @@ void Translator::emit_synth_operator(Func& f, Class* cls, VarItem* ret_var) {
         result = res;
     }
 
-    if (!result.empty() && ret_var) {
-        auto sit = ctx_.slots.find(ret_var);
-        if (sit != ctx_.slots.end()) {
-            std::string ret_ir = ret_var->type ? map_type(ret_var->type) : base_ir;
-            emit_instr("store " + ret_ir + " " + result + ", ptr " + sit->second);
+    if (!result.empty()) {
+        // 返回主类时走 sret：结果写进调用方存储的承载字段
+        if (!ctx_.ret_obj_ptr.empty() && ctx_.ret_obj_cls == cls) {
+            std::string addr = ir_.reg();
+            emit_instr(addr + " = getelementptr " + cls_ir + ", ptr " +
+                       ctx_.ret_obj_ptr + ", i32 0, i32 " + std::to_string(idx));
+            emit_instr("store " + base_ir + " " + result + ", ptr " + addr);
+        } else if (ret_var) {
+            auto sit = ctx_.slots.find(ret_var);
+            if (sit != ctx_.slots.end()) {
+                std::string ret_ir = ret_var->type ? map_type(ret_var->type) : base_ir;
+                emit_instr("store " + ret_ir + " " + result + ", ptr " + sit->second);
+            }
         }
     }
 }
@@ -3104,6 +3112,14 @@ std::string Translator::cast_value(const std::string& v,
 std::string Translator::eval_cast(Expr*, Expr::Cast* c) {
     Type* src_expr = c->operand ? c->operand->type : nullptr;
     Type* dst_expr = c->target_type;
+    // 包装类参与显式转换：解包/打包 + 承载类型间的 cast，不能按指针重解释
+    if (as_wrap_class(src_expr) || as_wrap_class(dst_expr)) {
+        Type* saved = c->operand->implicit_to;
+        c->operand->implicit_to = dst_expr;
+        std::string v = emit_wrap_convert(c->operand);
+        c->operand->implicit_to = saved;
+        return v;
+    }
     std::string src = map_type(src_expr);
     std::string dst = map_type(dst_expr);
     std::string v = eval(c->operand);
