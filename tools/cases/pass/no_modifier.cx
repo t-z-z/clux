@@ -1,0 +1,6 @@
+// no 只禁止调用：函数体不检查，operator 的返回量也不检查
+number #int {
+    no operator+(int x) nope r { not_checked() }
+    no conversion() number r { not_checked() }
+}
+main() {}

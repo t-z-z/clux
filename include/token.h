@@ -16,7 +16,8 @@ namespace cx{
     X(Malloc, "malloc") \
     X(Alloca, "alloca") \
     X(Uninit, "uninit") \
-    X(Over, "over")
+    X(Over, "over") \
+    X(No, "no")
 
 #define TYPE \
     X(Int8, "int8") \
@@ -44,7 +45,6 @@ namespace cx{
     X(Namespace, "namespace") \
     X(Using, "using") \
     X(Import, "import") \
-    X(No, "no") \
     X(If, "if") \
     X(Else, "else") \
     X(While, "while") \
@@ -223,7 +223,7 @@ struct Token {
         return kind > TokenKind::Identifier && kind < TokenKind::Unknown;
     }
     inline bool is_spec() const {
-        return kind >= TokenKind::Var && kind <= TokenKind::Over;
+        return kind >= TokenKind::Var && kind <= TokenKind::No;
     }
     inline bool is_type() const {
         return kind >= TokenKind::Int8 && kind <= TokenKind::Enum;

@@ -1,0 +1,9 @@
+// 前置注入的基础类型操作符不能覆盖主类的 no 声明
+#int number {
+    no operator+(int x) {}
+}
+main() {
+    number a = 1
+    number b = 2
+    a + b
+}

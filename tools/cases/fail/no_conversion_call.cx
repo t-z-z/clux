@@ -1,0 +1,8 @@
+// no conversion 在调用处报错
+number #int {
+    no conversion() number r {}
+}
+main() {
+    number a = 1
+    number b = a
+}

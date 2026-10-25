@@ -49,6 +49,9 @@ bool SemanticAnalyzer::resolve_functor_call(Expr* call_expr, Expr::Call& c) {
         auto* op = static_cast<Operator*>(m);
         if (op->op != OpKind::Paren) continue;
         if (!args_match(op->params, c.args)) continue;
+        if (op->specs.has(SpecKind::No))
+            error(call_expr->loc, "operator '()' is marked 'no' and cannot be "
+                                  "called");
         Type* ret = typeVoid;
         if (!op->returns.empty() && op->returns.back() && op->returns.back()->type)
             ret = op->returns.back()->type;
@@ -212,6 +215,8 @@ void SemanticAnalyzer::resolve_named_call(Expr* call_expr, Expr::Call& c,
         call_fail(call_expr, "callee '" + name + "' is not a function");
         return;
     }
+
+    check_no_call(f_sym, call_expr->loc);
 
     // mut 方法会修改自身对象：不带 mut 的成员方法不得调用
     if (func->specs.has(SpecKind::Mut) && in_non_mut_method()) {

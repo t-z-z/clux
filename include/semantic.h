@@ -592,6 +592,8 @@ private:
     void expand_expr_alias(Symbol* sym);
 
     bool is_scope_on_path(Scope* s) const;
+    // no 修饰的操作符/转换只是禁止调用，调用点在此统一报错
+    void check_no_call(Symbol* sym, const Location& loc);
     void check_access(Symbol* sym, const Location& loc);
     void check_write_access(Symbol* sym, const Location& loc);
     // 当前是否处在不带 mut 的成员方法体内：这类方法不得写字段或调用 mut 方法

@@ -1,0 +1,5 @@
+// no conversion 仍要给出转换目标类型
+number #int {
+    no conversion() {}
+}
+main() {}

@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <string>
+#include <unordered_set>
 #include <vector>
 
 namespace cx {
@@ -345,6 +346,14 @@ void InjectionExpander::expand_class(Class* cls, Scope* parent_scope) {
         }
     }
 
+    // 主类里 no 修饰的操作符即使优先级低于前置注入，也不能被基础类型自动
+    // 派发的同名操作符覆盖
+    std::unordered_set<std::string> no_keys;
+    for (Decl* m : cls->members) {
+        if (!m || !m->specs.has(SpecKind::No)) continue;
+        for (const std::string& n : decl_key_names(m)) no_keys.insert(n);
+    }
+
     // 同一 Class 被不同模块的 expander 各展开一次是安全的：合并按名字去重，
     // 第二遍的 sources 已含首遍的合并结果，index 占位后成员集合不再变化。
     // 钩子没有名字，另按最初声明去重
@@ -359,6 +368,13 @@ void InjectionExpander::expand_class(Class* cls, Scope* parent_scope) {
             bool claimed = false;
             for (const std::string& n : decl_key_names(m)) {
                 if (is_malloc && n == "free") { claimed = true; break; }
+                if (!from_main && !no_keys.empty() &&
+                    m->kind == DeclKind::Operator &&
+                    static_cast<Operator*>(m)->synthesized &&
+                    no_keys.count(n)) {
+                    claimed = true;
+                    break;
+                }
                 if (index.count(n)) { claimed = true; break; }
             }
             if (claimed) continue;

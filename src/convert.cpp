@@ -48,6 +48,10 @@ bool SemanticAnalyzer::record_conversion(Expr* e, Type* dst) {
     // 时才需要深拷贝；新产生的临时值（rvalue）本身即新鲜对象，直接取用。
     if (same && !e->is_lvalue) return true;
     if (Symbol* conv = find_conversion(*e->type, *dst)) {
+        if (conv->specs && conv->specs->has(SpecKind::No)) {
+            check_no_call(conv, e->loc);
+            return true;
+        }
         e->conv = conv->get_decl();
         return true;
     }
@@ -291,6 +295,13 @@ bool SemanticAnalyzer::check_conversion(Type* src, Type* dst, const std::string&
                                         const Location& loc, bool explicit_cast) {
     if (!src || !dst) return false;
     if (is_same_type(src, dst)) return true;
+    if (Symbol* conv = find_conversion(*src, *dst)) {
+        if (conv->specs && conv->specs->has(SpecKind::No)) {
+            check_no_call(conv, loc);
+            return false;
+        }
+        return true;
+    }
     if (has_conversion(src, dst)) return true;
     if (src->is_func_ref() && dst->is_func_ptr()) {
         if (const char* why = func_ptr_abi_block(src->get_func_ref()->func)) {

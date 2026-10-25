@@ -243,6 +243,13 @@ void SemanticAnalyzer::process_using_namespaces() {
 void SemanticAnalyzer::collect_decl(Decl* decl, bool default_public) {
     if (!decl) return;
 
+    if (decl->specs.has(SpecKind::No) &&
+        decl->kind != DeclKind::Operator &&
+        decl->kind != DeclKind::Conversion) {
+        error(decl->loc, "'no' can only modify an operator overload or a "
+                         "conversion");
+    }
+
     switch (decl->kind) {
         case DeclKind::VarList: {
             auto* vl = static_cast<VarList*>(decl);
@@ -606,6 +613,18 @@ void SemanticAnalyzer::check_extern_func(Func& f) {
 }
 
 void SemanticAnalyzer::visit_func(Func& f) {
+    if (f.specs.has(SpecKind::No)) {
+        // no 只登记签名供调用点报错，函数体完全不检查；转换目标类型仍要确定
+        if (f.kind == DeclKind::Conversion) {
+            bool has_target = !f.returns.empty() && f.returns.back() &&
+                (!f.returns.back()->vars.empty() || f.returns.back()->type);
+            if (!has_target)
+                error(f.loc, "a 'no' conversion must declare its target type");
+            else
+                check_no_slice(f.returns, "return type");
+        }
+        return;
+    }
     // 变参仅用于 extern 声明
     if (f.is_variadic && !f.is_extern_decl())
         error(f.loc, "'...' is only allowed in extern declarations");
@@ -1403,6 +1422,21 @@ bool SemanticAnalyzer::is_scope_on_path(Scope* s) const {
     return false;
 }
 
+// no 修饰只禁止调用，声明本身仍留在符号表里供匹配
+void SemanticAnalyzer::check_no_call(Symbol* sym, const Location& loc) {
+    if (!sym || !sym->specs || !sym->specs->has(SpecKind::No)) return;
+    std::string what = "function";
+    if (Func* f = sym->get<Func>()) {
+        if (f->kind == DeclKind::Conversion)
+            what = "conversion";
+        else if (f->kind == DeclKind::Operator)
+            what = "operator '" + std::string(f->name) + "'";
+        else
+            what = "function '" + std::string(f->name) + "'";
+    }
+    error(loc, what + " is marked 'no' and cannot be called");
+}
+
 // 读访问控制：离开声明作用域后 priv 不可读，readonly 仍可读
 void SemanticAnalyzer::check_access(Symbol* sym, const Location& loc) {
     if (!sym) return;
@@ -1474,6 +1508,9 @@ void SemanticAnalyzer::visit_expr_binary(Expr::Binary& b) {
     Class* rw = wrap_class_of(rt);
     if (!(lw && rw) && (lw || rw)) {
         if (lw) {
+            // 解包会绕过类里的操作符查找，no 声明仍须在混合运算处生效
+            if (Symbol* s = find_operator_overload(b.op, *lt, *rt))
+                check_no_call(s, current_expr->loc);
             Type* base_t = wrap_base_type(lw);
             record_conversion(b.left, base_t);
             lt = base_t;
@@ -1491,6 +1528,7 @@ void SemanticAnalyzer::visit_expr_binary(Expr::Binary& b) {
 
     Type* matched_param = nullptr;
     if (Symbol* s = find_operator_overload(b.op, *lt, *rt, &matched_param)) {
+        check_no_call(s, current_expr->loc);
         Type* overload_ret = typeVoid;
         if (auto* op = s->get<Operator>()) {
             if (!op->returns.empty() && op->returns.back() && op->returns.back()->type)
@@ -1597,6 +1635,7 @@ void SemanticAnalyzer::visit_expr_unary(Expr::Unary& u) {
     if (is_enum_type(ot)) ot = typeInt;
 
     if (Symbol* s = find_operator_overload(u.op, *ot)) {
+        check_no_call(s, current_expr->loc);
         if (auto* op = s->get<Operator>()) {
             if (!op->returns.empty() && op->returns.back() && op->returns.back()->type) {
                 current_expr->type = op->returns.back()->type;
@@ -1691,6 +1730,7 @@ void SemanticAnalyzer::visit_expr_assign(Expr::Assign& a) {
     if (a.op != OpKind::Assign && lt && rt) {
         Type* matched = nullptr;
         if (Symbol* s = find_operator_overload(a.op, *lt, *rt, &matched)) {
+            check_no_call(s, current_expr->loc);
             if (matched && !is_same_type(rt, matched))
                 record_conversion(a.value, matched);
             current_expr->sym = s;
@@ -1772,6 +1812,7 @@ void SemanticAnalyzer::visit_expr_index(Expr::Index& idx) {
     Type* it = idx.index ? idx.index->type : nullptr;
     if (it) {
         if (Symbol* s = find_operator_overload(OpKind::Index, *tt, *it)) {
+            check_no_call(s, current_expr->loc);
             Type* ret = typeVoid;
             if (auto* op = s->get<Operator>()) {
                 if (!op->returns.empty() && op->returns.back() && op->returns.back()->type)

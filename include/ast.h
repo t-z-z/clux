@@ -912,11 +912,16 @@ struct ASTVisitor {
         for (auto* p : f.params) {
             if (p) walk(*p);
         }
-        for (auto* r : f.returns) {
-            if (r) walk(*r);
+        // no 声明只用于禁止调用：operator 的返回量不检查；conversion 仍要
+        // 遍历返回量，转换目标类型由它确定
+        bool is_no = f.specs.has(SpecKind::No);
+        if (!(is_no && f.kind == DeclKind::Operator)) {
+            for (auto* r : f.returns) {
+                if (r) walk(*r);
+            }
         }
         current_body = f.body;
-        if (f.body) walk(*f.body);
+        if (f.body && !is_no) walk(*f.body);
         current_body = pre_body;
         visit_func(f);
         scope_out();

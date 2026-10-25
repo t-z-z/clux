@@ -239,6 +239,7 @@ void Translator::collect_local_statics_decl(Decl* d) {
         case DeclKind::Operator:
         case DeclKind::Conversion: {
             auto* f = static_cast<Func*>(d);
+            if (f->specs.has(SpecKind::No)) break;
             collect_local_statics_stmt(f->body, mangler_.of(f));
             break;
         }
@@ -269,6 +270,7 @@ void Translator::emit_decl(Decl* d) {
         case DeclKind::Func:
         case DeclKind::Operator:
         case DeclKind::Conversion:
+            if (d->specs.has(SpecKind::No)) break;
             emit_func(*static_cast<Func*>(d), nullptr);
             break;
         case DeclKind::Namespace:
@@ -1011,6 +1013,7 @@ void Translator::emit_class(Class* c) {
         if (m->kind == DeclKind::Func || m->kind == DeclKind::Operator ||
             m->kind == DeclKind::Conversion ||
             m->kind == DeclKind::SpecialMethod) {
+            if (m->specs.has(SpecKind::No)) continue;
             std::string name = mangler_.of(m);
             if (!emitted.insert(name).second) continue;
             if (m->kind == DeclKind::SpecialMethod)
